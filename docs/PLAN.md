@@ -300,7 +300,7 @@ Reminders at 24 hours and 1 hour. Slot interval equals the duration, with a 15-m
 |---|---|---|
 | 1 | Brand | Logos supplied (light PNG and a WebP). Colors sampled from the logo: BTC Blue `#0D66A5`, Sky `#22A4DC`, Navy `#0B3D66`. Fonts: Montserrat (headings), Inter (body). The supplied dark logo uses the same blue wordmark, so a white or reversed wordmark is still needed for dark backgrounds. |
 | 2 | Hosting | Vercel. DNS and the custom domain come later; use the `*.vercel.app` URL until then. |
-| 3 | Supabase | New project `btc-scheduler` in **BTC Org** (us-east-1). |
+| 3 | Supabase | Project `btc-bookings` (ref `fnxezwdygbgrsrfqnoep`) in **BTC Org**, region us-west-2. Created in the dashboard on 2026-10-02 (the connector's create call timed out); all migrations applied and verified against the tested schema. |
 | 4 | Admins | Global admins: Mike Perticone and Brian Weiss. Seeded in `app.admin_seeds` and `ADMIN_EMAILS`. |
 | 5 | Queues | No fixed mapping. Admins enter Salesforce Queue IDs per team on the admin page. |
 | 6 | Slack | Build the full feature now; workspace setup and install later. |

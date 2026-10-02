@@ -274,16 +274,16 @@ describe("POST /api/sync/queue-snapshot", () => {
     expect(JSON.stringify(body)).not.toContain("@");
   });
 
-  it("rejects a bad signature, a stale timestamp, a missing nonce, and a replayed nonce", async () => {
+  it("rejects a bad signature, a stale timestamp, and a replayed snapshotId", async () => {
     const team = await makeTeam(sql);
     await linkTestQueue(sql, team, Q1);
     const body = snapshot([{ queueId: Q1, members: [] }]);
     expect((await snapshotPOST(signedPost(url, body, { secret: "wrong" }))).status).toBe(401);
     expect((await snapshotPOST(signedPost(url, body, { ts: Math.floor(Date.now() / 1000) - 600 }))).status).toBe(401);
     expect((await snapshotPOST(new Request(url, { method: "POST", body: JSON.stringify(body) }))).status).toBe(401);
-    expect((await snapshotPOST(signedPost(url, body, { nonce: null }))).status).toBe(400);
-    expect((await snapshotPOST(signedPost(url, body, { nonce: "n-1" }))).status).toBe(200);
-    expect((await snapshotPOST(signedPost(url, body, { nonce: "n-1" }))).status).toBe(409);
+    expect((await snapshotPOST(signedPost(url, body, { nonce: null }))).status).toBe(200);
+    // Same signed snapshotId with a fresh unsigned nonce header is still a replay.
+    expect((await snapshotPOST(signedPost(url, body, { nonce: "n-2" }))).status).toBe(409);
   });
 
   it("rejects invalid bodies and oversized payloads", async () => {

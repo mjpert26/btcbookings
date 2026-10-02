@@ -8,6 +8,9 @@ import { emailKey, json, jsonError, limit, mapBookingError, readJson, sameOrigin
 
 export const dynamic = "force-dynamic";
 
+const PAGE_DAILY_MAX = 300;
+const GLOBAL_DAILY_MAX = 2000;
+
 /**
  * POST /api/public/book. Creates a booking and returns the manage token (the only
  * handle the invitee gets) plus public display data. No booking ids are returned.
@@ -27,6 +30,15 @@ export async function POST(req: NextRequest) {
 
   const turnstile = await verifyTurnstile(body.turnstileToken, clientIp(req.headers));
   if (!turnstile.ok) return jsonError(400, "verification_failed");
+
+  // Volume ceiling per booking page and overall, after Turnstile, so a scripted flood cannot
+  // turn host mailboxes into an invite relay. Far above BTC's normal daily volume.
+  const pageKey = `${body.ref.kind}:${body.ref.slug}:${body.event}`.slice(0, 200);
+  const volumeLimited = await limit([
+    { key: `book:page:${pageKey}`, max: PAGE_DAILY_MAX, windowSeconds: 86_400 },
+    { key: "book:global", max: GLOBAL_DAILY_MAX, windowSeconds: 86_400 },
+  ]);
+  if (volumeLimited) return volumeLimited;
 
   try {
     const result = await createBooking(

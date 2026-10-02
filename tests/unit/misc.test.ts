@@ -32,6 +32,10 @@ describe("safeReturnTo", () => {
     expect(safeReturnTo("//evil.example")).toBe("/dashboard");
     expect(safeReturnTo("/\\evil.example")).toBe("/dashboard");
     expect(safeReturnTo(null)).toBe("/dashboard");
+    expect(safeReturnTo("/\t/evil.example")).toBe("/dashboard");
+    expect(safeReturnTo("/%09/evil.example")).toBe("/%09/evil.example");
+    expect(safeReturnTo("/\n/evil.example")).toBe("/dashboard");
+    expect(safeReturnTo("/bookings?tab=past#x")).toBe("/bookings?tab=past#x");
   });
 });
 

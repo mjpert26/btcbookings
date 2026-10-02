@@ -18,8 +18,6 @@ export type EventPayloadInput = {
   /** Other hosts added as required attendees (collective events). */
   coHosts: { name: string; email: string }[];
   answers: { label: string; value: string }[];
-  /** Invitee reschedule/cancel link (absolute URL), when available. */
-  manageUrl?: string | null;
 };
 
 export function escapeHtml(s: string): string {
@@ -57,9 +55,9 @@ export function buildEventBody(i: EventPayloadInput): string {
   return [
     `<p>${escapeHtml(i.eventTypeName)} booked through BTC Scheduler.</p>`,
     `<table>${table}</table>`,
-    i.manageUrl
-      ? `<p>Need to make a change? <a href="${escapeHtml(i.manageUrl)}">Reschedule or cancel</a>.</p>`
-      : `<p>Need to make a change? Use the reschedule or cancel link in the confirmation email.</p>`,
+    // The invitee's manage link is deliberately not included: this event lives in the host's
+    // mailbox, where delegates, shared calendars and retention could expose it.
+    `<p>Need to make a change? Use the reschedule or cancel link in the confirmation email.</p>`,
   ].join("\n");
 }
 

@@ -35,12 +35,15 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
   }
 
   return serviceTx(async (tx) => {
-    const [existing] = await tx<{ id: string; role: "user" | "admin"; entra_oid: string | null }[]>`
-      select id, role, entra_oid from app.users
+    const [existing] = await tx<{ id: string; role: "user" | "admin"; entra_oid: string | null; is_active: boolean }[]>`
+      select id, role, entra_oid, is_active from app.users
       where entra_oid = ${claims.oid} or email = ${email}
       order by (entra_oid = ${claims.oid}) desc nulls last
       limit 1
     `;
+    if (existing && !existing.is_active) {
+      throw new LoginRejected("This account has been deactivated. Contact an admin.");
+    }
     if (existing?.entra_oid && existing.entra_oid !== claims.oid) {
       throw new LoginRejected("This email is linked to a different Microsoft account. Contact an admin.");
     }

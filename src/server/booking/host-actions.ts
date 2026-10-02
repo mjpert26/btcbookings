@@ -33,11 +33,15 @@ export async function cancelBookingAsHost(actorUserId: string, bookingId: string
       return { kind: "already" as const, finishable: b.cancelled_by === "host" };
     }
     if (b.status === "rescheduled") return { kind: "not_cancellable" as const };
-    await tx`
+    // RLS (bookings_update) only lets current hosts, owners and admins write. A caller who
+    // can read but not write the booking gets zero rows and must not reach step 2.
+    const updated = await tx`
       update app.bookings
       set status = 'cancelled', cancelled_by = 'host', cancelled_at = now(), cancel_reason = ${reason}
       where id = ${bookingId}
+      returning id
     `;
+    if (updated.length === 0) return { kind: "not_found" as const };
     await writeAudit(tx, {
       actorUserId,
       action: "booking.cancel",

@@ -80,7 +80,7 @@ export async function reassignBooking(
     if (et.scheduling_mode === "collective") {
       const remaining = hosts.filter((h) => h.user_id !== from.user_id);
       if (!remaining.length) return flag("no remaining host");
-      await tx`update app.booking_hosts set active = false where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+      await tx`update app.booking_hosts set active = false, reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
       if (from.role === "primary") {
         await tx`update app.booking_hosts set role = 'primary' where booking_id = ${booking.id} and user_id = ${remaining[0].user_id}`;
       }
@@ -90,7 +90,7 @@ export async function reassignBooking(
     }
 
     // Round-robin. Deactivate first so the old hold does not count for anyone.
-    await tx`update app.booking_hosts set active = false where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    await tx`update app.booking_hosts set active = false, reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     const confirmed = await confirmSlot(tx, loaded, {
       startMs,
       durationMin,

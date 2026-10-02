@@ -71,12 +71,20 @@ class RetryableLeadError extends Error {
   }
 }
 
+/**
+ * Records the lead outcome on the booking and on every booking rescheduled from it, so a
+ * reschedule that happened while the job was pending does not stay "pending" forever.
+ */
 async function setLeadStatus(db: Db, bookingId: string, status: string, leadId?: string | null): Promise<void> {
-  if (leadId) {
-    await db`update app.bookings set sf_lead_status = ${status}, sf_lead_id = ${leadId} where id = ${bookingId}`;
-  } else {
-    await db`update app.bookings set sf_lead_status = ${status} where id = ${bookingId}`;
-  }
+  await db`
+    with recursive chain(id) as (
+      select ${bookingId}::uuid
+      union
+      select b.id from app.bookings b join chain c on b.rescheduled_from_id = c.id
+    )
+    update app.bookings set sf_lead_status = ${status}, sf_lead_id = coalesce(${leadId ?? null}, sf_lead_id)
+    where id in (select id from chain)
+  `;
 }
 
 async function loadBooking(db: Db, bookingId: string): Promise<BookingRow | null> {

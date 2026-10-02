@@ -13,8 +13,6 @@ import {
   type GraphPage,
 } from "@/server/graph/client";
 import { CalendarConnectionBroken } from "@/server/graph/tokens";
-import { decryptSecret } from "@/server/crypto/aes";
-import { env } from "@/server/env";
 import { buildCreatePayload, buildUpdatePayload, type EventPayloadInput, type LocationType } from "@/server/graph/event-payload";
 import { ensureSubscription } from "@/server/graph/subscriptions";
 import { syncDelta } from "@/server/graph/delta";
@@ -73,7 +71,6 @@ type BookingRow = {
   location_type: LocationType;
   location_detail: string | null;
   event_type_name: string;
-  manage_token_enc: string | null;
 };
 type HostRow = { user_id: string; role: "primary" | "collective"; active: boolean; graph_event_id: string | null; email: string; name: string };
 
@@ -81,7 +78,7 @@ async function loadBooking(bookingId: string) {
   const sql = service();
   const [booking] = await sql<BookingRow[]>`
     select b.id, b.status, b.language, b.start_at, b.end_at, b.invitee_name, b.invitee_email, b.invitee_phone,
-           b.invitee_timezone, b.location_type, b.location_detail, et.name as event_type_name, b.manage_token_enc
+           b.invitee_timezone, b.location_type, b.location_detail, et.name as event_type_name
     from app.bookings b join app.event_types et on et.id = b.event_type_id
     where b.id = ${bookingId}
   `;
@@ -100,16 +97,6 @@ async function loadBooking(bookingId: string) {
   return { booking, hosts, answers };
 }
 
-/** Invitee self-service link, rendered into the Outlook invite the invitee receives. */
-function manageUrl(booking: BookingRow): string | null {
-  if (!booking.manage_token_enc) return null;
-  try {
-    return `${env().APP_BASE_URL}/b/${decryptSecret(booking.manage_token_enc, booking.id)}`;
-  } catch {
-    return null;
-  }
-}
-
 export function payloadInput(data: NonNullable<Awaited<ReturnType<typeof loadBooking>>>, primaryUserId: string): EventPayloadInput {
   const { booking, hosts, answers } = data;
   return {
@@ -121,7 +108,6 @@ export function payloadInput(data: NonNullable<Awaited<ReturnType<typeof loadBoo
     locationType: booking.location_type,
     locationDetail: booking.location_detail,
     coHosts: hosts.filter((h) => h.active && h.user_id !== primaryUserId).map((h) => ({ name: h.name, email: h.email })),
-    manageUrl: manageUrl(booking),
     answers: answers.map((a) => ({
       label: a.label?.[booking.language] ?? a.label?.en ?? a.question_key,
       value: a.value,

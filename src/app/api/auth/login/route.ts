@@ -4,6 +4,7 @@ import { buildAuthorizeUrl, pkcePair } from "@/server/auth/entra";
 import { randomToken, sha256Hex } from "@/server/crypto/random";
 import { encryptSecret } from "@/server/crypto/aes";
 import { safeReturnTo } from "@/server/http/redirects";
+import { OAUTH_BINDING_MAX_AGE, oauthBindingCookieName } from "@/server/auth/oauth-binding";
 
 export const dynamic = "force-dynamic";
 
@@ -14,15 +15,24 @@ export async function GET(req: Request) {
   const purpose = url.searchParams.get("reconnect") === "1" ? "reconnect" : "login";
   const state = randomToken(24);
   const nonce = randomToken(24);
+  const binding = randomToken(24);
   const { verifier, challenge } = pkcePair();
   await service()`
-    insert into app.oauth_states (state, code_verifier_enc, nonce, return_to, purpose, expires_at)
+    insert into app.oauth_states (state, code_verifier_enc, nonce, return_to, purpose, expires_at, browser_binding)
     values (${sha256Hex(state)}, ${encryptSecret(verifier, "oauth_state")}, ${nonce}, ${returnTo}, ${purpose},
-            now() + interval '10 minutes')
+            now() + interval '10 minutes', ${sha256Hex(binding)})
   `;
   // Opportunistic cleanup of abandoned sign-ins.
   await service()`delete from app.oauth_states where expires_at < now() - interval '1 hour'`;
-  return NextResponse.redirect(
+  const res = NextResponse.redirect(
     buildAuthorizeUrl({ state, nonce, codeChallenge: challenge, prompt: purpose === "reconnect" ? "consent" : "select_account" }),
   );
+  res.cookies.set(oauthBindingCookieName(), binding, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: OAUTH_BINDING_MAX_AGE,
+  });
+  return res;
 }

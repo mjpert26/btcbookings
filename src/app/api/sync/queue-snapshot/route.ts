@@ -6,7 +6,6 @@ import {
   checkSyncHmac,
   claimNonce,
   jsonError,
-  nonceHeader,
   NONCE_SOURCE_SNAPSHOT,
   parseJson,
   readBodyLimited,
@@ -40,8 +39,8 @@ const snapshotSchema = z.object({
 });
 
 /**
- * Full membership snapshot from the n8n poller. HMAC-signed (SF_SYNC_SIGNING_SECRET) with a
- * required X-BTC-Nonce for replay protection.
+ * Full membership snapshot from the n8n poller. HMAC-signed (SF_SYNC_SIGNING_SECRET); the
+ * signed snapshotId must be unique (replay protection).
  */
 export async function POST(req: Request) {
   let raw: string;
@@ -54,16 +53,15 @@ export async function POST(req: Request) {
   const auth = checkSyncHmac(req, raw);
   if (!auth.ok) return auth.response;
 
-  const nonce = nonceHeader(req);
-  if (!nonce) return jsonError("missing_nonce", 400);
-
   const parsed = snapshotSchema.safeParse(parseJson(raw));
   if (!parsed.success) {
     return jsonError("invalid_body", 400, {
       issues: parsed.error.issues.slice(0, 10).map((i) => ({ path: i.path.join("."), message: i.message })),
     });
   }
-  if (!(await claimNonce(NONCE_SOURCE_SNAPSHOT, nonce))) return jsonError("replayed", 409);
+  // Replay protection uses the snapshotId, which is inside the signed body. The unsigned
+  // X-BTC-Nonce header is no longer trusted for this (it could be changed on a replay).
+  if (!(await claimNonce(NONCE_SOURCE_SNAPSHOT, parsed.data.snapshotId))) return jsonError("replayed", 409);
 
   const result = await applySnapshot(parsed.data);
   if (result.teams.length === 0) {

@@ -7,6 +7,8 @@ import { sha256Hex } from "@/server/crypto/random";
 import { decryptSecret } from "@/server/crypto/aes";
 import { env } from "@/server/env";
 import { fetchGraphProfile } from "@/server/graph/profile";
+import { oauthBindingCookieName } from "@/server/auth/oauth-binding";
+import { cookies } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
@@ -24,8 +26,12 @@ export async function GET(req: Request) {
   const state = url.searchParams.get("state");
   if (!code || !state) return fail("invalid_request");
 
+  const jar = await cookies();
+  const binding = jar.get(oauthBindingCookieName())?.value ?? "";
+  jar.delete(oauthBindingCookieName());
   const [row] = await service()<{ code_verifier_enc: string; nonce: string; return_to: string | null }[]>`
-    delete from app.oauth_states where state = ${sha256Hex(state)} and expires_at > now()
+    delete from app.oauth_states
+    where state = ${sha256Hex(state)} and expires_at > now() and browser_binding = ${sha256Hex(binding)}
     returning code_verifier_enc, nonce, return_to
   `;
   if (!row) return fail("state_expired");

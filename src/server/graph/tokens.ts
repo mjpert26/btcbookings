@@ -10,6 +10,9 @@ export class CalendarConnectionBroken extends Error {
   }
 }
 
+/** AADSTS codes meaning the account is disabled or no longer exists in the tenant. */
+const ACCOUNT_GONE = ["AADSTS50057", "AADSTS50034", "AADSTS50053"];
+
 type Refresher = (refreshToken: string) => Promise<TokenSet>;
 
 /**
@@ -56,6 +59,11 @@ export async function getGraphAccessToken(userId: string, refresher: Refresher =
           set status = 'broken', broken_at = now(), last_error = ${err.message.slice(0, 500)}
           where user_id = ${userId}
         `;
+        // Disabled or deleted in Entra: end their app sessions too, so a departed employee
+        // loses access within about an hour (the next background refresh), not 14 days.
+        if (ACCOUNT_GONE.some((c) => err.message.includes(c))) {
+          await tx`delete from app.sessions where user_id = ${userId}`;
+        }
         return { broken: err.message };
       }
       throw err;

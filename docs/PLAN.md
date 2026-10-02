@@ -1,6 +1,6 @@
 # BTC Scheduler: Implementation Plan
 
-Status: **Draft, awaiting approval.** No application code is written until this plan is approved.
+Status: **Approved 2026-10-02.** Build in progress. Decisions are recorded in section 13.
 
 Owner: Mike Perticone. Last updated: 2026-10-02.
 
@@ -293,3 +293,21 @@ Sections above refer to these by number.
 ## 12. Assumed defaults (non-blocking)
 
 Reminders at 24 hours and 1 hour. Slot interval equals the duration, with a 15-minute minimum. Booking window 30 days. Minimum notice 4 hours. Outlook conflict policy `flag`. Removal policy `keep_bookings`. Queue poll every 2 minutes. Mass-removal threshold 50 percent. Job max attempts 8, with backoff from 30 seconds up to 1 hour.
+
+## 13. Decisions (2026-10-02)
+
+| # | Topic | Decision |
+|---|---|---|
+| 1 | Brand | Logos supplied (light PNG and a WebP). Colors sampled from the logo: BTC Blue `#0D66A5`, Sky `#22A4DC`, Navy `#0B3D66`. Fonts: Montserrat (headings), Inter (body). The supplied dark logo uses the same blue wordmark, so a white or reversed wordmark is still needed for dark backgrounds. |
+| 2 | Hosting | Vercel. DNS and the custom domain come later; use the `*.vercel.app` URL until then. |
+| 3 | Supabase | New project `btc-scheduler` in **BTC Org** (us-east-1). |
+| 4 | Admins | Global admins: Mike Perticone and Brian Weiss. Seeded in `app.admin_seeds` and `ADMIN_EMAILS`. |
+| 5 | Queues | No fixed mapping. Admins enter Salesforce Queue IDs per team on the admin page. |
+| 6 | Slack | Build the full feature now; workspace setup and install later. |
+| 7 | Lead source | "Lead source" means the ISO (`csbs__ISO__c`, lookup to Account). The admin setting is an ISO Account ID. `LeadSource` remains available as a plain static value. |
+| 8 | Queue push | BTC manages queue membership with a Screen Flow today. The 2-minute poller is the primary path. The push endpoint accepts HMAC (Apex/n8n) or a bearer secret plus timestamp (Flow HTTP Callout) and is documented as optional. |
+| 9 | Resend | Later. Without `RESEND_API_KEY`, emails are logged instead of sent. |
+| 10 | Entra | Later. Mike is the admin. Tenant ID `91e22286-3995-43b2-9197-481a21962994`. |
+| 11 | n8n | api.bigthinkcapital.com. Token broker sub-workflow: **SF Token Broker** (`7wen5ULQg7DBlCvC`). Related live workflow: **Calendly — SF Meeting Booked (shared)** (`yVjvBOx5E3Zc36rX`), whose Lead field conventions the lead workflow mirrors. |
+| 12 | Collective events | One Outlook event on the primary host's calendar with the other hosts as attendees. |
+| — | UI | Use React Bits components (via MCP Host) for visual polish where they help. |

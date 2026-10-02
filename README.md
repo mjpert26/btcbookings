@@ -140,6 +140,12 @@ pnpm typecheck && pnpm lint
 
 Integration tests rebuild the `btc_scheduler_test` database from the migrations on every run. Set `TEST_DATABASE_URL` to use another database.
 
+### Notes for contributors
+
+- `app_user` has column-level SELECT on `app.bookings` (the encrypted manage token is excluded), so code running under `withUser()` must list columns explicitly; `select *` on `app.bookings` fails.
+- Reserved first path segments (`t`, `b`, `api`, `login`, `dashboard`, ...) cannot be used as user slugs.
+- The e2e suite seeds `btc_e2e_booking` and starts the app on port 3417 (`E2E_PORT` overrides).
+
 ## Project layout
 
 ```

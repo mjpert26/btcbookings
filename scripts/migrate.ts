@@ -2,7 +2,9 @@
  * Applies SQL migrations in supabase/migrations to DATABASE_URL, in filename order,
  * recording each in app_migrations. Safe to re-run. Usage: pnpm db:migrate
  */
-import "dotenv/config";
+import { config } from "dotenv";
+config({ path: ".env.local", quiet: true });
+config({ quiet: true });
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";

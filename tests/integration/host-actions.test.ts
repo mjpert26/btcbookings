@@ -71,14 +71,12 @@ describe("cancelBookingAsHost", () => {
 });
 
 describe("RLS insert pattern used by the internal UI", () => {
-  // The SELECT policies on event_types and availability_schedules call security-definer
-  // functions that re-read the table, which cannot see a row inserted by the same
-  // statement. INSERT ... RETURNING therefore fails; the UI generates ids instead.
-  it("rejects RETURNING but accepts an app-generated id", async () => {
+  // Migration 20261002700000 makes the SELECT policies check the row's own columns, so
+  // INSERT ... RETURNING works. App-generated ids (the UI's pattern) also keep working.
+  it("accepts both RETURNING and an app-generated id", async () => {
     const u = await makeUser(sql);
-    await expect(
-      withUser(u.id, (tx) => tx`insert into app.event_types (owner_user_id, slug, name) values (${u.id}, 'a', 'A') returning id`),
-    ).rejects.toThrow(/row-level security/);
+    const [ret] = await withUser(u.id, (tx) => tx`insert into app.event_types (owner_user_id, slug, name) values (${u.id}, 'r', 'R') returning id`);
+    expect(ret.id).toBeTruthy();
     const id = randomUUID();
     await withUser(u.id, (tx) => tx`insert into app.event_types (id, owner_user_id, slug, name) values (${id}, ${u.id}, 'a', 'A')`);
     const rows = await withUser(u.id, (tx) => tx`select id from app.event_types where id = ${id}`);

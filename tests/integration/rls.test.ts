@@ -106,3 +106,21 @@ describe("row level security", () => {
     await sql`insert into app.booking_hosts (booking_id, user_id, blocked_range) values (${b2}, ${host.id}, '[2026-11-02T15:30:00Z,2026-11-02T16:00:00Z)')`;
   });
 });
+
+describe("RLS with INSERT ... RETURNING", () => {
+  let s: Sql;
+  beforeAll(() => {
+    s = connectTestDb();
+  });
+  afterAll(async () => {
+    await s.end();
+  });
+
+  it("returns the new row for event types and schedules created by their owner", async () => {
+    const u = await makeUser(s);
+    const [et] = await withUser(u.id, (tx) => tx`insert into app.event_types (owner_user_id, slug, name) values (${u.id}, 'ret', 'Ret') returning id`);
+    expect(et.id).toBeTruthy();
+    const [sc] = await withUser(u.id, (tx) => tx`insert into app.availability_schedules (owner_user_id, name) values (${u.id}, 'x') returning id`);
+    expect(sc.id).toBeTruthy();
+  });
+});

@@ -3,6 +3,7 @@ import { serviceTx, type Tx } from "@/server/db/client";
 import { encryptSecret } from "@/server/crypto/aes";
 import { adminEmails, allowedEmailDomains } from "@/server/env";
 import { writeAudit } from "@/server/audit";
+import { enqueue } from "@/server/jobs/queue";
 import { isReservedSlug, slugify } from "@/server/auth/slug";
 import type { IdentityClaims, TokenSet } from "@/server/auth/entra";
 
@@ -105,6 +106,12 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
     `;
 
     await activatePendingMemberships(tx, userId, email);
+    // Create or renew the Outlook change-notification subscription after commit.
+    await enqueue(tx, {
+      kind: "graph_subscription_ensure",
+      payload: { userId },
+      idempotencyKey: `ensure:${userId}:login:${new Date().toISOString().slice(0, 10)}`,
+    });
     return userId;
   });
 }

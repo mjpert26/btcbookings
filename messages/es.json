@@ -1,0 +1,13 @@
+{
+  "common": {
+    "poweredBy": "Citas por Big Think Capital",
+    "language": "Idioma",
+    "timezone": "Zona horaria",
+    "loading": "Cargando…",
+    "back": "Atrás",
+    "continue": "Continuar",
+    "required": "Obligatorio",
+    "optional": "Opcional",
+    "errorGeneric": "Algo salió mal. Por favor, inténtelo de nuevo."
+  }
+}

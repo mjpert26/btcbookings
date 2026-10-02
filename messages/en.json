@@ -1,0 +1,13 @@
+{
+  "common": {
+    "poweredBy": "Scheduling by Big Think Capital",
+    "language": "Language",
+    "timezone": "Time zone",
+    "loading": "Loading…",
+    "back": "Back",
+    "continue": "Continue",
+    "required": "Required",
+    "optional": "Optional",
+    "errorGeneric": "Something went wrong. Please try again."
+  }
+}

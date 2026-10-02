@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireUser } from "@/server/auth/session";
+import { env } from "@/server/env";
 import { withUser } from "@/server/db/client";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -10,6 +11,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Notice } from "@/components/ui/Toast";
 import StatCard from "@/components/reactbits/StatCard";
 import { CopyButton } from "@/components/app/CopyButton";
+import { ConfirmAction } from "@/components/app/ConfirmAction";
+import { disconnectOutlookAction } from "./_actions";
 import { formatRange, formatRelative, LOCATION_LABELS } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -62,6 +65,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   });
 
   const publicPath = `/${user.slug}`;
+  const publicUrl = `${env().APP_BASE_URL.replace(/\/$/, "")}${publicPath}`;
 
   return (
     <>
@@ -141,16 +145,28 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
                 <a href={`/api/auth/login?reconnect=1&returnTo=${encodeURIComponent("/dashboard")}`} className="inline-flex font-semibold text-primary underline">
                   Reconnect Outlook
                 </a>
-              ) : null}
+              ) : (
+                <div className="pt-1">
+                  <ConfirmAction
+                    action={disconnectOutlookAction}
+                    trigger="Disconnect Outlook"
+                    triggerSize="sm"
+                    triggerVariant="ghost"
+                    title="Disconnect your Outlook calendar?"
+                    description="BTC Scheduling stops reading your busy times and writing new bookings to Outlook, and deletes its stored access. Round-robin skips you and your booking pages cannot be booked reliably until you reconnect. Existing Outlook events are not changed."
+                    confirmLabel="Disconnect"
+                  />
+                </div>
+              )}
             </CardBody>
           </Card>
 
           <Card aria-labelledby="link-h">
             <CardHeader id="link-h" title="Your booking page" />
             <CardBody className="space-y-3">
-              <p className="break-all rounded-md bg-surface-alt px-3 py-2 font-mono text-sm text-navy">{publicPath}</p>
+              <p className="break-all rounded-md bg-surface-alt px-3 py-2 font-mono text-sm text-navy">{publicUrl}</p>
               <div className="flex flex-wrap gap-2">
-                <CopyButton text={publicPath} />
+                <CopyButton text={publicUrl} />
                 <ButtonLink href={publicPath} variant="ghost" size="sm" target="_blank" rel="noopener">
                   Open page
                 </ButtonLink>

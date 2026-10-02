@@ -158,6 +158,30 @@ test.describe("regular user", () => {
     await expect(page.getByText("Member paused.")).toBeVisible();
     await page.getByRole("button", { name: "Unpause Bob Smith" }).click();
     await expect(page.getByText(/Member is active again|pending onboarding/)).toBeVisible();
+    // The pause and unpause are written as admin membership events.
+    await expect(page.getByRole("table", { name: "Membership events" }).getByText("admin").first()).toBeVisible();
+  });
+
+  test("team admin removes a manual member; queue members have no remove button", async ({ page }) => {
+    await go(page, "/teams");
+    await follow(page, page.getByRole("main").getByRole("link", { name: "Funding Advisors" }), /\/teams\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole("button", { name: "Remove Bob Smith" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Remove Carla Diaz" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Remove Carla Diaz from the team?");
+    await dialog.getByRole("button", { name: "Remove member" }).click();
+    await expect(page.getByText("Member removed from the team.")).toBeVisible();
+    await expect(page.getByRole("table", { name: "Team members" }).getByText("carla.diaz@bigthinkcapital.com")).toHaveCount(0);
+  });
+
+  test("event type page shows both public links", async ({ page }) => {
+    await go(page, "/event-types/e1000000-0000-4000-8000-000000000001");
+    const links = page.getByRole("region", { name: "Public links" });
+    await expect(links).toContainText(`${process.env.E2E_APP_BASE_URL ?? "http://localhost:3100"}/ana-lopez/intro-call`);
+    await expect(links).toContainText("/ana-lopez/intro-call/es");
+    await expect(links.getByRole("button", { name: "Copy English link" })).toBeVisible();
+    await expect(links.getByRole("button", { name: "Copy Spanish link" })).toBeVisible();
+    await page.screenshot({ path: path.join(SHOTS, "user-event-type-links.png"), fullPage: false });
   });
 
   test("host can cancel a booking", async ({ page }) => {
@@ -194,31 +218,60 @@ test.describe("admin", () => {
 
   test("team sync: validation, link queue, resolve alert", async ({ page }) => {
     await go(page, "/admin");
-    await follow(page, page.getByRole("link", { name: /^Queues/ }).first(), /\/sync$/);
+    await follow(page, page.getByRole("row", { name: /Funding Advisors/ }).getByRole("link", { name: /^Queues/ }), /\/sync$/);
     await visit(page, page.url(), "admin-team-sync");
     await page.getByLabel("Queue ID").fill("00X123");
     await page.getByRole("button", { name: "Link queue" }).click();
     await expect(page.getByText("Queue IDs start with 00G")).toBeVisible();
-    await page.getByLabel("Queue ID").fill("00G5e000009ZyXwEAB");
+    await page.getByLabel("Queue ID").fill("00GVy00000TRvHdMAL");
     await page.getByRole("button", { name: "Link queue" }).click();
     await expect(page.getByText("Queue linked.")).toBeVisible();
-    await expect(page.getByText("00G5e000009ZyXwEAB", { exact: true }).first()).toBeVisible();
-    const resolve = page.getByRole("button", { name: "Resolve" });
-    if (await resolve.count()) {
-      await resolve.first().click();
-      await expect(page.getByText("Alert resolved.")).toBeVisible();
-    }
+    await expect(page.getByText("00GVy00000TRvHdMAL", { exact: true }).first()).toBeVisible();
+    // A blocked mass removal can be approved for the next snapshot.
+    await page.getByRole("button", { name: "Approve mass removal" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Approve the blocked removals?");
+    await page.screenshot({ path: path.join(SHOTS, "admin-team-sync-approve.png"), fullPage: false });
+    await dialog.getByRole("button", { name: "Approve and resolve" }).click();
+    await expect(page.getByText(/Alert resolved\. The next queue snapshot within 30 minutes/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve mass removal" })).toHaveCount(0);
+    // Without N8N_SIGNING_SECRET the backend refuses to call n8n and says why.
+    await page.getByRole("button", { name: "Sync now" }).click();
+    await expect(page.getByText(/N8N_SIGNING_SECRET|n8n could not be reached|n8n did not accept|Sync requested/)).toBeVisible();
+  });
+
+  test("create a team", async ({ page }) => {
+    await go(page, "/admin");
+    await follow(page, page.getByRole("link", { name: "New team" }), /\/admin\/teams\/new$/);
+    await visit(page, page.url(), "admin-team-new");
+    await page.getByRole("button", { name: "Create team" }).click();
+    await expect(page.getByText("Enter a name.")).toBeVisible();
+    const name = `E2E Team ${Date.now().toString(36)}`;
+    await page.getByLabel("Team name").fill(name);
+    await expect(page.getByLabel("URL slug")).toHaveValue(/^e2e-team-/);
+    await page.getByRole("button", { name: "Create team" }).click();
+    await page.waitForURL(/\/teams\/[0-9a-f-]{36}\?created=1$/);
+    await expect(page.getByText("Team created")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+    await page.getByLabel("Add member by email").fill("new.person@bigthinkcapital.com");
+    await page.getByRole("button", { name: "Add member" }).click();
+    await expect(page.getByText(/new\.person@bigthinkcapital\.com added/)).toBeVisible();
   });
 
   test("team slack: dry run, preview", async ({ page }) => {
     await go(page, "/admin");
-    await follow(page, page.getByRole("link", { name: /^Slack/ }).first(), /\/slack$/);
+    await follow(page, page.getByRole("row", { name: /Funding Advisors/ }).getByRole("link", { name: /^Slack/ }), /\/slack$/);
     await visit(page, page.url(), "admin-team-slack");
     await expect(page.getByText("DRY RUN").first()).toBeVisible();
     await expect(page.getByText("/invite @BTC Scheduler")).toBeVisible();
     await follow(page, page.getByRole("link", { name: /^Preview/ }).first(), /preview=/);
-    await expect(page.getByText(/Would add/)).toBeVisible();
+    // The preview reads the channel's real members from Slack; without a bot token it says so.
+    const preview = page.getByRole("region", { name: /^Preview for/ });
+    await expect(preview).toBeVisible();
+    await expect(preview.getByText(/Would add|Slack is not configured/).first()).toBeVisible();
     await page.screenshot({ path: path.join(SHOTS, "admin-team-slack-preview.png"), fullPage: true });
+    await page.getByRole("button", { name: "Check health" }).first().click();
+    await expect(page.getByText(/Channel is healthy|Slack is not configured|The bot is not in this channel|Slack reported|Slack did not confirm/).first()).toBeVisible();
     await page.getByRole("switch", { name: /Dry run for/ }).first().click();
     await expect(page.getByText("Dry run is off.")).toBeVisible();
   });
@@ -231,10 +284,20 @@ test.describe("admin", () => {
     await page.getByRole("button", { name: "Save Salesforce settings" }).click();
     await expect(page.getByText("Account IDs start with 001")).toBeVisible();
     await page.getByLabel("Lead source (ISO)").fill("0015e00000AbCdEAAV");
+    const task = page.getByRole("switch", { name: "Create a Meeting Booked Task" });
+    await expect(task).toHaveAttribute("aria-checked", "false");
+    await task.click();
     await page.getByRole("button", { name: "Save Salesforce settings" }).click();
     await expect(page.getByText(/Saved\./)).toBeVisible();
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByRole("switch", { name: "Create a Meeting Booked Task" })).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByRole("switch", { name: "Create a Meeting Booked note" })).toHaveAttribute("aria-checked", "false");
 
     await go(page, "/admin/salesforce/jobs?status=problem");
+    await page.getByText("8 attempts").first().click();
+    await expect(page.getByText("HTTP 502").first()).toBeVisible();
+    await page.screenshot({ path: path.join(SHOTS, "admin-sf-jobs-history.png"), fullPage: true });
     const retry = page.getByRole("button", { name: "Retry" });
     if (await retry.count()) {
       await retry.first().click();
@@ -245,6 +308,34 @@ test.describe("admin", () => {
   test("variant salesforce inheritance page", async ({ page }) => {
     await visit(page, "/admin/event-types/e1000000-0000-4000-8000-000000000002/salesforce", "admin-sf-variant");
     await expect(page.getByRole("switch", { name: "Override Salesforce settings" })).toBeVisible();
+  });
+
+  test("overview counts link to the problem lists", async ({ page }) => {
+    await go(page, "/admin");
+    await expect(page.getByText("Dead Salesforce lead jobs")).toBeVisible();
+    await expect(page.getByText("Broken Outlook connections", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("table", { name: "Broken Outlook connections" }).getByText("Bob Smith")).toBeVisible();
+  });
+
+  test("disconnect Outlook from the dashboard", async ({ page }) => {
+    await go(page, "/dashboard");
+    await page.getByRole("button", { name: "Disconnect Outlook" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Disconnect your Outlook calendar?");
+    await page.screenshot({ path: path.join(SHOTS, "admin-dashboard-disconnect.png"), fullPage: false });
+    await dialog.getByRole("button", { name: "Disconnect", exact: true }).click();
+    await expect(page.getByText("Outlook disconnected.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Reconnect Outlook" }).first()).toBeVisible();
+  });
+});
+
+test.describe("not found", () => {
+  test("unknown URLs show the branded page", async ({ page }) => {
+    const res = await page.goto("/no/such/page/here");
+    expect(res?.status()).toBe(404);
+    await expect(page.getByRole("img", { name: "Big Think Capital" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Employee sign-in" })).toBeVisible();
+    await page.screenshot({ path: path.join(SHOTS, "not-found.png"), fullPage: true });
   });
 });
 

@@ -7,6 +7,8 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import StatCard from "@/components/reactbits/StatCard";
+import { ButtonLink } from "@/components/ui/Button";
+import { loadAdminCounts } from "@/server/ui/overview";
 import { formatRelative } from "@/lib/format";
 
 export const metadata: Metadata = { title: "Admin" };
@@ -14,14 +16,7 @@ export const metadata: Metadata = { title: "Admin" };
 export default async function AdminPage() {
   const user = await requireAdmin();
   const data = await withUser(user.id, async (tx) => {
-    const [c] = await tx<{ alerts: number; sf_failed: number; slack_issues: number; broken: number }[]>`
-      select
-        (select count(*)::int from app.sync_alerts where resolved_at is null) as alerts,
-        (select count(*)::int from app.sf_lead_jobs where status in ('failed', 'dead')) as sf_failed,
-        (select count(*)::int from app.team_slack_channels where health in ('bot_not_in_channel', 'error')) as slack_issues,
-        (select count(*)::int from app.calendar_connections cc join app.users u on u.id = cc.user_id and u.is_active
-           where cc.status <> 'healthy') as broken
-    `;
+    const c = await loadAdminCounts(tx);
     const teams = await tx<{ id: string; name: string; membership_source: string; last_synced_at: Date | null; sync_health: string; queues: number; channels: number; open_alerts: number; members: number }[]>`
       select t.id, t.name, t.membership_source, t.last_synced_at, t.sync_health,
              (select count(*)::int from app.team_sf_queues q where q.team_id = t.id) as queues,
@@ -30,28 +25,36 @@ export default async function AdminPage() {
              (select count(*)::int from app.team_members m where m.team_id = t.id and m.status = 'active') as members
       from app.teams t order by t.name
     `;
-    const broken = await tx<{ id: string; name: string; email: string; status: string; broken_at: Date | null }[]>`
-      select u.id, u.name, u.email, cc.status, cc.broken_at
+    const broken = await tx<{ id: string; name: string; email: string; status: string; since: Date | null; last_error: string | null }[]>`
+      select u.id, u.name, u.email, cc.status, coalesce(cc.broken_at, cc.updated_at) as since, cc.last_error
       from app.calendar_connections cc join app.users u on u.id = cc.user_id and u.is_active
-      where cc.status <> 'healthy'
-      order by cc.broken_at desc nulls last
+      where cc.status in ('broken', 'disconnected')
+      order by (cc.status = 'broken') desc, since desc nulls last
       limit 20
     `;
     return { c, teams, broken };
   });
+  const { c } = data;
 
   return (
     <>
       <PageHeader title="Admin" description="Health of integrations and team syncs." />
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-        <StatCard index={0} label="Open sync alerts" value={data.c.alerts} tone={data.c.alerts ? "warning" : "default"} hint="Queue sync safety rail" />
-        <StatCard index={1} label="Failed Salesforce leads" value={data.c.sf_failed} tone={data.c.sf_failed ? "warning" : "default"} href="/admin/salesforce/jobs?status=problem" hint="Failed or dead lead jobs" />
-        <StatCard index={2} label="Slack channel issues" value={data.c.slack_issues} tone={data.c.slack_issues ? "warning" : "default"} hint="Bot missing or errors" />
-        <StatCard index={3} label="Broken Outlook connections" value={data.c.broken} tone={data.c.broken ? "warning" : "default"} hint="Users who must reconnect" />
+        <StatCard index={0} label="Open sync alerts" value={c.openSyncAlerts} tone={c.openSyncAlerts ? "warning" : "default"} hint="Queue sync safety rail and staleness" />
+        <StatCard
+          index={1}
+          label="Dead Salesforce lead jobs"
+          value={c.deadSfLeadJobs}
+          tone={c.deadSfLeadJobs ? "warning" : "default"}
+          href="/admin/salesforce/jobs?status=dead"
+          hint={c.failedSfLeadJobs ? `Need a manual retry. ${c.failedSfLeadJobs} more failed and retrying.` : "Need a manual retry"}
+        />
+        <StatCard index={2} label="Slack channel issues" value={c.slackChannelIssues} tone={c.slackChannelIssues ? "warning" : "default"} hint="Health not ok: unchecked, bot missing or errors" />
+        <StatCard index={3} label="Broken Outlook connections" value={c.brokenOutlookConnections} tone={c.brokenOutlookConnections ? "warning" : "default"} hint="Revoked or expired; users must reconnect" />
       </div>
 
       <Card className="mt-6" aria-labelledby="teams-h">
-        <CardHeader id="teams-h" title="Teams" description="Queue sync and Slack configuration per team." />
+        <CardHeader id="teams-h" title="Teams" description="Queue sync and Slack configuration per team." actions={<ButtonLink href="/admin/teams/new" variant="secondary" size="sm">New team</ButtonLink>} />
         <Table caption="Teams and sync status">
           <THead>
             <TR>
@@ -99,7 +102,7 @@ export default async function AdminPage() {
       </Card>
 
       <Card className="mt-6" aria-labelledby="broken-h">
-        <CardHeader id="broken-h" title="Outlook connections needing attention" description="These users are skipped by round-robin and new bookings cannot be written to their calendars." />
+        <CardHeader id="broken-h" title="Outlook connections needing attention" description="Broken (revoked or expired) and disconnected calendars. These users are skipped by round-robin and new bookings cannot be written to their calendars." />
         {data.broken.length === 0 ? (
           <p className="px-5 py-4 text-sm text-muted">All connected calendars are healthy.</p>
         ) : (
@@ -121,7 +124,10 @@ export default async function AdminPage() {
                   <TD>
                     <StatusBadge status={b.status} />
                   </TD>
-                  <TD>{formatRelative(b.broken_at)}</TD>
+                  <TD>
+                    {formatRelative(b.since)}
+                    {b.status === "broken" && b.last_error ? <p className="mt-1 max-w-sm break-words text-xs text-muted">{b.last_error}</p> : null}
+                  </TD>
                 </TR>
               ))}
             </TBody>

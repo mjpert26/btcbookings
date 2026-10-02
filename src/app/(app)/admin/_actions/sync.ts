@@ -1,27 +1,23 @@
 "use server";
 
-// TODO(integration): delegate to src/server/sync/admin.ts after merge:
-//   linkQueueAction        -> linkQueue(actor, teamId, queueId, queueName)
-//   unlinkQueueAction      -> unlinkQueue(actor, teamId, queueId)
-//   setSyncSettingsAction  -> setTeamSyncSettings(actor, teamId, { membershipSource, removalPolicy, massRemovalThresholdPct })
-//   resolveAlertAction     -> resolveAlert(actor, alertId, { approveMassRemoval })
-//   requestSyncNowAction   -> requestSyncNow(actor, teamId)  (calls the n8n "sync now" webhook)
-// These thin versions do the database work directly with withUser + writeAudit so the
-// internal UI works on its own branch.
-
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireAdmin } from "@/server/auth/session";
-import { withUser } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { createTeam, linkQueue, requestSyncNow, resolveAlert, setTeamSyncSettings, unlinkQueue, TEAM_SLUG_RE } from "@/server/sync/admin";
 import type { ActionState } from "@/lib/form-state";
-import { fail, invalid, isUuid, ok, pgCode, requestIpHash, str } from "@/server/ui/form";
+import { bool, fail, invalid, isUuid, ok, str } from "@/server/ui/form";
+import { adminError, audited } from "@/server/ui/admin";
 import { SF_QUEUE_ID_RE } from "@/lib/ids";
 
-const QUEUE_ID_RE = SF_QUEUE_ID_RE;
+/**
+ * Admin actions for teams and Salesforce Queue sync. Each action parses the form and
+ * delegates to src/server/sync/admin.ts, which authorizes (RLS plus an admin check) and
+ * writes the audit entry in the same transaction as the change.
+ */
 
 const linkSchema = z.object({
-  queueId: z.string().trim().regex(QUEUE_ID_RE, "Queue IDs start with 00G and are 15 or 18 characters."),
+  queueId: z.string().trim().regex(SF_QUEUE_ID_RE, "Queue IDs start with 00G and are 15 or 18 characters."),
   queueName: z.string().trim().max(120).optional(),
 });
 
@@ -30,16 +26,10 @@ export async function linkQueueAction(teamId: string, _prev: ActionState, fd: Fo
   if (!isUuid(teamId)) return fail("Team not found.");
   const parsed = linkSchema.safeParse({ queueId: str(fd, "queueId"), queueName: str(fd, "queueName") || undefined });
   if (!parsed.success) return invalid(parsed.error);
-  const ipHash = await requestIpHash();
   try {
-    await withUser(user.id, async (tx) => {
-      await tx`insert into app.team_sf_queues (team_id, queue_id, queue_name) values (${teamId}, ${parsed.data.queueId}, ${parsed.data.queueName ?? null})`;
-      await writeAudit(tx, { actorUserId: user.id, action: "team.queue_link", entityType: "team", entityId: teamId, after: { queueId: parsed.data.queueId }, ipHash });
-    });
+    await audited(() => linkQueue(user, teamId, parsed.data.queueId, parsed.data.queueName ?? null));
   } catch (err) {
-    if (pgCode(err) === "23505") return fail("That queue is already linked.", { queueId: "Already linked to this team." });
-    if (pgCode(err) === "23503") return fail("Team not found.");
-    throw err;
+    return adminError(err, { queueId: "Check this queue ID." });
   }
   revalidatePath(`/admin/teams/${teamId}/sync`);
   return ok("Queue linked. Members appear after the next sync.");
@@ -48,14 +38,12 @@ export async function linkQueueAction(teamId: string, _prev: ActionState, fd: Fo
 export async function unlinkQueueAction(teamId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
   const user = await requireAdmin();
   const queueId = str(fd, "queueId");
-  if (!isUuid(teamId) || !QUEUE_ID_RE.test(queueId)) return fail("Invalid request.");
-  const ipHash = await requestIpHash();
-  const removed = await withUser(user.id, async (tx) => {
-    const rows = await tx`delete from app.team_sf_queues where team_id = ${teamId} and queue_id = ${queueId} returning id`;
-    if (rows.length) await writeAudit(tx, { actorUserId: user.id, action: "team.queue_unlink", entityType: "team", entityId: teamId, before: { queueId }, ipHash });
-    return rows.length > 0;
-  });
-  if (!removed) return fail("Queue not found.");
+  if (!isUuid(teamId) || !SF_QUEUE_ID_RE.test(queueId)) return fail("Invalid request.");
+  try {
+    await audited(() => unlinkQueue(user, teamId, queueId));
+  } catch (err) {
+    return adminError(err);
+  }
   revalidatePath(`/admin/teams/${teamId}/sync`);
   return ok("Queue unlinked. Queue members are kept and paused by the next sync if no other queue includes them.");
 }
@@ -75,23 +63,13 @@ export async function setSyncSettingsAction(teamId: string, _prev: ActionState, 
     massRemovalThresholdPct: str(fd, "massRemovalThresholdPct"),
   });
   if (!parsed.success) return invalid(parsed.error);
-  const v = parsed.data;
-  const ipHash = await requestIpHash();
-  const done = await withUser(user.id, async (tx) => {
-    const [before] = await tx<{ membership_source: string; removal_policy: string; mass_removal_threshold_pct: number }[]>`
-      select membership_source, removal_policy, mass_removal_threshold_pct from app.teams where id = ${teamId} for update
-    `;
-    if (!before) return false;
-    await tx`
-      update app.teams set membership_source = ${v.membershipSource}, removal_policy = ${v.removalPolicy},
-        mass_removal_threshold_pct = ${v.massRemovalThresholdPct}
-      where id = ${teamId}
-    `;
-    await writeAudit(tx, { actorUserId: user.id, action: "team.sync_settings", entityType: "team", entityId: teamId, before, after: v, ipHash });
-    return true;
-  });
-  if (!done) return fail("Team not found.");
+  try {
+    await audited(() => setTeamSyncSettings(user, teamId, parsed.data));
+  } catch (err) {
+    return adminError(err);
+  }
   revalidatePath(`/admin/teams/${teamId}/sync`);
+  revalidatePath(`/teams/${teamId}`);
   return ok("Sync settings saved.");
 }
 
@@ -99,28 +77,64 @@ export async function resolveAlertAction(_prev: ActionState, fd: FormData): Prom
   const user = await requireAdmin();
   const alertId = str(fd, "alertId");
   if (!isUuid(alertId)) return fail("Invalid alert.");
-  const ipHash = await requestIpHash();
-  const res = await withUser(user.id, async (tx) => {
-    const [a] = await tx<{ team_id: string | null; kind: string }[]>`
-      update app.sync_alerts set resolved_at = now(), resolved_by = ${user.id}
-      where id = ${alertId} and resolved_at is null
-      returning team_id, kind
-    `;
-    if (!a) return null;
-    await writeAudit(tx, { actorUserId: user.id, action: "sync_alert.resolve", entityType: "sync_alert", entityId: alertId, after: { kind: a.kind }, ipHash });
-    return a;
-  });
-  if (!res) return fail("Alert not found or already resolved.");
-  if (res.team_id) revalidatePath(`/admin/teams/${res.team_id}/sync`);
+  const approveMassRemoval = bool(fd, "approveMassRemoval");
+  let res;
+  try {
+    res = await audited(() => resolveAlert(user, alertId, { approveMassRemoval }));
+  } catch (err) {
+    return adminError(err);
+  }
+  if (res.teamId) revalidatePath(`/admin/teams/${res.teamId}/sync`);
   revalidatePath("/admin");
+  if (res.approved) return ok("Alert resolved. The next queue snapshot within 30 minutes will apply the removals.");
   return ok("Alert resolved.");
 }
+
+const SYNC_NOW_ERRORS: Record<string, string> = {
+  no_linked_queues: "Link a Salesforce Queue before requesting a sync.",
+  not_configured: "The n8n signing secret (N8N_SIGNING_SECRET) is not configured, so a sync cannot be requested. The poller still runs every 2 minutes.",
+  network_error: "n8n could not be reached. The poller still runs every 2 minutes.",
+};
 
 export async function requestSyncNowAction(teamId: string): Promise<ActionState> {
   const user = await requireAdmin();
   if (!isUuid(teamId)) return fail("Team not found.");
-  const ipHash = await requestIpHash();
-  await withUser(user.id, (tx) => writeAudit(tx, { actorUserId: user.id, action: "team.sync_requested", entityType: "team", entityId: teamId, ipHash }));
+  let res;
+  try {
+    res = await audited(() => requestSyncNow(user, teamId));
+  } catch (err) {
+    return adminError(err);
+  }
   revalidatePath(`/admin/teams/${teamId}/sync`);
-  return ok("Sync requested. The queue poller runs every 2 minutes and will apply any changes.");
+  if (!res.ok) {
+    return fail(SYNC_NOW_ERRORS[res.error] ?? `n8n did not accept the request (${res.error.replace("http_", "HTTP ")}). The poller still runs every 2 minutes.`);
+  }
+  return ok("Sync requested. n8n sends a fresh queue snapshot within a minute.");
+}
+
+const createTeamSchema = z.object({
+  name: z.string().trim().min(1, "Enter a name.").max(120, "Keep the name under 120 characters."),
+  slug: z.string().trim().toLowerCase().regex(TEAM_SLUG_RE, "Use lowercase letters, numbers and hyphens, starting and ending with a letter or number."),
+  description: z.string().trim().max(1000, "Keep the description under 1000 characters."),
+  membershipSource: z.enum(["manual", "salesforce_queue", "queue_plus_manual"], { message: "Choose a membership source." }),
+});
+
+export async function createTeamAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireAdmin();
+  const parsed = createTeamSchema.safeParse({
+    name: str(fd, "name"),
+    slug: str(fd, "slug"),
+    description: str(fd, "description"),
+    membershipSource: str(fd, "membershipSource"),
+  });
+  if (!parsed.success) return invalid(parsed.error);
+  let team;
+  try {
+    team = await audited(() => createTeam(user, parsed.data));
+  } catch (err) {
+    return adminError(err, { slug: "Choose another slug." });
+  }
+  revalidatePath("/admin");
+  revalidatePath("/teams");
+  redirect(parsed.data.membershipSource === "manual" ? `/teams/${team.id}?created=1` : `/admin/teams/${team.id}/sync?created=1`);
 }

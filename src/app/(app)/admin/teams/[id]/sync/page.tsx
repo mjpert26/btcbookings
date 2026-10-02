@@ -9,15 +9,19 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Notice } from "@/components/ui/Toast";
 import { ActionButton } from "@/components/app/ActionButton";
+import { ConfirmAction } from "@/components/app/ConfirmAction";
+import { MASS_REMOVAL_APPROVAL_MINUTES } from "@/server/sync/admin";
+import { MASS_REMOVAL_ALERT } from "@/server/sync/apply";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { linkQueueAction, requestSyncNowAction, resolveAlertAction, setSyncSettingsAction, unlinkQueueAction } from "../../../_actions/sync";
 import { AddQueueForm, SyncSettingsForm } from "./SyncForms";
 
 export const metadata: Metadata = { title: "Queue sync" };
 
-export default async function TeamSyncPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function TeamSyncPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ created?: string }> }) {
   const user = await requireAdmin();
   const { id } = await params;
+  const sp = await searchParams;
   if (!isUuid(id)) notFound();
 
   const data = await withUser(user.id, async (tx) => {
@@ -61,6 +65,12 @@ export default async function TeamSyncPage({ params }: { params: Promise<{ id: s
           </ActionButton>
         }
       />
+
+      {sp.created ? (
+        <Notice tone="success" title="Team created" className="mb-6">
+          Link the Salesforce Queues that drive this roster. Members appear after the next snapshot.
+        </Notice>
+      ) : null}
 
       {open.length ? (
         <Notice tone="warning" title={`${open.length} open sync alert${open.length === 1 ? "" : "s"}`} className="mb-6">
@@ -148,9 +158,24 @@ export default async function TeamSyncPage({ params }: { params: Promise<{ id: s
                   <TD>{a.resolved_at ? <span className="text-sm text-muted">Resolved {a.resolved_by_name ? `by ${a.resolved_by_name}` : ""}</span> : <Badge tone="danger">Open</Badge>}</TD>
                   <TD>
                     {!a.resolved_at ? (
-                      <ActionButton action={resolveAlertAction} hidden={{ alertId: a.id }} size="sm" pendingLabel="Resolving…">
-                        Resolve
-                      </ActionButton>
+                      <div className="flex flex-wrap items-start gap-2">
+                        {a.kind === MASS_REMOVAL_ALERT ? (
+                          <ConfirmAction
+                            action={resolveAlertAction}
+                            hidden={{ alertId: a.id, approveMassRemoval: "on" }}
+                            trigger="Approve mass removal"
+                            triggerSize="sm"
+                            triggerVariant="primary"
+                            variant="primary"
+                            title="Approve the blocked removals?"
+                            description={`The next queue snapshot within ${MASS_REMOVAL_APPROVAL_MINUTES} minutes is applied even though it exceeds the safety rail: members missing from the linked queues are paused${team.removal_policy === "reassign" ? " and their upcoming bookings are reassigned" : ""}. Check the queue in Salesforce first.`}
+                            confirmLabel="Approve and resolve"
+                          />
+                        ) : null}
+                        <ActionButton action={resolveAlertAction} hidden={{ alertId: a.id }} size="sm" pendingLabel="Resolving…">
+                          {a.kind === MASS_REMOVAL_ALERT ? "Resolve without approving" : "Resolve"}
+                        </ActionButton>
+                      </div>
                     ) : null}
                   </TD>
                 </TR>

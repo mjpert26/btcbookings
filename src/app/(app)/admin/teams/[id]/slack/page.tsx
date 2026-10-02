@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireAdmin } from "@/server/auth/session";
-import { withUser, type Tx } from "@/server/db/client";
+import { withUser } from "@/server/db/client";
+import { previewChannel, SlackAdminError, type PreviewResult } from "@/server/slack/admin";
+import { SlackNotConfiguredError } from "@/server/slack/client";
+import { Notice } from "@/components/ui/Toast";
 import { isUuid } from "@/server/ui/form";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -33,20 +36,25 @@ type Channel = {
 
 type ActionRow = { id: string; channel_config_id: string | null; email: string | null; action: string; dry_run: boolean; outcome: string; error_code: string | null; detail: string | null; created_at: Date };
 
-/** slack_channel_actions is created by the Slack module's migration; it may not exist yet on this branch. */
-async function recentActions(tx: Tx, teamId: string): Promise<ActionRow[] | null> {
-  const [exists] = await tx<{ ok: boolean }[]>`select to_regclass('app.slack_channel_actions') is not null as ok`;
-  if (!exists?.ok) return null;
-  return tx<ActionRow[]>`
-    select a.id, a.channel_config_id, tm.email, a.action, a.dry_run, a.outcome, a.error_code, a.detail, a.created_at
-    from app.slack_channel_actions a left join app.team_members tm on tm.id = a.team_member_id
-    where a.team_id = ${teamId}
-    order by a.created_at desc
-    limit 25
-  `;
-}
+type Preview = { ok: true; result: PreviewResult; names: Map<string, string> } | { ok: false; error: string };
 
-type PreviewMember = { id: string; name: string | null; email: string; status: string; slack_user_id: string | null };
+/** Runs previewChannel (reads the channel's real members from Slack) and resolves member names. */
+async function loadPreview(userId: string, channelConfigId: string): Promise<Preview> {
+  try {
+    const result = await previewChannel(userId, channelConfigId);
+    const ids = [...result.wouldAdd, ...result.wouldRemove, ...result.protectedKept, ...result.unresolved].map((m) => m.teamMemberId);
+    const rows = ids.length
+      ? await withUser(userId, (tx) => tx<{ id: string; name: string }[]>`
+          select tm.id, u.name from app.team_members tm join app.users u on u.id = tm.user_id where tm.id = any(${ids}::uuid[])
+        `)
+      : [];
+    return { ok: true, result, names: new Map(rows.map((r) => [r.id, r.name])) };
+  } catch (err) {
+    if (err instanceof SlackAdminError && err.code !== "forbidden") return { ok: false, error: err.message };
+    if (err instanceof SlackNotConfiguredError) return { ok: false, error: "Slack is not configured on this deployment (SLACK_BOT_TOKEN is not set), so the channel's members cannot be read." };
+    throw err;
+  }
+}
 
 export default async function TeamSlackPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ preview?: string }> }) {
   const user = await requireAdmin();
@@ -62,22 +70,19 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
       select id, channel_id, channel_name, mode, dry_run, protected_slack_user_ids, notify_channel_id, health, last_error, last_checked_at
       from app.team_slack_channels where team_id = ${id} order by created_at
     `;
-    const actions = await recentActions(tx, id);
-    const members = previewId
-      ? await tx<PreviewMember[]>`
-          select tm.id, u.name, tm.email, tm.status, si.slack_user_id
-          from app.team_members tm
-          left join app.users u on u.id = tm.user_id
-          left join app.slack_identities si on si.user_id = tm.user_id
-          where tm.team_id = ${id}
-          order by coalesce(u.name, tm.email::text)
-        `
-      : [];
-    return { team, channels, actions, members };
+    const actions = await tx<ActionRow[]>`
+      select a.id, a.channel_config_id, tm.email, a.action, a.dry_run, a.outcome, a.error_code, a.detail, a.created_at
+      from app.slack_channel_actions a left join app.team_members tm on tm.id = a.team_member_id
+      where a.team_id = ${id}
+      order by a.created_at desc
+      limit 25
+    `;
+    return { team, channels, actions };
   });
   if (!data) notFound();
-  const { team, channels, actions, members } = data;
+  const { team, channels, actions } = data;
   const preview = previewId ? channels.find((c) => c.id === previewId) : undefined;
+  const previewData = preview ? await loadPreview(user.id, preview.id) : null;
 
   return (
     <>
@@ -124,7 +129,7 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
                         <EditChannelDialog
                           action={updateChannelAction.bind(null, c.id)}
                           label={label}
-                          values={{ channelName: c.channel_name ?? "", mode: c.mode, protectedSlackUserIds: c.protected_slack_user_ids.join(", "), notifyChannelId: c.notify_channel_id ?? "" }}
+                          values={{ mode: c.mode, protectedSlackUserIds: c.protected_slack_user_ids.join(", "), notifyChannelId: c.notify_channel_id ?? "" }}
                         />
                       </>
                     }
@@ -183,7 +188,7 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
         </ul>
       )}
 
-      {preview ? <PreviewCard channel={preview} members={members} teamId={team.id} /> : null}
+      {preview && previewData ? <PreviewCard channel={preview} preview={previewData} teamId={team.id} /> : null}
 
       <Card className="mb-6" aria-labelledby="add-h">
         <CardHeader id="add-h" title="Add a channel" />
@@ -194,9 +199,7 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
 
       <Card aria-labelledby="recent-h">
         <CardHeader id="recent-h" title="Recent actions" description="What the Slack sync did or, in dry run, would have done." />
-        {actions === null ? (
-          <p className="px-5 py-4 text-sm text-muted">The action log becomes available once the Slack module is installed.</p>
-        ) : actions.length === 0 ? (
+        {actions.length === 0 ? (
           <p className="px-5 py-4 text-sm text-muted">No actions recorded yet.</p>
         ) : (
           <Table caption="Recent Slack actions">
@@ -231,20 +234,35 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
   );
 }
 
-function PreviewCard({ channel, members, teamId }: { channel: Channel; members: PreviewMember[]; teamId: string }) {
-  const protectedIds = new Set(channel.protected_slack_user_ids);
-  const add = members.filter((m) => m.status === "active" && m.slack_user_id);
-  const remove = channel.mode === "add_and_remove" ? members.filter((m) => m.status === "paused" && m.slack_user_id && !protectedIds.has(m.slack_user_id)) : [];
-  const skipped = members.filter((m) => !m.slack_user_id && m.status !== "pending_onboarding");
-  const keep = members.filter((m) => m.status === "paused" && m.slack_user_id && (channel.mode === "add_only" || protectedIds.has(m.slack_user_id)));
+function PreviewCard({ channel, preview, teamId }: { channel: Channel; preview: Preview; teamId: string }) {
   const label = channel.channel_name ? `#${channel.channel_name}` : channel.channel_id;
+  const close = (
+    <Link href={`/admin/teams/${teamId}/slack`} className="text-sm font-medium text-primary hover:underline">
+      Close preview
+    </Link>
+  );
 
-  const list = (rows: PreviewMember[]) =>
+  if (!preview.ok) {
+    return (
+      <Card className="mb-6 border-danger/40" aria-labelledby="preview">
+        <CardHeader id="preview" title={`Preview for ${label}`} actions={close} />
+        <CardBody>
+          <Notice tone="warning" title="Could not read the channel from Slack">
+            {preview.error}
+          </Notice>
+        </CardBody>
+      </Card>
+    );
+  }
+
+  const { result, names } = preview;
+  const list = (rows: PreviewResult["wouldAdd"]) =>
     rows.length ? (
       <ul className="space-y-1 text-sm">
         {rows.map((m) => (
-          <li key={m.id}>
-            <span className="font-medium text-navy">{m.name ?? m.email}</span> <span className="text-xs text-muted">{m.email}</span>
+          <li key={m.teamMemberId}>
+            <span className="font-medium text-navy">{names.get(m.teamMemberId) ?? m.email}</span> <span className="text-xs text-muted">{m.email}</span>
+            {m.slackUserId ? <span className="ml-1 font-mono text-xs text-muted">{m.slackUserId}</span> : null}
           </li>
         ))}
       </ul>
@@ -257,32 +275,32 @@ function PreviewCard({ channel, members, teamId }: { channel: Channel; members: 
       <CardHeader
         id="preview"
         title={`Preview for ${label}`}
-        description="Based on the current roster and known Slack accounts. Members already in the channel are not invited again; the live sync compares with actual channel members."
-        actions={
-          <Link href={`/admin/teams/${teamId}/slack`} className="text-sm font-medium text-primary hover:underline">
-            Close preview
-          </Link>
-        }
+        description={`Compares the roster with the ${result.channelMemberCount} current member${result.channelMemberCount === 1 ? "" : "s"} of the channel in Slack. Nothing is changed. ${result.unchanged} member${result.unchanged === 1 ? " is" : "s are"} already in the right state.`}
+        actions={close}
       />
       <CardBody className="grid gap-6 md:grid-cols-3">
         <section aria-labelledby="pv-add">
           <h3 id="pv-add" className="mb-2 text-sm font-semibold text-success">
-            Would add ({add.length})
+            Would add ({result.wouldAdd.length})
           </h3>
-          {list(add)}
+          {list(result.wouldAdd)}
         </section>
         <section aria-labelledby="pv-remove">
           <h3 id="pv-remove" className="mb-2 text-sm font-semibold text-danger">
-            Would remove ({remove.length})
+            Would remove ({result.wouldRemove.length})
           </h3>
-          {channel.mode === "add_only" ? <p className="text-sm text-muted">Add-only mode never removes members.</p> : list(remove)}
-          {keep.length && channel.mode === "add_and_remove" ? <p className="mt-2 text-xs text-muted">{keep.length} protected paused member(s) are kept.</p> : null}
+          {channel.mode === "add_only" ? <p className="text-sm text-muted">Add-only mode never removes members.</p> : list(result.wouldRemove)}
+          {result.protectedKept.length ? (
+            <p className="mt-2 text-xs text-muted">
+              {result.protectedKept.length} protected paused member{result.protectedKept.length === 1 ? " is" : "s are"} kept.
+            </p>
+          ) : null}
         </section>
         <section aria-labelledby="pv-skip">
           <h3 id="pv-skip" className="mb-2 text-sm font-semibold text-muted">
-            Skipped, no Slack account found ({skipped.length})
+            Skipped, no Slack account found ({result.unresolved.length})
           </h3>
-          {list(skipped)}
+          {list(result.unresolved)}
         </section>
       </CardBody>
     </Card>

@@ -135,6 +135,7 @@ scripts/local-db.sh start
 pnpm test:unit          # pure logic: slots, DST, round-robin, variants, crypto, payloads
 pnpm test:integration   # real Postgres: RLS, booking races, sync, Slack, Salesforce outbox, Graph (mocked)
 pnpm test:e2e           # Playwright booking flow (Chromium)
+pnpm test:e2e:internal  # internal UI smoke tests against a running app (see docs/internal-ui.md)
 pnpm typecheck && pnpm lint
 ```
 
@@ -145,6 +146,8 @@ Integration tests rebuild the `btc_scheduler_test` database from the migrations 
 - `app_user` has column-level SELECT on `app.bookings` (the encrypted manage token is excluded), so code running under `withUser()` must list columns explicitly; `select *` on `app.bookings` fails.
 - Reserved first path segments (`t`, `b`, `api`, `login`, `dashboard`, ...) cannot be used as user slugs.
 - The e2e suite seeds `btc_e2e_booking` and starts the app on port 3417 (`E2E_PORT` overrides).
+- The internal UI e2e suite needs a running app and a database from `scripts/e2e-internal-db.sh` (seed: `tests/e2e/internal-seed.sql`).
+- Admin and roster server actions delegate to `src/server/{sync,slack,salesforce}/admin.ts`, which authorize and audit; see `docs/internal-ui.md`.
 
 ## Project layout
 

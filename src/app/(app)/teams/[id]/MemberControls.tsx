@@ -20,6 +20,29 @@ export function MemberStatusButton({ action, memberId, status, name }: { action:
   );
 }
 
+/** Removes a manual member after confirmation. Errors (for example upcoming bookings) show in the dialog. */
+export function MemberRemoveButton({ action, memberId, name }: { action: FormAction; memberId: string; name: string }) {
+  return (
+    <Dialog
+      trigger={<>Remove<span className="sr-only"> {name}</span></>}
+      triggerSize="sm"
+      triggerVariant="ghost"
+      title={`Remove ${name} from the team?`}
+      description="The member's round-robin history is deleted and they are removed from the team's Slack channels in add-and-remove mode. Members with upcoming bookings on this team must be paused instead."
+    >
+      <ActionForm action={action} className="flex flex-col gap-4">
+        <input type="hidden" name="memberId" value={memberId} />
+        <div className="flex justify-end gap-2">
+          <DialogCloseButton>Cancel</DialogCloseButton>
+          <SubmitButton variant="danger" pendingLabel="Removing…">
+            Remove member
+          </SubmitButton>
+        </div>
+      </ActionForm>
+    </Dialog>
+  );
+}
+
 export function MemberEditDialog({
   action,
   member,

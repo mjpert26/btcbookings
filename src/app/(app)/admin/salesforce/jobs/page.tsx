@@ -3,6 +3,7 @@ import Link from "next/link";
 import { z } from "zod";
 import { requireAdmin } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
+import { listSfLeadJobs, type SfLeadJobView } from "@/server/salesforce/admin";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
@@ -16,44 +17,40 @@ import { retrySfJobAction } from "../../_actions/salesforce";
 
 export const metadata: Metadata = { title: "Salesforce lead jobs" };
 
+const STATUSES = ["pending", "running", "succeeded", "failed", "dead"] as const;
+
 const filters = z.object({
-  status: z.enum(["pending", "running", "succeeded", "failed", "dead", "problem"]).optional().catch(undefined),
+  status: z.enum([...STATUSES, "problem"]).optional().catch(undefined),
   eventType: z.string().uuid().optional().catch(undefined),
 });
 
-type Job = {
-  id: string;
-  booking_id: string | null;
-  status: string;
-  attempts: number;
-  max_attempts: number;
-  run_at: Date;
-  last_error: string | null;
-  created_at: Date;
-  updated_at: Date;
-  sf_lead_id: string | null;
-  sf_lead_status: string | null;
-  event_type_id: string | null;
-  event_type_name: string | null;
-  invitee_name: string | null;
-};
+const PAGE_LIMIT = 200;
 
 export default async function SfJobsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const user = await requireAdmin();
   const f = filters.parse(await searchParams);
 
-  const jobs = await withUser(user.id, (tx) => tx<Job[]>`
-    select j.id, j.booking_id, j.status, j.attempts, j.max_attempts, j.run_at, j.last_error, j.created_at, j.updated_at,
-           j.sf_lead_id, j.sf_lead_status, j.event_type_id, et.name as event_type_name, b.invitee_name
-    from app.sf_lead_jobs j
-    left join app.event_types et on et.id = j.event_type_id
-    left join app.bookings b on b.id = j.booking_id
-    where true
-      ${f.status === "problem" ? tx`and j.status in ('failed', 'dead')` : f.status ? tx`and j.status = ${f.status}` : tx``}
-      ${f.eventType ? tx`and j.event_type_id = ${f.eventType}` : tx``}
-    order by j.created_at desc
-    limit 200
-  `);
+  const jobs = await listSfLeadJobs(user, {
+    status: f.status === "problem" ? ["failed", "dead"] : f.status ? [f.status] : undefined,
+    eventTypeId: f.eventType,
+    limit: PAGE_LIMIT,
+  });
+
+  // Display names for the listed jobs (the outbox view carries ids only).
+  const bookingIds = [...new Set(jobs.map((j) => j.bookingId).filter((v): v is string => Boolean(v)))];
+  const eventTypeIds = [...new Set(jobs.map((j) => j.eventTypeId).filter((v): v is string => Boolean(v)))];
+  const names = await withUser(user.id, async (tx) => {
+    const invitees = bookingIds.length
+      ? await tx<{ id: string; invitee_name: string }[]>`select id, invitee_name from app.bookings where id = any(${bookingIds}::uuid[])`
+      : [];
+    const types = eventTypeIds.length
+      ? await tx<{ id: string; name: string; language: string }[]>`select id, name, language from app.event_types where id = any(${eventTypeIds}::uuid[])`
+      : [];
+    return {
+      invitee: new Map(invitees.map((b) => [b.id, b.invitee_name])),
+      eventType: new Map(types.map((t) => [t.id, `${t.name} (${t.language.toUpperCase()})`])),
+    };
+  });
 
   return (
     <>
@@ -95,7 +92,7 @@ export default async function SfJobsPage({ searchParams }: { searchParams: Promi
                 <TH>Status</TH>
                 <TH className="text-right">Attempts</TH>
                 <TH>Lead</TH>
-                <TH>Last error</TH>
+                <TH>Last error and history</TH>
                 <TH>
                   <span className="sr-only">Actions</span>
                 </TH>
@@ -103,47 +100,71 @@ export default async function SfJobsPage({ searchParams }: { searchParams: Promi
             </THead>
             <TBody>
               {jobs.map((j) => (
-                <TR key={j.id}>
-                  <TD className="whitespace-nowrap">{formatDateTime(j.created_at, user.timezone)}</TD>
-                  <TD>
-                    {j.booking_id ? (
-                      <Link href={`/bookings/${j.booking_id}`} className="font-medium text-primary hover:underline">
-                        {j.invitee_name ?? "Booking"}
-                      </Link>
-                    ) : (
-                      "—"
-                    )}
-                    {j.event_type_name ? <div className="text-xs text-muted">{j.event_type_name}</div> : null}
-                  </TD>
-                  <TD>
-                    <StatusBadge status={j.status} />
-                    {j.status === "pending" || j.status === "failed" ? <div className="mt-1 text-xs text-muted">Next run {formatDateTime(j.run_at, user.timezone)}</div> : null}
-                  </TD>
-                  <TD className="text-right tabular-nums">
-                    {j.attempts}/{j.max_attempts}
-                  </TD>
-                  <TD>
-                    {j.sf_lead_status ? <StatusBadge status={j.sf_lead_status} /> : null}
-                    {j.sf_lead_id ? <div className="mt-1 font-mono text-xs text-muted">{j.sf_lead_id}</div> : null}
-                  </TD>
-                  <TD className="max-w-xs">
-                    {j.last_error ? <p className="break-words text-xs text-danger">{j.last_error}</p> : <span className="text-muted">—</span>}
-                  </TD>
-                  <TD>
-                    {j.status === "failed" || j.status === "dead" ? (
-                      <ActionButton action={retrySfJobAction} hidden={{ jobId: j.id }} size="sm" pendingLabel="Retrying…">
-                        Retry
-                      </ActionButton>
-                    ) : j.status === "succeeded" ? (
-                      <Badge tone="success">Done</Badge>
-                    ) : null}
-                  </TD>
-                </TR>
+                <JobRow key={j.id} job={j} zone={user.timezone} invitee={j.bookingId ? names.invitee.get(j.bookingId) : undefined} eventType={j.eventTypeId ? names.eventType.get(j.eventTypeId) : undefined} />
               ))}
             </TBody>
           </Table>
         </Card>
       )}
+      {jobs.length === PAGE_LIMIT ? <p className="mt-3 text-sm text-muted">Showing the newest {PAGE_LIMIT} jobs. Filter by status to narrow the list.</p> : null}
     </>
+  );
+}
+
+function JobRow({ job: j, zone, invitee, eventType }: { job: SfLeadJobView; zone: string; invitee?: string; eventType?: string }) {
+  return (
+    <TR>
+      <TD className="whitespace-nowrap">{formatDateTime(new Date(j.createdAt), zone)}</TD>
+      <TD>
+        {j.bookingId ? (
+          <Link href={`/bookings/${j.bookingId}`} className="font-medium text-primary hover:underline">
+            {invitee ?? "Booking"}
+          </Link>
+        ) : (
+          "—"
+        )}
+        {eventType ? <div className="text-xs text-muted">{eventType}</div> : null}
+      </TD>
+      <TD>
+        <StatusBadge status={j.status} />
+        {j.status === "pending" || j.status === "failed" ? <div className="mt-1 text-xs text-muted">Next run {formatDateTime(new Date(j.runAt), zone)}</div> : null}
+      </TD>
+      <TD className="text-right tabular-nums">
+        {j.attempts}/{j.maxAttempts}
+      </TD>
+      <TD>
+        {j.sfLeadStatus ? <StatusBadge status={j.sfLeadStatus} /> : null}
+        {j.sfLeadId ? <div className="mt-1 font-mono text-xs text-muted">{j.sfLeadId}</div> : null}
+      </TD>
+      <TD className="max-w-sm">
+        {j.lastError ? <p className="break-words text-xs text-danger">{j.lastError}</p> : <span className="text-muted">—</span>}
+        {j.attemptLog.length ? (
+          <details className="mt-1">
+            <summary className="cursor-pointer text-xs font-semibold text-primary">
+              {j.attemptLog.length} attempt{j.attemptLog.length === 1 ? "" : "s"}
+            </summary>
+            <ol className="mt-2 space-y-1.5 text-xs">
+              {j.attemptLog.map((a) => (
+                <li key={`${a.attemptNo}-${a.createdAt}`} className="rounded-md bg-surface-alt px-2 py-1.5">
+                  <span className="font-semibold text-navy">#{a.attemptNo}</span> {formatDateTime(new Date(a.createdAt), zone)}
+                  {a.responseCode !== null ? <span className="ml-1 font-mono">HTTP {a.responseCode}</span> : null}
+                  {a.durationMs !== null ? <span className="ml-1 text-muted">{a.durationMs} ms</span> : null}
+                  {a.error ? <p className="mt-0.5 break-words text-danger">{a.error}</p> : <p className="mt-0.5 text-success">OK</p>}
+                </li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
+      </TD>
+      <TD>
+        {j.status === "failed" || j.status === "dead" ? (
+          <ActionButton action={retrySfJobAction} hidden={{ jobId: j.id }} size="sm" pendingLabel="Retrying…">
+            Retry
+          </ActionButton>
+        ) : j.status === "succeeded" ? (
+          <Badge tone="success">Done</Badge>
+        ) : null}
+      </TD>
+    </TR>
   );
 }

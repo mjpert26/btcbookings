@@ -3,39 +3,23 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
-import { service, withUser, type Tx } from "@/server/db/client";
+import { withUser, type Tx } from "@/server/db/client";
 import { writeAudit } from "@/server/audit";
 import { allowedEmailDomains } from "@/server/env";
-import { enqueueAfterCommit } from "@/server/ui/jobs";
+import { addManualMember, manualMemberOverride, removeManualMember } from "@/server/sync/admin";
 import type { ActionState } from "@/lib/form-state";
 import { fail, invalid, isUuid, ok, pgCode, requestIpHash, str } from "@/server/ui/form";
+import { adminError, audited } from "@/server/ui/admin";
+
+/*
+ * Roster changes (add, pause, unpause, remove) go through src/server/sync/admin.ts so that the
+ * membership event, the Slack sync job, any booking reassignment and the audit entry are
+ * written in one transaction, the same way for team admins, global admins and sync.
+ */
 
 async function assertTeamAdmin(tx: Tx, teamId: string): Promise<boolean> {
   const [r] = await tx<{ ok: boolean }[]>`select app.is_team_admin(${teamId}) as ok`;
   return Boolean(r?.ok);
-}
-
-function slackJob(teamId: string, teamMemberId: string, eventId: string) {
-  return {
-    kind: "slack_membership_sync",
-    payload: { teamId, teamMemberId },
-    idempotencyKey: `membership_event:${eventId}`,
-    teamId,
-  };
-}
-
-/**
- * Status for a member who is (re)activated (PLAN 4.5): active only with an app user and a
- * healthy Outlook connection, otherwise pending_onboarding. calendar_connections RLS hides
- * other users' rows from team admins, so only the status column is read with the service
- * connection; callers have already verified team-admin rights inside withUser.
- */
-async function activeStatusFor(tx: Tx, userId: string | null): Promise<"active" | "pending_onboarding"> {
-  if (!userId) return "pending_onboarding";
-  const [u] = await tx<{ id: string }[]>`select id from app.users where id = ${userId} and is_active`;
-  if (!u) return "pending_onboarding";
-  const [cc] = await service()<{ status: string }[]>`select status from app.calendar_connections where user_id = ${userId}`;
-  return cc?.status === "healthy" ? "active" : "pending_onboarding";
 }
 
 const addMemberSchema = z.object({
@@ -57,36 +41,14 @@ export async function addMemberAction(teamId: string, _prev: ActionState, fd: Fo
   if (!allowedEmailDomains().includes(domain)) {
     return fail("Only company email addresses can be added.", { email: `Use an address at ${allowedEmailDomains().join(" or ")}.` });
   }
-  const ipHash = await requestIpHash();
-
-  let job: ReturnType<typeof slackJob> | null = null;
+  let res;
   try {
-    const res = await withUser(user.id, async (tx) => {
-      if (!(await assertTeamAdmin(tx, teamId))) return "forbidden" as const;
-      const [target] = await tx<{ id: string }[]>`select id from app.users where email = ${email}`;
-      const status = await activeStatusFor(tx, target?.id ?? null);
-      const [m] = await tx<{ id: string }[]>`
-        insert into app.team_members (team_id, user_id, email, status, source)
-        values (${teamId}, ${target?.id ?? null}, ${email}, ${status}, 'manual')
-        returning id
-      `;
-      const [ev] = await tx<{ id: string }[]>`
-        insert into app.membership_events (team_id, team_member_id, email, old_status, new_status, source, actor_user_id, detail)
-        values (${teamId}, ${m.id}, ${email}, null, ${status}, 'admin', ${user.id}, ${tx.json({ action: "add_manual_member" })})
-        returning id
-      `;
-      await writeAudit(tx, { actorUserId: user.id, action: "team.member_add", entityType: "team_member", entityId: m.id, after: { teamId, email, status, source: "manual" }, ipHash });
-      job = slackJob(teamId, m.id, ev.id);
-      return status;
-    });
-    if (res === "forbidden") return fail("Only team admins can add members.");
-    if (job) await enqueueAfterCommit([job]);
-    revalidatePath(`/teams/${teamId}`);
-    return ok(res === "active" ? `${email} added as an active member.` : `${email} added. They become active after signing in and connecting Outlook.`);
+    res = await audited(() => addManualMember(user, teamId, email));
   } catch (err) {
-    if (pgCode(err) === "23505") return fail("That person is already on this team.", { email: "Already a member." });
-    throw err;
+    return adminError(err, { email: "Check this address." });
   }
+  revalidatePath(`/teams/${teamId}`);
+  return ok(res.status === "active" ? `${email} added as an active member.` : `${email} added. They become active after signing in and connecting Outlook.`);
 }
 
 const statusSchema = z.object({ memberId: z.string().uuid(), status: z.enum(["active", "paused"]) });
@@ -96,37 +58,36 @@ export async function setMemberStatusAction(teamId: string, _prev: ActionState, 
   const parsed = statusSchema.safeParse({ memberId: str(fd, "memberId"), status: str(fd, "status") });
   if (!parsed.success || !isUuid(teamId)) return fail("Invalid request.");
   const { memberId, status } = parsed.data;
-  const ipHash = await requestIpHash();
-  let job: ReturnType<typeof slackJob> | null = null;
-
-  const res = await withUser(user.id, async (tx) => {
-    if (!(await assertTeamAdmin(tx, teamId))) return "forbidden" as const;
-    const [m] = await tx<{ id: string; email: string; status: string; user_id: string | null }[]>`
-      select id, email, status, user_id from app.team_members where id = ${memberId} and team_id = ${teamId} for update
-    `;
-    if (!m) return "not_found" as const;
-    const next = status === "paused" ? "paused" : await activeStatusFor(tx, m.user_id);
-    if (next === m.status) return "unchanged" as const;
-    await tx`
-      update app.team_members
-      set status = ${next}, paused_reason = ${status === "paused" ? "Paused by team admin" : null}
-      where id = ${memberId}
-    `;
-    const [ev] = await tx<{ id: string }[]>`
-      insert into app.membership_events (team_id, team_member_id, email, old_status, new_status, source, actor_user_id, detail)
-      values (${teamId}, ${memberId}, ${m.email}, ${m.status}, ${next}, 'admin', ${user.id}, ${tx.json({ action: status === "paused" ? "pause" : "unpause" })})
-      returning id
-    `;
-    await writeAudit(tx, { actorUserId: user.id, action: status === "paused" ? "team.member_pause" : "team.member_unpause", entityType: "team_member", entityId: memberId, before: { status: m.status }, after: { status: next }, ipHash });
-    job = slackJob(teamId, memberId, ev.id);
-    return next;
-  });
-  if (res === "forbidden") return fail("Only team admins can change member status.");
-  if (res === "not_found") return fail("Member not found.");
-  if (res === "unchanged") return ok("No change.");
-  if (job) await enqueueAfterCommit([job]);
+  const note = str(fd, "note").slice(0, 500) || undefined;
+  let res;
+  try {
+    res = await audited(() => manualMemberOverride(user, memberId, status, note, { teamId, checkOnboarding: true }));
+  } catch (err) {
+    return adminError(err);
+  }
+  if (!res.changed) return ok("No change.");
   revalidatePath(`/teams/${teamId}`);
-  return ok(res === "paused" ? "Member paused. Round-robin will skip them." : res === "active" ? "Member is active again." : "Member set to pending onboarding until they sign in.");
+  if (res.status === "paused") {
+    return ok(
+      res.reassignJobs
+        ? `Member paused. Round-robin will skip them, and ${res.reassignJobs} upcoming booking${res.reassignJobs === 1 ? " is" : "s are"} being reassigned.`
+        : "Member paused. Round-robin will skip them.",
+    );
+  }
+  return ok(res.status === "active" ? "Member is active again." : "Member set to pending onboarding until they sign in and connect Outlook.");
+}
+
+export async function removeMemberAction(teamId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  const memberId = str(fd, "memberId");
+  if (!isUuid(teamId) || !isUuid(memberId)) return fail("Invalid request.");
+  try {
+    await audited(() => removeManualMember(user, memberId, { teamId }));
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(`/teams/${teamId}`);
+  return ok("Member removed from the team.");
 }
 
 const optionalCap = z

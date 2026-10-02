@@ -16,6 +16,9 @@ export type SfFormValues = {
   ownerFixedId: string;
   fieldMapping: { source: string; field: string }[];
   staticValues: { key: string; value: string }[];
+  createTask: boolean;
+  createNote: boolean;
+  setMeetingBookedFields: boolean;
 };
 
 type Source = { value: string; label: string };
@@ -194,6 +197,35 @@ export function SfSettingsForm({ action, values, sources, readOnly = false }: { 
             &ldquo;Let Salesforce assignment rules decide&rdquo; sends the header <code className="font-mono">Sforce-Auto-Assign: TRUE</code>. The other options send{" "}
             <code className="font-mono">Sforce-Auto-Assign: FALSE</code> so the owner set here is kept.
           </p>
+        </Fieldset>
+
+        <Fieldset
+          legend="Follow-up in Salesforce"
+          description="Optional steps n8n runs after a new Lead is created. They follow the conventions of the existing Meeting Booked writer. All are off by default."
+        >
+          <div className="space-y-4">
+            <Switch
+              name="setMeetingBookedFields"
+              label="Set Meeting Booked fields"
+              description="Status Working - Contacted, Status Detail Meeting Booked, Meeting Booked and the meeting time are set on the new Lead."
+              defaultChecked={values.setMeetingBookedFields}
+              disabled={readOnly}
+            />
+            <Switch
+              name="createTask"
+              label="Create a Meeting Booked Task"
+              description="A Task on the Lead with the meeting start time."
+              defaultChecked={values.createTask}
+              disabled={readOnly}
+            />
+            <Switch
+              name="createNote"
+              label="Create a Meeting Booked note"
+              description='A note on the Lead with the time, host and source "BTC Scheduler - event type".'
+              defaultChecked={values.createNote}
+              disabled={readOnly}
+            />
+          </div>
         </Fieldset>
       </fieldset>
 

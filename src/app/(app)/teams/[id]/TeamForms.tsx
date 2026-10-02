@@ -35,7 +35,7 @@ export function TeamSettingsForm({
         ]}
       />
       <Select
-        label="When a member is removed from the queue"
+        label="When a member leaves the queue or is paused"
         name="removalPolicy"
         defaultValue={initial.removalPolicy}
         options={[

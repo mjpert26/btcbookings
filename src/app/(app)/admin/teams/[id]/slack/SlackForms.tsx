@@ -14,13 +14,23 @@ const MODE_OPTIONS = [
   { value: "add_and_remove", label: "Add and remove: also remove paused members" },
 ];
 
-type ChannelValues = { channelName: string; mode: string; protectedSlackUserIds: string; notifyChannelId: string };
+type ChannelValues = { mode: string; protectedSlackUserIds: string; notifyChannelId: string };
 
 function ChannelFields({ values, includeId }: { values: ChannelValues; includeId: boolean }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      {includeId ? <Input label="Channel ID" name="channelId" required placeholder="C012ABCDEF" hint="In Slack: channel details, then copy the ID at the bottom." autoComplete="off" spellCheck={false} /> : null}
-      <Input label="Channel name (optional)" name="channelName" defaultValue={values.channelName} placeholder="funding-advisors" />
+      {includeId ? (
+        <Input
+          label="Channel ID"
+          name="channelId"
+          required
+          placeholder="C012ABCDEF"
+          hint="In Slack: channel details, then copy the ID at the bottom. The name and health are read from Slack."
+          autoComplete="off"
+          spellCheck={false}
+          wrapperClassName="md:col-span-2"
+        />
+      ) : null}
       <Select label="Mode" name="mode" defaultValue={values.mode} options={MODE_OPTIONS} />
       <Input label="Notify channel ID (optional)" name="notifyChannelId" defaultValue={values.notifyChannelId} placeholder="C0NOTIFY01" hint="Where the bot posts a note about each change." spellCheck={false} />
       <Textarea
@@ -39,7 +49,7 @@ function ChannelFields({ values, includeId }: { values: ChannelValues; includeId
 export function AddChannelForm({ action }: { action: FormAction }) {
   return (
     <ActionForm action={action} className="space-y-4" aria-label="Add a Slack channel">
-      <ChannelFields values={{ channelName: "", mode: "add_only", protectedSlackUserIds: "", notifyChannelId: "" }} includeId />
+      <ChannelFields values={{ mode: "add_only", protectedSlackUserIds: "", notifyChannelId: "" }} includeId />
       <p className="text-sm text-muted">New channels start in dry-run mode.</p>
       <SubmitButton pendingLabel="Adding…">Add channel</SubmitButton>
     </ActionForm>

@@ -9,6 +9,7 @@ import { isLocale, type Locale } from "@/i18n/locales";
 import { listPublicEventTypes, loadPublicEventType, toPublicEventType } from "@/server/booking/load";
 import { slugSchema } from "@/server/booking/validation";
 import type { OwnerRef } from "@/server/booking/types";
+import { brand } from "@/theme/brand";
 import { PublicShell } from "./PublicShell";
 import { BookingFlow } from "./BookingFlow";
 import { Avatar, Card, IconClock, IconLocation } from "./bits";
@@ -142,16 +143,29 @@ export async function OwnerListingPage(props: { kind: "user" | "team"; ownerSlug
 }
 
 /** Same page for every unknown or inactive address, so nothing can be enumerated. */
-export async function PublicNotFound() {
+export async function PublicNotFound({ employeeLink = false }: { employeeLink?: boolean } = {}) {
   const t = await getTranslations({ locale: "en", namespace: "public" });
   return (
     <PublicShell locale="en">
       <Card className="mx-auto max-w-lg p-8 text-center">
-        <h1 className="text-2xl font-bold">{t("notFoundTitle")}</h1>
+        <p aria-hidden="true" className="font-heading text-5xl font-extrabold tracking-tight text-primary">
+          404
+        </p>
+        <h1 className="mt-2 text-2xl font-bold">{t("notFoundTitle")}</h1>
         <p className="mt-2 text-muted">{t("notFoundBody")}</p>
         <div lang="es" className="mt-6 border-t border-border pt-6">
           <p className="text-lg font-semibold text-navy">{t("notFoundAltTitle")}</p>
           <p className="mt-1 text-muted">{t("notFoundAltBody")}</p>
+        </div>
+        <div className="mt-6 flex flex-wrap justify-center gap-3 border-t border-border pt-6 text-sm">
+          <a href={brand.websiteUrl} rel="noopener" className="font-semibold text-primary hover:underline">
+            {brand.websiteUrl.replace(/^https?:\/\/(www\.)?/, "")}
+          </a>
+          {employeeLink ? (
+            <Link href="/dashboard" lang="en" className="font-semibold text-primary hover:underline">
+              Employee sign-in
+            </Link>
+          ) : null}
         </div>
       </Card>
     </PublicShell>

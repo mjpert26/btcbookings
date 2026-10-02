@@ -4,13 +4,14 @@ import { notFound } from "next/navigation";
 import { requireAdmin } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
 import { isUuid } from "@/server/ui/form";
-import { resolveVariant, type EventTypeSfSettingsRow } from "@/server/scheduling/resolve";
+import { resolveVariant } from "@/server/scheduling/resolve";
+import { getSfSettings, type SfSettingsDto } from "@/server/salesforce/admin";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Notice } from "@/components/ui/Toast";
 import { pickLocalized } from "@/i18n/locales";
-import { ISO_FIELD, SF_BUILTIN_SOURCES } from "@/lib/salesforce";
+import { SF_BUILTIN_SOURCES } from "@/lib/salesforce";
 import { loadBundle } from "../../../../event-types/_data";
 import { toggleOverrideAction } from "../../../../event-types/_actions";
 import { GroupToggle } from "../../../../event-types/[id]/variants/GroupToggle";
@@ -19,18 +20,18 @@ import { SfSettingsForm, type SfFormValues } from "./SfSettingsForm";
 
 export const metadata: Metadata = { title: "Salesforce settings" };
 
-function toValues(row: EventTypeSfSettingsRow | null): SfFormValues {
-  const statics = { ...((row?.static_values ?? {}) as Record<string, unknown>) };
-  const iso = typeof statics[ISO_FIELD] === "string" ? (statics[ISO_FIELD] as string) : "";
-  delete statics[ISO_FIELD];
+function toValues(dto: SfSettingsDto | null): SfFormValues {
   return {
-    createSfLead: row?.create_sf_lead ?? false,
-    isoAccountId: iso,
-    campaignId: row?.campaign_id ?? "",
-    ownerMode: row?.owner_mode ?? "assigned_host",
-    ownerFixedId: row?.owner_fixed_id ?? "",
-    fieldMapping: Object.entries(row?.field_mapping ?? {}).map(([source, field]) => ({ source, field: String(field) })),
-    staticValues: Object.entries(statics).map(([key, value]) => ({ key, value: String(value ?? "") })),
+    createSfLead: dto?.createSfLead ?? false,
+    isoAccountId: dto?.isoAccountId ?? "",
+    campaignId: dto?.campaignId ?? "",
+    ownerMode: dto?.ownerMode ?? "assigned_host",
+    ownerFixedId: dto?.ownerFixedId ?? "",
+    fieldMapping: Object.entries(dto?.fieldMapping ?? {}).map(([source, field]) => ({ source, field: String(field) })),
+    staticValues: Object.entries(dto?.staticValues ?? {}).map(([key, value]) => ({ key, value: String(value ?? "") })),
+    createTask: dto?.createTask ?? false,
+    createNote: dto?.createNote ?? false,
+    setMeetingBookedFields: dto?.setMeetingBookedFields ?? false,
   };
 }
 
@@ -51,16 +52,18 @@ export default async function SalesforceSettingsPage({ params }: { params: Promi
   });
   if (!data) notFound();
   const { bundle, parent, counts } = data;
+  const view = await getSfSettings(user, id);
   const resolved = resolveVariant(parent, bundle);
   const et = bundle.eventType;
-  const inherited = resolved.groups.sf_settings === "inherited";
+  const inherited = view.isVariant && !view.overridesParent;
+  const settings = view.effective;
   const sources = [
     ...SF_BUILTIN_SOURCES.map((s) => ({ value: s.value as string, label: s.label as string })),
     ...resolved.questions.map((q) => ({ value: `q:${q.key}`, label: `${pickLocalized(q.label, "en") || q.key} (q:${q.key})` })),
   ];
   // Keep sources that are saved but no longer exist (for example a removed question) visible,
   // so the admin can see and fix them instead of silently losing the mapping.
-  for (const src of Object.keys(resolved.sfSettings?.field_mapping ?? {})) {
+  for (const src of Object.keys(settings?.fieldMapping ?? {})) {
     if (!sources.some((s) => s.value === src)) sources.push({ value: src, label: `${src} (missing question)` });
   }
 
@@ -74,7 +77,7 @@ export default async function SalesforceSettingsPage({ params }: { params: Promi
         title={
           <span className="flex flex-wrap items-center gap-2">
             Salesforce settings <Badge tone="primary">{et.language.toUpperCase()}</Badge>
-            {resolved.sfSettings?.create_sf_lead ? <Badge tone="success">Lead creation on</Badge> : <Badge>Lead creation off</Badge>}
+            {settings?.createSfLead ? <Badge tone="success">Lead creation on</Badge> : <Badge>Lead creation off</Badge>}
           </span>
         }
         description={`${et.name}. Leads are created through n8n with an idempotency key per booking.`}
@@ -107,7 +110,7 @@ export default async function SalesforceSettingsPage({ params }: { params: Promi
       <SfSettingsForm
         key={inherited ? "inherited" : "own"}
         action={saveSfSettingsAction.bind(null, id)}
-        values={toValues(resolved.sfSettings)}
+        values={toValues(settings)}
         sources={sources}
         readOnly={inherited}
       />

@@ -10,7 +10,8 @@ import { ButtonLink } from "@/components/ui/Button";
 import { Notice } from "@/components/ui/Toast";
 import { ActionButton } from "@/components/app/ActionButton";
 import { ConfirmAction } from "@/components/app/ConfirmAction";
-import { CopyButton } from "@/components/app/CopyButton";
+import { PublicLinks, type PublicLink } from "@/components/app/PublicLinks";
+import { env } from "@/server/env";
 import { VARIANT_GROUPS, type VariantGroupKey } from "@/lib/event-types";
 import { EventTypeForm } from "../EventTypeForm";
 import { createSpanishVariantAction, deleteEventTypeAction, updateEventTypeAction } from "../_actions";
@@ -53,6 +54,22 @@ export default async function EditEventTypePage({ params, searchParams }: { para
   const hasSpanish = children.some((c) => c.language === "es");
   const isAdmin = user.role === "admin";
 
+  // Public URLs of the family: the English page at the base path and the Spanish variant at /es.
+  const family = parent ? [parent.eventType, et] : [et, ...children];
+  const baseUrl = env().APP_BASE_URL.replace(/\/$/, "");
+  const links: PublicLink[] = publicPath
+    ? (["en", "es"] as const).map((language) => {
+        const row = family.find((r) => r.language === language);
+        return {
+          language,
+          label: language === "en" ? "English page" : "Spanish page",
+          url: `${baseUrl}${publicPath}${language === "en" ? "" : `/${language}`}`,
+          state: row ? (row.is_active ? "active" : "off") : "missing",
+          current: et.language === language,
+        };
+      })
+    : [];
+
   return (
     <>
       <PageHeader
@@ -71,7 +88,6 @@ export default async function EditEventTypePage({ params, searchParams }: { para
         description={isChild ? "Spanish variant. Grouped settings are inherited from the English page unless overridden." : undefined}
         actions={
           <>
-            {publicPath ? <CopyButton text={publicPath} /> : null}
             {isChild || children.length ? (
               <ButtonLink href={`/event-types/${familyId}/variants`} variant="secondary" size="sm">
                 Compare variants
@@ -100,6 +116,8 @@ export default async function EditEventTypePage({ params, searchParams }: { para
           New variants start turned off so you can translate the name and description first. Turn on Accepting bookings when ready.
         </Notice>
       ) : null}
+
+      {links.length ? <PublicLinks links={links} /> : null}
 
       <EventTypeForm
         action={updateEventTypeAction.bind(null, id)}

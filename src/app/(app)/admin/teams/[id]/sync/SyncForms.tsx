@@ -37,7 +37,7 @@ export function SyncSettingsForm({
         ]}
       />
       <Select
-        label="When a member leaves the queue"
+        label="When a member leaves the queue or is paused"
         name="removalPolicy"
         defaultValue={initial.removalPolicy}
         options={[

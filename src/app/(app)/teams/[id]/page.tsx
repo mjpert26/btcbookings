@@ -12,11 +12,12 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Notice } from "@/components/ui/Toast";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatDateTime } from "@/lib/format";
-import { MemberEditDialog, MemberStatusButton } from "./MemberControls";
+import { MemberEditDialog, MemberRemoveButton, MemberStatusButton } from "./MemberControls";
 import { AddAdminForm, AddMemberForm, TeamSettingsForm } from "./TeamForms";
-import { addMemberAction, addTeamAdminAction, removeTeamAdminAction, saveTeamSettingsAction, setMemberStatusAction, updateMemberAction } from "../_actions";
+import { addMemberAction, addTeamAdminAction, removeMemberAction, removeTeamAdminAction, saveTeamSettingsAction, setMemberStatusAction, updateMemberAction } from "../_actions";
 
 export const metadata: Metadata = { title: "Team" };
 
@@ -50,7 +51,7 @@ type Member = {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ from?: string; to?: string }> }) {
+export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ from?: string; to?: string; created?: string }> }) {
   const user = await requireUser();
   const { id } = await params;
   const sp = await searchParams;
@@ -152,6 +153,12 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
         }
       />
 
+      {sp.created ? (
+        <Notice tone="success" title="Team created" className="mb-6">
+          Add members below, then create the team&apos;s booking pages with New team event type.
+        </Notice>
+      ) : null}
+
       <Card className="mb-6" aria-labelledby="pages-h">
         <CardHeader id="pages-h" title="Team booking pages" />
         <CardBody flush>
@@ -200,10 +207,26 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
             <CardHeader
               id="members-h"
               title="Members"
-              description={`${data.members.filter((m) => m.status === "active").length} active of ${data.members.length}. Queue members are managed by Salesforce sync; pausing here is an admin override.`}
+              description={`${data.members.filter((m) => m.status === "active").length} active of ${data.members.length}. Queue members are managed by Salesforce sync; pausing here is an admin override that sync keeps. Only manual members can be removed.${team.removal_policy === "reassign" ? " Pausing a member reassigns their upcoming bookings on this team." : ""}`}
             />
             <CardBody className="space-y-4">
-              <AddMemberForm action={addMemberAction.bind(null, team.id)} />
+              {team.membership_source === "salesforce_queue" ? (
+                <p className="text-sm text-muted">
+                  This roster mirrors the team&apos;s Salesforce Queues. To add people by hand, set the membership source to queue plus manual
+                  {isAdmin ? (
+                    <>
+                      {" "}
+                      under{" "}
+                      <Link href={`/admin/teams/${team.id}/sync`} className="font-semibold text-primary underline">
+                        Queue sync
+                      </Link>
+                    </>
+                  ) : null}
+                  .
+                </p>
+              ) : (
+                <AddMemberForm action={addMemberAction.bind(null, team.id)} />
+              )}
             </CardBody>
             {data.members.length === 0 ? (
               <EmptyState className="m-5" title="No members yet" />
@@ -259,6 +282,7 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
                           <div className="flex items-center justify-end gap-1">
                             <MemberEditDialog action={updateMemberAction.bind(null, team.id)} member={{ ...m, name }} />
                             <MemberStatusButton action={setMemberStatusAction.bind(null, team.id)} memberId={m.id} status={m.status} name={name} />
+                            {m.source === "manual" ? <MemberRemoveButton action={removeMemberAction.bind(null, team.id)} memberId={m.id} name={name} /> : null}
                           </div>
                         </TD>
                       </TR>

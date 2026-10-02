@@ -29,8 +29,14 @@ export async function PublicShell(props: {
   const tc = await getTranslations({ locale: props.locale, namespace: "common" });
   return (
     <NextIntlClientProvider locale={props.locale} messages={clientMessages(props.locale)}>
-      <div lang={props.locale} className="flex min-h-full flex-1 flex-col">
-        <header className="border-b border-border bg-white">
+      <div lang={props.locale} className="relative isolate flex min-h-full flex-1 flex-col overflow-hidden">
+        {/* Decorative brand blobs (CSS only, so public pages stay fast on phones). */}
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+          <div className="btc-blob -left-32 top-24 size-[28rem] bg-sky/40" />
+          <div className="btc-blob -right-40 top-[40%] size-[32rem] bg-primary/25 [animation-delay:-6s]" />
+          <div className="btc-blob bottom-[-10rem] left-1/3 size-[26rem] bg-[#5cbde6]/30 [animation-delay:-12s]" />
+        </div>
+        <header className="border-b border-border/70 bg-white/80 backdrop-blur-md">
           <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
             <a href={brand.websiteUrl} className="inline-flex shrink-0 items-center" rel="noopener">
               <Image src={brand.logo.light.src} alt={brand.logo.alt} width={120} height={50} priority className="h-9 w-auto" />

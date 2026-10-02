@@ -48,9 +48,10 @@ export async function BookingPage(props: { token: string; isNew: boolean; update
       <Card className="mx-auto max-w-2xl p-6 sm:p-8">
         <div className="mb-6 flex items-start gap-3">
           {state.tone === "success" ? (
-            <span aria-hidden="true" className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-success/10 text-success">
-              <svg viewBox="0 0 20 20" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <path d="M5 10.5l3 3 7-7" strokeLinecap="round" strokeLinejoin="round" />
+            <span aria-hidden="true" className="btc-check-circle relative mt-0.5 inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-success text-white shadow-lg shadow-success/30">
+              <span className="absolute inset-0 animate-ping rounded-full bg-success/30 [animation-iteration-count:2] motion-reduce:hidden" />
+              <svg viewBox="0 0 24 24" className="relative size-6" fill="none" stroke="currentColor" strokeWidth="2.6">
+                <path className="btc-check-path" d="M5 12.5l4.5 4.5L19 7.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </span>
           ) : null}

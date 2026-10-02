@@ -3,7 +3,7 @@ import Link from "next/link";
 import { requireUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { withUser } from "@/server/db/client";
-import { PageHeader } from "@/components/ui/PageHeader";
+import { DashboardHero } from "@/components/app/DashboardHero";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { ButtonLink } from "@/components/ui/Button";
@@ -69,18 +69,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
   return (
     <>
-      <PageHeader
-        title={`Welcome back, ${user.name.split(" ")[0]}`}
-        description="Your schedule at a glance."
-        actions={
-          <>
-            <ButtonLink href="/event-types/new" variant="secondary">
-              New event type
-            </ButtonLink>
-            <ButtonLink href="/bookings">View all bookings</ButtonLink>
-          </>
-        }
-      />
+      <DashboardHero firstName={user.name.split(" ")[0]} timezone={user.timezone} upcomingCount={data.upcoming.length} publicUrl={publicUrl} />
 
       {sp.error === "forbidden" ? (
         <Notice tone="warning" title="You do not have access to that page" className="mb-6">

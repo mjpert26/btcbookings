@@ -1,3 +1,6 @@
+import AuroraBackground from "@/components/reactbits/AuroraBackground";
+import StaggeredText from "@/components/reactbits/StaggeredText";
+import { BTC_AURORA_BANNER } from "@/components/reactbits/aurora-presets";
 import Link from "next/link";
 import { cache } from "react";
 import { notFound } from "next/navigation";
@@ -147,11 +150,17 @@ export async function PublicNotFound({ employeeLink = false }: { employeeLink?: 
   const t = await getTranslations({ locale: "en", namespace: "public" });
   return (
     <PublicShell locale="en">
-      <Card className="mx-auto max-w-lg p-8 text-center">
-        <p aria-hidden="true" className="font-heading text-5xl font-extrabold tracking-tight text-primary">
-          404
-        </p>
-        <h1 className="mt-2 text-2xl font-bold">{t("notFoundTitle")}</h1>
+      <Card className="mx-auto max-w-lg overflow-hidden p-0 text-center">
+        <div className="relative isolate h-40 overflow-hidden bg-gradient-to-br from-[#06223b] via-navy to-primary">
+          <div className="absolute inset-0 -z-10">
+            <AuroraBackground speed={0.8} {...BTC_AURORA_BANNER} />
+          </div>
+          <p aria-hidden="true" className="grid h-full place-items-center font-heading text-7xl font-extrabold tracking-tight text-white drop-shadow-lg">
+            <StaggeredText text="404" segmentBy="chars" delay={120} />
+          </p>
+        </div>
+        <div className="p-8 pt-6">
+        <h1 className="text-2xl font-bold">{t("notFoundTitle")}</h1>
         <p className="mt-2 text-muted">{t("notFoundBody")}</p>
         <div lang="es" className="mt-6 border-t border-border pt-6">
           <p className="text-lg font-semibold text-navy">{t("notFoundAltTitle")}</p>
@@ -166,6 +175,7 @@ export async function PublicNotFound({ employeeLink = false }: { employeeLink?: 
               Employee sign-in
             </Link>
           ) : null}
+        </div>
         </div>
       </Card>
     </PublicShell>

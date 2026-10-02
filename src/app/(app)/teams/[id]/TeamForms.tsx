@@ -19,9 +19,12 @@ export function AddMemberForm({ action }: { action: FormAction }) {
 export function TeamSettingsForm({
   action,
   initial,
+  canEditSyncSettings,
 }: {
   action: FormAction;
   initial: { outlookConflictPolicy: string; removalPolicy: string; massRemovalThresholdPct: number };
+  /** Removal policy and the mass-removal threshold are global-admin settings. */
+  canEditSyncSettings: boolean;
 }) {
   return (
     <ActionForm action={action} className="space-y-4" aria-label="Team settings">
@@ -34,25 +37,43 @@ export function TeamSettingsForm({
           { value: "auto_cancel", label: "Cancel and notify the invitee" },
         ]}
       />
-      <Select
-        label="When a member leaves the queue or is paused"
-        name="removalPolicy"
-        defaultValue={initial.removalPolicy}
-        options={[
-          { value: "keep_bookings", label: "Keep their upcoming bookings" },
-          { value: "reassign", label: "Reassign upcoming bookings by round-robin" },
-        ]}
-      />
-      <Input
-        label="Mass-removal safety threshold (%)"
-        name="massRemovalThresholdPct"
-        type="number"
-        min={1}
-        max={100}
-        defaultValue={initial.massRemovalThresholdPct}
-        hint="If a sync would pause more than this share of active queue members, nothing changes and admins get an alert."
-        wrapperClassName="max-w-xs"
-      />
+      {canEditSyncSettings ? (
+        <>
+          <Select
+            label="When a member leaves the queue or is paused"
+            name="removalPolicy"
+            defaultValue={initial.removalPolicy}
+            options={[
+              { value: "keep_bookings", label: "Keep their upcoming bookings" },
+              { value: "reassign", label: "Reassign upcoming bookings by round-robin" },
+            ]}
+          />
+          <Input
+            label="Mass-removal safety threshold (%)"
+            name="massRemovalThresholdPct"
+            type="number"
+            min={1}
+            max={100}
+            defaultValue={initial.massRemovalThresholdPct}
+            hint="If a sync would pause more than this share of active queue members, nothing changes and admins get an alert."
+            wrapperClassName="max-w-xs"
+          />
+        </>
+      ) : (
+        <dl className="space-y-2 text-sm">
+          <div>
+            <dt className="font-medium text-ink">When a member leaves the queue or is paused</dt>
+            <dd className="text-muted">
+              {initial.removalPolicy === "reassign" ? "Reassign upcoming bookings by round-robin" : "Keep their upcoming bookings"}
+            </dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Mass-removal safety threshold</dt>
+            <dd className="text-muted">{initial.massRemovalThresholdPct}%</dd>
+          </div>
+          <p className="text-xs text-muted">Only global admins can change these.</p>
+        </dl>
+      )}
       <SubmitButton>Save settings</SubmitButton>
     </ActionForm>
   );

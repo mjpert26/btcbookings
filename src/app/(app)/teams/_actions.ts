@@ -138,8 +138,8 @@ export async function saveTeamSettingsAction(teamId: string, _prev: ActionState,
   const user = await requireUser();
   const parsed = teamSettingsSchema.safeParse({
     outlookConflictPolicy: str(fd, "outlookConflictPolicy"),
-    removalPolicy: str(fd, "removalPolicy"),
-    massRemovalThresholdPct: str(fd, "massRemovalThresholdPct"),
+    removalPolicy: str(fd, "removalPolicy") || "keep_bookings",
+    massRemovalThresholdPct: str(fd, "massRemovalThresholdPct") || "50",
   });
   if (!parsed.success) return invalid(parsed.error);
   const v = parsed.data;
@@ -149,9 +149,13 @@ export async function saveTeamSettingsAction(teamId: string, _prev: ActionState,
       select outlook_conflict_policy, removal_policy, mass_removal_threshold_pct from app.teams where id = ${teamId}
     `;
     if (!before) return "not_found" as const;
+    // Removal policy and threshold are global-admin settings (enforced by a database trigger
+    // too); team admins only change the conflict policy.
+    const isAdmin = user.role === "admin";
     const updated = await tx`
-      update app.teams set outlook_conflict_policy = ${v.outlookConflictPolicy}, removal_policy = ${v.removalPolicy},
-        mass_removal_threshold_pct = ${v.massRemovalThresholdPct}
+      update app.teams set outlook_conflict_policy = ${v.outlookConflictPolicy},
+        removal_policy = ${isAdmin ? v.removalPolicy : before.removal_policy}::app.removal_policy,
+        mass_removal_threshold_pct = ${isAdmin ? v.massRemovalThresholdPct : before.mass_removal_threshold_pct}
       where id = ${teamId} returning id
     `;
     if (!updated.length) return "forbidden" as const;

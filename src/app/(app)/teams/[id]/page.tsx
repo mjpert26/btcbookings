@@ -281,7 +281,11 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
                         <TD>
                           <div className="flex items-center justify-end gap-1">
                             <MemberEditDialog action={updateMemberAction.bind(null, team.id)} member={{ ...m, name }} />
-                            <MemberStatusButton action={setMemberStatusAction.bind(null, team.id)} memberId={m.id} status={m.status} name={name} />
+                            {isAdmin || team.membership_source === "manual" || (team.membership_source === "queue_plus_manual" && m.source === "manual") ? (
+                              <MemberStatusButton action={setMemberStatusAction.bind(null, team.id)} memberId={m.id} status={m.status} name={name} />
+                            ) : (
+                              <span className="px-2 text-xs text-muted" title="Queue members are managed by Salesforce sync. Global admins can override.">Synced</span>
+                            )}
                             {m.source === "manual" ? <MemberRemoveButton action={removeMemberAction.bind(null, team.id)} memberId={m.id} name={name} /> : null}
                           </div>
                         </TD>
@@ -300,6 +304,7 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
                 <TeamSettingsForm
                   action={saveTeamSettingsAction.bind(null, team.id)}
                   initial={{ outlookConflictPolicy: team.outlook_conflict_policy, removalPolicy: team.removal_policy, massRemovalThresholdPct: team.mass_removal_threshold_pct }}
+                  canEditSyncSettings={isAdmin}
                 />
               </CardBody>
             </Card>

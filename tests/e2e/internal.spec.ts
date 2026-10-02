@@ -149,14 +149,16 @@ test.describe("regular user", () => {
     await expect(page.getByText("Overridden").first()).toBeVisible();
   });
 
-  test("team admin can pause and unpause a member", async ({ page }) => {
+  test("team admin can pause and unpause a manual member; queue members are sync-managed", async ({ page }) => {
     await go(page, "/teams");
     await follow(page, page.getByRole("main").getByRole("link", { name: "Funding Advisors" }), /\/teams\/[0-9a-f-]{36}$/);
     await visit(page, page.url(), "user-team-admin");
     await expect(page.getByText("Skipped by round-robin until reconnected").first()).toBeVisible();
-    await page.getByRole("button", { name: "Pause Bob Smith" }).click();
+    // Bob is a queue member: team admins cannot pause him (global admins can).
+    await expect(page.getByRole("button", { name: "Pause Bob Smith" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Pause Carla Diaz" }).click();
     await expect(page.getByText("Member paused.")).toBeVisible();
-    await page.getByRole("button", { name: "Unpause Bob Smith" }).click();
+    await page.getByRole("button", { name: "Unpause Carla Diaz" }).click();
     await expect(page.getByText(/Member is active again|pending onboarding/)).toBeVisible();
     // The pause and unpause are written as admin membership events.
     await expect(page.getByRole("table", { name: "Membership events" }).getByText("admin").first()).toBeVisible();

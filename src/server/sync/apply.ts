@@ -204,6 +204,9 @@ export type PushInput = {
 
 export type PushResult = { linked: boolean; teams: TeamSyncSummary[] };
 
+const PUSH_REMOVAL_WINDOW_MIN = 10;
+const PUSH_REMOVAL_MIN_BUDGET = 3;
+
 export async function applyPushChange(input: PushInput): Promise<PushResult> {
   const sql = service();
   const queueId = normalizeQueueId(input.queueId);
@@ -262,6 +265,35 @@ async function applyPushToTeam(tx: Tx, teamId: string, queueId: string, input: P
     update app.team_sf_queues set last_member_count = cardinality(last_member_emails)
     where team_id = ${teamId} and queue_id = ${queueId} and last_member_count is not null
   `;
+
+  // Push removals bypass the snapshot safety rail one at a time, so cap how many a team can
+  // take in a short window. Past the budget, removals wait for the poller, which applies its
+  // full safety rail. Protects against a looping Flow or a leaked push credential.
+  if (change?.kind === "remove") {
+    const [{ recent, active }] = await tx<{ recent: number; active: number }[]>`
+      select
+        (select count(*)::int from app.membership_events
+          where team_id = ${teamId} and source = 'push' and new_status = 'paused'
+            and created_at > now() - make_interval(mins => ${PUSH_REMOVAL_WINDOW_MIN})) as recent,
+        (select count(*)::int from app.team_members
+          where team_id = ${teamId} and source = 'queue' and status in ('active', 'pending_onboarding')) as active
+    `;
+    const budget = Math.max(PUSH_REMOVAL_MIN_BUDGET, Math.floor((active * team.mass_removal_threshold_pct) / 100 / 2));
+    if (recent >= budget) {
+      const [open] = await tx<{ id: string }[]>`
+        select id from app.sync_alerts
+        where team_id = ${teamId} and kind = 'push_removal_budget_exceeded' and resolved_at is null limit 1
+      `;
+      if (!open) {
+        await tx`
+          insert into app.sync_alerts (team_id, kind, detail)
+          values (${teamId}, 'push_removal_budget_exceeded',
+                  ${tx.json({ recentPushRemovals: recent, budget, windowMinutes: PUSH_REMOVAL_WINDOW_MIN })})
+        `;
+      }
+      return { ...base, status: "blocked", reason: "push_removal_budget_exceeded" };
+    }
+  }
 
   const applied = change
     ? await applyChanges(tx, team, [change], { source: "push", detail: { eventId: input.eventId, queueId } })

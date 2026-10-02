@@ -148,6 +148,12 @@ export async function verifyIdToken(idToken: string, expectedNonce: string): Pro
 export function claimsFromPayload(payload: JWTPayload, expectedNonce: string): IdentityClaims {
   if (payload.nonce !== expectedNonce) throw new Error("ID token nonce mismatch");
   if (payload.tid !== env().ENTRA_TENANT_ID) throw new Error("ID token is from another tenant");
+  // Guest (B2B) users carry an idp claim naming their home tenant or provider; members of
+  // the BTC tenant do not. Guests must never sign in, even with an allowed email domain.
+  if (payload.idp !== undefined && !String(payload.idp).includes(env().ENTRA_TENANT_ID)) {
+    throw new Error("Guest accounts cannot sign in");
+  }
+  if (payload.acct === 1) throw new Error("Guest accounts cannot sign in");
   const oid = String(payload.oid ?? "");
   const preferred = String(payload.preferred_username ?? "");
   const email = String(payload.email ?? preferred).toLowerCase();

@@ -59,3 +59,17 @@ describe("windowsToIana", () => {
     expect(windowsToIana("Mars Standard Time")).toBe("America/New_York");
   });
 });
+
+describe("claimsFromPayload", () => {
+  it("accepts members and rejects guests, other tenants and nonce mismatches", async () => {
+    const { claimsFromPayload } = await import("@/server/auth/entra");
+    const tid = process.env.ENTRA_TENANT_ID!;
+    const base = { nonce: "n", tid, oid: "o", email: "a@bigthinkcapital.com", name: "A" };
+    expect(claimsFromPayload(base, "n").email).toBe("a@bigthinkcapital.com");
+    expect(() => claimsFromPayload({ ...base, idp: "https://sts.windows.net/other-tenant/" }, "n")).toThrow(/Guest/);
+    expect(() => claimsFromPayload({ ...base, idp: "live.com" }, "n")).toThrow(/Guest/);
+    expect(() => claimsFromPayload({ ...base, acct: 1 }, "n")).toThrow(/Guest/);
+    expect(() => claimsFromPayload({ ...base, tid: "x" }, "n")).toThrow(/tenant/);
+    expect(() => claimsFromPayload(base, "other")).toThrow(/nonce/);
+  });
+});

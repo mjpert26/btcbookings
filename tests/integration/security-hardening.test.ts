@@ -112,3 +112,26 @@ describe("offboarding", () => {
     expect(row.is_active).toBe(false);
   });
 });
+
+describe("queue push removal budget", () => {
+  it("defers a burst of push removals to the poller and raises one alert", async () => {
+    const { applyPushChange } = await import("@/server/sync/apply");
+    const [team] = await sql`insert into app.teams (name, slug, membership_source) values ('Q', 'q-budget', 'salesforce_queue') returning id`;
+    const queueId = "00GVy00000TRvHdMAL";
+    await sql`insert into app.team_sf_queues (team_id, queue_id) values (${team.id}, ${queueId})`;
+    for (let i = 0; i < 6; i++) {
+      await sql`insert into app.team_members (team_id, email, source, status) values (${team.id}, ${`m${i}@bigthinkcapital.com`}, 'queue', 'active')`;
+    }
+    const results = [];
+    for (let i = 0; i < 6; i++) {
+      const r = await applyPushChange({ eventId: `e${i}`, action: "removed", queueId, email: `m${i}@bigthinkcapital.com` });
+      results.push(r.teams[0].status);
+    }
+    expect(results.filter((s) => s === "applied")).toHaveLength(3);
+    expect(results.filter((s) => s === "blocked")).toHaveLength(3);
+    const [{ n }] = await sql`select count(*)::int as n from app.team_members where team_id = ${team.id} and status = 'active'`;
+    expect(n).toBe(3);
+    const alerts = await sql`select kind from app.sync_alerts where team_id = ${team.id}`;
+    expect(alerts.map((a) => a.kind)).toEqual(["push_removal_budget_exceeded"]);
+  });
+});

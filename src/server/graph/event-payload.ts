@@ -18,6 +18,8 @@ export type EventPayloadInput = {
   /** Other hosts added as required attendees (collective events). */
   coHosts: { name: string; email: string }[];
   answers: { label: string; value: string }[];
+  /** Invitee reschedule/cancel link (absolute URL), when available. */
+  manageUrl?: string | null;
 };
 
 export function escapeHtml(s: string): string {
@@ -40,8 +42,6 @@ function locationDisplay(i: EventPayloadInput): string {
   }
 }
 
-/** Placeholder replaced by the booking module once manage links are rendered into the body. */
-export const MANAGE_LINK_PLACEHOLDER = "<!-- btc-manage-link -->";
 
 export function buildEventBody(i: EventPayloadInput): string {
   const rows = [
@@ -57,7 +57,9 @@ export function buildEventBody(i: EventPayloadInput): string {
   return [
     `<p>${escapeHtml(i.eventTypeName)} booked through BTC Scheduler.</p>`,
     `<table>${table}</table>`,
-    `<p>${MANAGE_LINK_PLACEHOLDER}Need to make a change? Use the reschedule or cancel link in the confirmation email.</p>`,
+    i.manageUrl
+      ? `<p>Need to make a change? <a href="${escapeHtml(i.manageUrl)}">Reschedule or cancel</a>.</p>`
+      : `<p>Need to make a change? Use the reschedule or cancel link in the confirmation email.</p>`,
   ].join("\n");
 }
 

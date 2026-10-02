@@ -109,8 +109,8 @@ export async function enqueueHostNotices(db: Db, bookingId: string, userIds: str
  * Enqueues Salesforce lead creation when the EFFECTIVE settings (after variant
  * inheritance) enable it, and marks the booking's lead status as pending.
  *
- * TODO(integrator): the salesforce module exports an equivalent enqueue helper. Switch to
- * it once both branches are merged so there is one owner of sf_lead_create semantics.
+ * The settings come from resolveVariant (computed once for the booking), which applies
+ * the same inheritance rule as getEffectiveSfSettings in src/server/salesforce/settings.ts.
  */
 export async function enqueueSfLeadIfEnabled(
   db: Db,
@@ -118,7 +118,7 @@ export async function enqueueSfLeadIfEnabled(
   resolved: Pick<ResolvedEventType, "sfSettings">,
 ): Promise<boolean> {
   if (!resolved.sfSettings?.create_sf_lead) return false;
-  await db`update app.bookings set sf_lead_status = 'pending' where id = ${bookingId}`;
+  await db`update app.bookings set sf_lead_status = 'pending' where id = ${bookingId} and sf_lead_id is null`;
   const payload: JobPayloads["sf_lead_create"] = { bookingId };
   await enqueue(db, {
     kind: "sf_lead_create",

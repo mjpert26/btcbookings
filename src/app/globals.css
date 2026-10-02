@@ -37,19 +37,22 @@
   --font-heading: var(--font-montserrat), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
-html {
-  color-scheme: light;
-}
+/* Base element styles live in the base layer so Tailwind utilities can override them. */
+@layer base {
+  html {
+    color-scheme: light;
+  }
 
-body {
-  background: var(--btc-surface-alt);
-  color: var(--btc-ink);
-  font-family: var(--font-sans);
-}
+  body {
+    background: var(--btc-surface-alt);
+    color: var(--btc-ink);
+    font-family: var(--font-sans);
+  }
 
-h1, h2, h3, h4 {
-  font-family: var(--font-heading);
-  color: var(--btc-navy);
+  h1, h2, h3, h4 {
+    font-family: var(--font-heading);
+    color: var(--btc-navy);
+  }
 }
 
 /* Visible focus for keyboard users everywhere. */
@@ -66,4 +69,42 @@ h1, h2, h3, h4 {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* React Bits adaptations (see src/components/reactbits). */
+@keyframes btc-letter-flip {
+  from {
+    transform: translateZ(-0.5lh) rotateX(0deg);
+  }
+  to {
+    transform: translateZ(-0.5lh) rotateX(90deg);
+  }
+}
+
+.btc-letter-flip {
+  transform: translateZ(-0.5lh);
+  animation-name: btc-letter-flip;
+  animation-timing-function: cubic-bezier(0.34, 1.2, 0.64, 1);
+  animation-fill-mode: none;
+}
+
+@keyframes btc-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.btc-fade-up {
+  animation: btc-fade-up 500ms ease-out both;
+}
+
+/* Dotted grid texture used by stat cards (React Bits "stats-4" block). */
+.btc-dot-grid {
+  background-image: radial-gradient(circle at 1px 1px, rgb(11 61 102 / 0.09) 1px, transparent 0);
+  background-size: 14px 14px;
 }

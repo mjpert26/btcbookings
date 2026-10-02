@@ -14,7 +14,8 @@
     "test:e2e": "playwright test",
     "db:local": "scripts/local-db.sh start",
     "db:migrate": "tsx scripts/migrate.ts",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "test:e2e:internal": "playwright test -c playwright.internal.config.ts"
   },
   "dependencies": {
     "@react-email/components": "^1.0.12",

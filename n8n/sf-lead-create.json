@@ -1,0 +1,1066 @@
+{
+  "name": "BTC Scheduler - SF Lead Create",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "btc-scheduler/lead",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "3e225ecf-0b68-5fe8-8e73-d4cd40486aa9",
+      "name": "Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "7790ad81-3b7d-5746-8990-7a3df524985e"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifies the HMAC signature over \"<timestamp>.<raw body>\" and validates the payload.\n// Fails closed: a missing raw body, a stale timestamp or a bad signature returns 401.\nconst crypto = require('crypto');\nconst SECRET = $env.BTC_SCHEDULER_SIGNING_SECRET;\nconst WINDOW_SECONDS = 300;\nconst item = $input.first();\nconst reject = (httpCode, error, retryable = false) => [{ json: {\n  ok: false, httpCode, response: { status: 'error', leadId: null, error, retryable, problems: [] }\n} }];\n\nif (!SECRET) return reject(503, 'signing secret not configured', true);\n\nconst h = item.json.headers || {};\nconst ts = String(h['x-btc-timestamp'] || '');\nconst sig = String(h['x-btc-signature'] || '');\n\nlet raw = null;\ntry {\n  if (item.binary && item.binary.data) {\n    raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n  }\n} catch (e) {\n  raw = null;\n}\nif (raw === null) return reject(401, 'unauthorized');\n\nconst now = Math.floor(Date.now() / 1000);\nif (!/^\\d{9,11}$/.test(ts) || Math.abs(now - Number(ts)) > WINDOW_SECONDS) return reject(401, 'unauthorized');\nconst expected = Buffer.from('sha256=' + crypto.createHmac('sha256', SECRET).update(ts + '.' + raw, 'utf8').digest('hex'));\nconst given = Buffer.from(sig);\nif (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return reject(401, 'unauthorized');\n\nlet p;\ntry { p = JSON.parse(raw); } catch (e) { return reject(422, 'invalid JSON body'); }\n\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst FIELD = /^[A-Za-z][A-Za-z0-9_]*(__c)?$/;\nconst sfId = (v, prefixes) => typeof v === 'string' && /^[A-Za-z0-9]{15}([A-Za-z0-9]{3})?$/.test(v) && prefixes.some(x => v.startsWith(x));\nconst problems = [];\nif (!p || typeof p !== 'object') problems.push('body');\nelse {\n  if (p.source !== 'btc-scheduler') problems.push('source');\n  if (!UUID.test(String(p.bookingId || ''))) problems.push('bookingId');\n  if (p.idempotencyKey !== p.bookingId) problems.push('idempotencyKey');\n  if (String(h['idempotency-key'] || '') !== String(p.bookingId)) problems.push('Idempotency-Key header');\n  const lead = p.lead;\n  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) problems.push('lead');\n  else {\n    for (const [k, v] of Object.entries(lead)) {\n      if (!FIELD.test(k) || ['id', 'ownerid'].includes(k.toLowerCase())) problems.push('lead.' + k);\n      if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) problems.push('lead.' + k);\n    }\n    if (!String(lead.LastName || '').trim()) problems.push('lead.LastName');\n    if (!String(lead.Company || '').trim()) problems.push('lead.Company');\n  }\n  const o = p.owner || {};\n  if (o.mode === 'assigned_host') {\n    if (!/^[^\\s@\\\\]+@[^\\s@'\\\\]+\\.[^\\s@'\\\\]+$/.test(String(o.ownerEmail || ''))) problems.push('owner.ownerEmail');\n  } else if (o.mode === 'fixed') {\n    if (!sfId(o.ownerId, ['005', '00G'])) problems.push('owner.ownerId');\n  } else if (o.mode !== 'assignment_rules') problems.push('owner.mode');\n  if (typeof p.autoAssign !== 'boolean') problems.push('autoAssign');\n  if (p.campaignId != null && !sfId(p.campaignId, ['701'])) problems.push('campaignId');\n  if (!p.meeting || Number.isNaN(Date.parse(p.meeting.startUtc))) problems.push('meeting.startUtc');\n  if (!p.options || typeof p.options !== 'object') p.options = {};\n}\nif (problems.length) return reject(422, 'invalid payload: ' + [...new Set(problems)].join(', '));\n\nconst esc = s => String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\nreturn [{ json: {\n  ok: true,\n  bookingId: p.bookingId,\n  redisKey: 'btc-scheduler:lead:' + p.bookingId,\n  ownerEmailEsc: p.owner.mode === 'assigned_host' ? esc(p.owner.ownerEmail) : null,\n  sf_base: 'https://bigthink.my.salesforce.com/services/data/v60.0',\n  payload: p\n} }];\n"
+      },
+      "id": "aee6bc8d-e042-5a0e-8942-81195f262628",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "95b9c96a-4db8-547c-9d3b-02e2ad58352f",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "c8693f80-0eda-56d0-83e0-5a6dda41ad87",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "cached",
+        "key": "={{ $('Verify Signature').first().json.redisKey }}",
+        "keyType": "automatic",
+        "options": {}
+      },
+      "id": "8016d76d-31e1-5e98-836e-8df45db22fad",
+      "name": "Idempotency Lookup",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        660,
+        200
+      ],
+      "credentials": {
+        "redis": {
+          "id": "4i3m00SkLAc8SzwE",
+          "name": "api n8n redis"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ed09890c-acde-5869-bdd9-66ab48ac3797",
+              "leftValue": "={{ $json.cached }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "5f0fc1d3-8278-50ee-a6e4-036e6507cbb2",
+      "name": "Already Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A result for this booking is already stored: answer without touching Salesforce.\nconst raw = $input.first().json.cached;\nlet c = null;\ntry { c = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { c = null; }\nif (!c || !c.status) {\n  return [{ json: { httpCode: 422, response: {\n    status: 'error', leadId: null, error: 'unreadable idempotency record in Redis', retryable: false, problems: []\n  } } }];\n}\nconst duplicate = c.status === 'duplicate';\nreturn [{ json: { httpCode: 200, response: {\n  status: duplicate ? 'duplicate' : 'existing',\n  leadId: c.leadId || null,\n  matchedRecordId: c.matchedRecordId || null,\n  error: duplicate ? (c.error || 'duplicate') : null,\n  retryable: false,\n  problems: []\n} } }];\n"
+      },
+      "id": "29f84f41-9f76-5e8b-a638-b69e359870a7",
+      "name": "Replay Stored Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "7wen5ULQg7DBlCvC",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "9dff2cd2-83d7-5a4f-87ad-893601ba8c4a",
+      "name": "Get SF Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ebc7b9dd-30d7-56fd-b19d-f93b849775ea",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.owner.mode }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "assigned_host"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "43d1956e-6cd0-5d35-b1a2-d326ccad8c3a",
+      "name": "Owner By Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/query?q={{ encodeURIComponent(`SELECT Id, Name FROM User WHERE Email = '${$('Verify Signature').first().json.ownerEmailEsc}' AND IsActive = true LIMIT 1`) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "0c2b0530-149e-510d-8bae-26e21dffd9f0",
+      "name": "Resolve Owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1540,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds the Lead insert body: payload fields, the resolved owner, and (optionally) the\n// Meeting Booked status fields that the shared Calendly writer sets.\nconst v = $('Verify Signature').first().json;\nconst p = v.payload;\nconst problems = [];\nconst lead = { ...p.lead };\nlet ownerId = null;\n\nif (p.owner.mode === 'fixed') ownerId = p.owner.ownerId;\nif (p.owner.mode === 'assigned_host') {\n  let r = null;\n  try { r = $('Resolve Owner').first().json; } catch (e) { r = null; }\n  const rec = r && Array.isArray(r.records) ? r.records[0] : null;\n  if (rec && rec.Id) ownerId = rec.Id;\n  else if (r && r.error) problems.push('Owner lookup failed; Lead created with the default owner');\n  else problems.push('Assigned host is not an active Salesforce user; Lead created with the default owner');\n}\nif (ownerId) lead.OwnerId = ownerId;\n\nif (p.options.setMeetingBookedFields === true) {\n  Object.assign(lead, {\n    Status: 'Working - Contacted',\n    csbs__Status_Detail__c: 'Meeting Booked',\n    Meeting_booked_time__c: p.meeting.startUtc,\n    Meeting_Booked__c: true,\n    Do_Not_Contact__c: false\n  });\n}\n\nreturn [{ json: {\n  sf_base: v.sf_base,\n  lead,\n  ownerId,\n  // Always sent. TRUE only in assignment_rules mode; FALSE otherwise so that Lead\n  // assignment rules never re-route a Lead whose owner the app already chose.\n  autoAssignHeader: p.autoAssign === true ? 'TRUE' : 'FALSE',\n  problems\n} }];\n"
+      },
+      "id": "10cb6cdd-ed98-54f0-85c8-d10fac7cddd9",
+      "name": "Build Lead Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.sf_base }}/sobjects/Lead",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Sforce-Auto-Assign",
+              "value": "={{ $json.autoAssignHeader }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.lead) }}"
+      },
+      "id": "77f0a571-38d3-5440-8a43-a60ebb97f159",
+      "name": "Create Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1980,
+        300
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Classifies the Lead insert response into the response contract.\n// Duplicate sources in this org:\n//   * Standard duplicate rules: errorCode DUPLICATES_DETECTED with duplicateResult.matchResults.\n//   * DuplicateCheckHandler (LeadDuplicateTrigger, before insert): addError() surfaces as\n//     FIELD_CUSTOM_VALIDATION_EXCEPTION with \"Duplicate <reason> detected ...\" or the\n//     \"active Opportunities\" warning. Both messages link to the matched record Id.\n// Messages are reduced to a reason so record names and owner names are not passed back.\nconst r = $input.first().json;\nconst build = $('Build Lead Body').first().json;\nconst code = Number(r.statusCode || 0);\nconst body = r.body;\nconst errs = Array.isArray(body) ? body : (body && body.errorCode ? [body] : []);\nconst ID = /\\b(?:00Q|001|003|006)[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?\\b/g;\nconst RETRYABLE = ['UNABLE_TO_LOCK_ROW', 'REQUEST_LIMIT_EXCEEDED', 'SERVER_UNAVAILABLE', 'INVALID_SESSION_ID'];\nlet out;\n\nif (code >= 200 && code < 300 && body && body.id) {\n  out = { status: 'created', leadId: body.id, matchedRecordId: null, error: null, retryable: false };\n} else if (!code) {\n  // No HTTP response (timeout or network error). The insert may or may not have happened;\n  // a retry is then caught by duplicate detection on the invitee's email.\n  const e = r.error;\n  const msg = (e && (e.message || e.description || (typeof e === 'string' ? e : ''))) || r.message || 'no response';\n  out = { status: 'error', leadId: null, matchedRecordId: null, error: 'Salesforce request failed: ' + String(msg).slice(0, 300), retryable: true };\n} else {\n  const ruleDup = errs.find(e => e.errorCode === 'DUPLICATES_DETECTED');\n  const apexDup = errs.find(e => /duplicate/i.test(String(e.message || '')));\n  if (ruleDup || apexDup) {\n    let ids = [];\n    let reason;\n    if (ruleDup) {\n      const dr = ruleDup.duplicateResult || {};\n      for (const m of (dr.matchResults || [])) {\n        for (const rec of (m.matchRecords || [])) if (rec.record && rec.record.Id) ids.push(rec.record.Id);\n      }\n      reason = 'Duplicate rule matched' + (dr.duplicateRule ? ' (' + dr.duplicateRule + ')' : '');\n    } else {\n      const msg = String(apexDup.message || '');\n      ids = msg.match(ID) || [];\n      const m = msg.match(/Duplicate (\\w+) detected\\. This record matches existing (\\w+)/);\n      reason = m ? 'Duplicate ' + m[1] + ' detected; matches an existing ' + m[2]\n        : /active Opportunities/i.test(msg) ? 'Possible duplicate: active Opportunity for this merchant'\n        : 'Duplicate check rejected the Lead';\n    }\n    out = {\n      status: 'duplicate',\n      leadId: ids.find(i => i.startsWith('00Q')) || null,\n      matchedRecordId: ids[0] || null,\n      error: reason,\n      retryable: false\n    };\n  } else {\n    const first = errs[0] || {};\n    const errorCode = first.errorCode || ('HTTP_' + code);\n    out = {\n      status: 'error', leadId: null, matchedRecordId: null,\n      error: (errorCode + ': ' + String(first.message || r.statusMessage || '')).slice(0, 500),\n      retryable: code >= 500 || code === 429 || RETRYABLE.includes(errorCode)\n    };\n  }\n}\nreturn [{ json: { ...out, problems: build.problems || [] } }];\n"
+      },
+      "id": "c015c642-5bb8-5805-baf5-bcbb465d50f2",
+      "name": "Classify Lead Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "04d846f7-e4ff-5c54-9619-cd89950ed5e6",
+              "leftValue": "={{ ['created', 'duplicate'].includes($json.status) }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "2fc48c07-0d56-57a8-a09c-a9e5f0b1eed9",
+      "name": "Remember Result?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $('Verify Signature').first().json.redisKey }}",
+        "value": "={{ JSON.stringify({ status: $json.status, leadId: $json.leadId, matchedRecordId: $json.matchedRecordId, error: $json.error }) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 2592000
+      },
+      "id": "e8cfd42f-6a41-5d87-a5b3-0bcdf890d42f",
+      "name": "Remember Result",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        200
+      ],
+      "credentials": {
+        "redis": {
+          "id": "4i3m00SkLAc8SzwE",
+          "name": "api n8n redis"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ad464a9b-9a93-5985-8477-648c39d0b2cd",
+              "leftValue": "={{ $('Classify Lead Response').first().json.status }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "created"
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "b547a4af-702a-5d92-a8e1-5338b404e2cb",
+      "name": "Lead Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f70f56cf-3702-523f-8a3b-62521c7d352e",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.campaignId || '' }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "53876629-f51c-5248-8c05-04774cd21ca5",
+      "name": "Add To Campaign?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/sobjects/CampaignMember",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ CampaignId: $('Verify Signature').first().json.payload.campaignId, LeadId: $('Classify Lead Response').first().json.leadId }) }}"
+      },
+      "id": "c38a53ab-5790-5c55-9548-d0cec3f6582a",
+      "name": "Add Campaign Member",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3300,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "04f2113b-a10b-5a9a-af80-b59c40692970",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createNote === true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "be21d851-b9d0-5023-8581-cd16b9de0fc7",
+      "name": "Create Note?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3520,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Same note format as the shared Calendly writer. Salesforce rejects ContentNote bodies\n// that are not valid HTML, so & < > \" are escaped.\nconst p = $('Verify Signature').first().json.payload;\nconst esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');\nconst when = new Date(p.meeting.startUtc).toLocaleString('en-US', {\n  timeZone: 'America/New_York', weekday: 'short', month: '2-digit', day: '2-digit',\n  year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true\n});\nconst lines = [\n  '<b>Meeting Booked</b>',\n  'Time: ' + esc(when) + ' ET',\n  'Agent: ' + esc(p.meeting.hostName || p.meeting.hostEmail || 'Unassigned'),\n  'Source: BTC Scheduler - ' + esc(p.meeting.eventTypeName)\n];\nreturn [{ json: {\n  Title: 'Meeting Booked',\n  Content: Buffer.from(lines.join('<br>'), 'utf8').toString('base64')\n} }];\n"
+      },
+      "id": "1b5223f2-0080-5980-9869-48c0a3ae8b34",
+      "name": "Encode Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/sobjects/ContentNote",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ Title: $json.Title, Content: $json.Content }) }}"
+      },
+      "id": "99b1393d-dc81-5f8b-8f0b-4b9e61229302",
+      "name": "Create ContentNote",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        3960,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/sobjects/ContentDocumentLink",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ContentDocumentId: ($json.body && $json.body.id) || null, LinkedEntityId: $('Classify Lead Response').first().json.leadId, ShareType: 'V', Visibility: 'InternalUsers' }) }}"
+      },
+      "id": "923643dd-2217-5e5c-b153-dd0b01197b63",
+      "name": "Link Note To Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        4180,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "18c561fa-f3ee-5127-a9e0-6c03d9b95b48",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createTask === true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a0eefbeb-4ac9-589f-9dcb-6df5fa27993c",
+      "name": "Create Task?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4400,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/sobjects/Task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Sforce-Auto-Assign",
+              "value": "FALSE"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.fromEntries(Object.entries({ OwnerId: $('Build Lead Body').first().json.ownerId, Subject: 'Meeting Booked', WhoId: $('Classify Lead Response').first().json.leadId, rcsfl__call_start_time__c: $('Verify Signature').first().json.payload.meeting.startUtc }).filter(([k, v]) => v !== null && v !== ''))) }}"
+      },
+      "id": "1e2afbc9-975c-58a6-9686-d818f9ed6f1a",
+      "name": "Create Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        4620,
+        0
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Inspects every Salesforce and Redis write after the Lead insert. Follow-up failures do\n// not change the status (the Lead exists) but are always reported in problems[].\nconst c = $('Classify Lead Response').first().json;\nconst p = $('Verify Signature').first().json.payload;\nconst ran = n => { try { return $(n).first().json; } catch (e) { return null; } };\nconst ok = r => !!r && !r.error && Number(r.statusCode) >= 200 && Number(r.statusCode) < 300;\nconst problems = [...(c.problems || [])];\n\nconst lookup = ran('Idempotency Lookup');\nif (lookup && lookup.error) problems.push('Redis idempotency lookup failed; continued without it');\n\nif (c.status === 'created' || c.status === 'duplicate') {\n  const saved = ran('Remember Result');\n  if (!saved || saved.error) problems.push('Redis idempotency record not saved');\n}\nif (c.status === 'created') {\n  if (p.campaignId && !ok(ran('Add Campaign Member'))) problems.push('Campaign member create failed');\n  if (p.options.createNote === true) {\n    if (!ok(ran('Create ContentNote'))) problems.push('Note create failed');\n    else if (!ok(ran('Link Note To Lead'))) problems.push('Note link failed');\n  }\n  if (p.options.createTask === true && !ok(ran('Create Task'))) problems.push('Task create failed');\n}\n\nconst httpCode = c.status === 'error' ? (c.retryable ? 503 : 422) : 200;\nreturn [{ json: { httpCode, response: {\n  status: c.status,\n  leadId: c.leadId || null,\n  matchedRecordId: c.matchedRecordId || null,\n  error: c.error || null,\n  retryable: c.status === 'error' ? c.retryable === true : false,\n  problems\n} } }];\n"
+      },
+      "id": "ac96b1d6-397d-57ea-b624-8dcf7d55c2c0",
+      "name": "Final Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {
+          "responseCode": "={{ $json.httpCode }}"
+        }
+      },
+      "id": "9853c18d-b727-504e-9909-9d43a7234850",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5060,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## BTC Scheduler - Salesforce lead create\n\nCalled only by BTC Scheduler's sf_lead_create job. Contract: docs/n8n-workflows.md.\n\n- Auth: HMAC-SHA256 over `<X-BTC-Timestamp>.<raw body>` with $env.BTC_SCHEDULER_SIGNING_SECRET, 5 minute window. Fails closed (401).\n- Idempotency: Redis `btc-scheduler:lead:<bookingId>` (30 days). Hit returns existing/duplicate without calling Salesforce.\n- Sforce-Auto-Assign is ALWAYS sent: TRUE only for owner mode assignment_rules, FALSE otherwise.\n- Create Lead is never retried here (could double insert). The app retries the whole request.\n- Duplicates: DUPLICATES_DETECTED and DuplicateCheckHandler addError() map to status duplicate.\n- Every write after the insert is inspected and reported in problems[].\n- Optional steps mirror 'Calendly - SF Meeting Booked (shared)'. Do not point both at the same booking.",
+        "height": 360,
+        "width": 620
+      },
+      "id": "98510378-1e67-51b1-b9d3-70661a5831ee",
+      "name": "Sticky Contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -260
+      ]
+    }
+  ],
+  "connections": {
+    "Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Idempotency Lookup": {
+      "main": [
+        [
+          {
+            "node": "Already Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Processed?": {
+      "main": [
+        [
+          {
+            "node": "Replay Stored Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get SF Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replay Stored Result": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get SF Token": {
+      "main": [
+        [
+          {
+            "node": "Owner By Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Owner By Email?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Owner",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Lead Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Owner": {
+      "main": [
+        [
+          {
+            "node": "Build Lead Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Lead Body": {
+      "main": [
+        [
+          {
+            "node": "Create Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Lead": {
+      "main": [
+        [
+          {
+            "node": "Classify Lead Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Lead Response": {
+      "main": [
+        [
+          {
+            "node": "Remember Result?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Result?": {
+      "main": [
+        [
+          {
+            "node": "Remember Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Result": {
+      "main": [
+        [
+          {
+            "node": "Lead Created?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Created?": {
+      "main": [
+        [
+          {
+            "node": "Add To Campaign?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add To Campaign?": {
+      "main": [
+        [
+          {
+            "node": "Add Campaign Member",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Note?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Campaign Member": {
+      "main": [
+        [
+          {
+            "node": "Create Note?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Note?": {
+      "main": [
+        [
+          {
+            "node": "Encode Note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Encode Note": {
+      "main": [
+        [
+          {
+            "node": "Create ContentNote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create ContentNote": {
+      "main": [
+        [
+          {
+            "node": "Link Note To Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Link Note To Lead": {
+      "main": [
+        [
+          {
+            "node": "Create Task?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Task?": {
+      "main": [
+        [
+          {
+            "node": "Create Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Task": {
+      "main": [
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Result": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

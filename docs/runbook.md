@@ -94,11 +94,15 @@ where kind = 'graph_event_upsert' and status = 'dead'
 
 ## Slack removals blocked by workspace settings
 
+<a id="slack-removals-blocked"></a>
+
 **Symptoms.** A channel shows health `error` with "Workspace settings block removals by apps" (`restricted_action`). Invites still work.
 
 **Cause.** The Slack workspace setting that controls who can remove members from channels does not allow the BTC Scheduler app to remove people.
 
 **Fix.** A Slack Workspace Owner or Org Admin changes the setting: **Workspace settings > Permissions > Channel management > People who can remove members from public/private channels**. Allow the setting that includes apps (or "Everyone except guests" with the bot as a member). On Enterprise Grid this may be locked at the org level. After the change, open the channel on the team's Slack page and select **Full resync**.
+
+If BTC does not want apps to remove members, switch the channel to **add only** mode instead.
 
 Other per-channel states:
 

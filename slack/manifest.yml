@@ -1,0 +1,49 @@
+# Slack app manifest for BTC Scheduler.
+# Create the app at https://api.slack.com/apps -> Create New App -> From a manifest.
+# See docs/slack-setup.md for the full procedure.
+#
+# The app only calls the Web API with its bot token. It has no event subscriptions,
+# slash commands, interactivity or redirect URLs.
+#
+# Enterprise Grid: set settings.org_deploy_enabled to true before creating the app if it
+# should be installed at the organization level and then added to individual workspaces.
+# Leave it false for a standard (single workspace) install.
+_metadata:
+  major_version: 2
+  minor_version: 1
+
+display_information:
+  name: BTC Scheduler
+  description: Keeps team Slack channels in sync with BTC Scheduler team membership.
+  long_description: >-
+    BTC Scheduler manages booking pages and team rosters for Big Think Capital. Team
+    membership is driven by Salesforce Queues. This app adds active team members to the
+    Slack channels linked to their team and, for channels configured to do so, removes
+    members who are paused or removed from the team. Slack membership never changes team
+    membership. New channel links start in dry-run mode, where the app only records what
+    it would do.
+  background_color: "#0b2545"
+
+features:
+  bot_user:
+    # The manifest reference lists a-z, 0-9, "-", "_" and "." as allowed characters. If
+    # manifest validation rejects this value, use "btc-scheduler" instead.
+    display_name: BTC Scheduler
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - channels:read       # conversations.info / conversations.members on public channels
+      - groups:read         # conversations.info / conversations.members on private channels
+      - channels:manage     # conversations.invite / conversations.kick on public channels
+      - groups:write        # conversations.invite / conversations.kick on private channels
+      - channels:join       # conversations.join so the bot can join public channels itself
+      - users:read          # companion of users:read.email
+      - users:read.email    # users.lookupByEmail
+      - chat:write          # admin notices via chat.postMessage (bot must be in the notice channel)
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

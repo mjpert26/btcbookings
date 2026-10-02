@@ -73,3 +73,27 @@ describe("claimsFromPayload", () => {
     expect(() => claimsFromPayload(base, "other")).toThrow(/nonce/);
   });
 });
+
+describe("env", () => {
+  it("strips a trailing slash from APP_BASE_URL and reports missing variables by name", async () => {
+    const mod = await import("@/server/env");
+    const saved = { ...process.env };
+    try {
+      process.env.APP_BASE_URL = "https://btcbookings.vercel.app/";
+      mod.resetEnvCache();
+      expect(mod.env().APP_BASE_URL).toBe("https://btcbookings.vercel.app");
+      delete process.env.DATABASE_URL;
+      delete process.env.CRON_SECRET;
+      mod.resetEnvCache();
+      expect(() => mod.env()).toThrow(mod.EnvConfigError);
+      try {
+        mod.env();
+      } catch (e) {
+        expect((e as InstanceType<typeof mod.EnvConfigError>).variables).toEqual(expect.arrayContaining(["DATABASE_URL", "CRON_SECRET"]));
+      }
+    } finally {
+      process.env = saved;
+      mod.resetEnvCache();
+    }
+  });
+});

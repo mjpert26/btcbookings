@@ -7,7 +7,8 @@ import { z } from "zod";
  */
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  APP_BASE_URL: z.string().url(),
+  // Trailing slashes are stripped so "${APP_BASE_URL}/api/..." never produces "//".
+  APP_BASE_URL: z.string().url().transform((v) => v.replace(/\/+$/, "")),
   DATABASE_URL: z.string().min(1),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
 
@@ -44,14 +45,22 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
+/** Thrown when required configuration is missing or invalid. The message lists variable names only. */
+export class EnvConfigError extends Error {
+  constructor(readonly variables: string[]) {
+    super(`Invalid server environment. Missing or invalid: ${variables.join(", ")}`);
+    this.name = "EnvConfigError";
+  }
+}
+
 let cached: Env | null = null;
 
 export function env(): Env {
   if (cached) return cached;
   const parsed = schema.safeParse(process.env);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`Invalid server environment: ${issues}`);
+    // Only variable names are reported, never values.
+    throw new EnvConfigError([...new Set(parsed.error.issues.map((i) => i.path.join(".")))]);
   }
   cached = parsed.data;
   return cached;

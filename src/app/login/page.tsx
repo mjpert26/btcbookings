@@ -36,6 +36,10 @@ const ERRORS: Record<string, { title: string; body: string }> = {
     title: "The sign-in request was invalid",
     body: "The response from Microsoft was incomplete. Please start the sign-in again.",
   },
+  server_config: {
+    title: "Sign-in is not available yet",
+    body: "BTC Scheduling is not fully configured on the server, so sign-in cannot start. An administrator needs to finish setup (database and required settings). Details are in the server logs.",
+  },
   no_id_token: {
     title: "Microsoft did not confirm your identity",
     body: "No identity token was returned. Please try again or contact IT.",

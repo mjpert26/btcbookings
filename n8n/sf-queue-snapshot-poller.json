@@ -1,0 +1,675 @@
+{
+  "name": "BTC Scheduler - SF Queue Snapshot Poller",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "22460710-2914-5fbb-99b1-c0310df64ca5",
+      "name": "Every 2 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "btc-scheduler/queue-sync-now",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "ac47afe4-43d2-5e93-8755-245d6e60b884",
+      "name": "Sync Now Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        300
+      ],
+      "webhookId": "f73e7a6e-d5c6-5723-aefb-2dce8e64eedf"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verifies the HMAC signature on a \"sync now\" request from BTC Scheduler.\n// Headers: X-BTC-Timestamp (unix seconds), X-BTC-Signature: sha256=<hex HMAC of \"<timestamp>.<raw body>\">.\n// Secret: $env.BTC_SCHEDULER_N8N_SIGNING_SECRET (equals N8N_SIGNING_SECRET in the app).\nconst crypto = require('crypto');\nconst secret = $env.BTC_SCHEDULER_N8N_SIGNING_SECRET;\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst ts = String(headers['x-btc-timestamp'] || '');\nconst sig = String(headers['x-btc-signature'] || '');\n\nlet valid = false;\nlet reason = 'missing';\nif (!secret) {\n  reason = 'not_configured';\n} else if (ts && sig && item.binary && item.binary.data) {\n  const raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n  const now = Math.floor(Date.now() / 1000);\n  if (!/^\\d{9,11}$/.test(ts) || Math.abs(now - Number(ts)) > 300) {\n    reason = 'stale';\n  } else {\n    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(ts + '.' + raw, 'utf8').digest('hex');\n    const a = Buffer.from(expected, 'utf8');\n    const b = Buffer.from(sig, 'utf8');\n    valid = a.length === b.length && crypto.timingSafeEqual(a, b);\n    reason = valid ? 'ok' : 'bad_signature';\n  }\n}\nreturn [{ json: { valid, reason } }];\n"
+      },
+      "id": "0df48605-bd45-5797-89b9-4c6e06e9d59d",
+      "name": "Verify Sync Now Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bebc8449-609b-57b6-9d55-af91bb8d2480",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "77e126a6-2248-598d-8215-46265f17e28a",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"unauthorized\", reason: $json.reason }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "f0da7299-8b4e-5611-9597-9571a05fd566",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -540,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"status\":\"accepted\"}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "5d6101c8-31ca-5206-9ec2-38996bc721b5",
+      "name": "Respond 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Signs the GET /api/sync/linked-queues request (HMAC over an empty body).\nconst crypto = require('crypto');\nconst secret = $env.BTC_SCHEDULER_SIGNING_SECRET;\nif (!secret) throw new Error('BTC_SCHEDULER_SIGNING_SECRET is not set');\nif (!$env.BTC_SCHEDULER_BASE_URL) throw new Error('BTC_SCHEDULER_BASE_URL is not set');\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.', 'utf8').digest('hex');\nreturn [{ json: { timestamp, signature } }];\n"
+      },
+      "id": "e81ab51e-3c50-5651-bca0-2b9546b580bb",
+      "name": "Sign Linked Queues Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.BTC_SCHEDULER_BASE_URL }}/api/sync/linked-queues",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-BTC-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-BTC-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "5a023afd-b1c8-5a77-9a80-20668d241bb0",
+      "name": "Get Linked Queues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -100,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "521439dc-13a7-5e99-87b6-0362942bd614",
+              "leftValue": "={{ ($json.queueIds || []).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "32814b54-d536-53c0-bd5c-187fef780a1a",
+      "name": "Has Linked Queues?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds the GroupMember query for every linked queue.\nconst queueIds = $('Get Linked Queues').first().json.queueIds || [];\nfor (const id of queueIds) {\n  if (!/^00G[A-Za-z0-9]{15}$/.test(id)) throw new Error('Unexpected queue id from BTC Scheduler: ' + id);\n}\nconst inList = queueIds.map((id) => \"'\" + id + \"'\").join(',');\nreturn [{ json: {\n  queueIds,\n  soql: 'SELECT GroupId, UserOrGroupId FROM GroupMember WHERE GroupId IN (' + inList + ')',\n} }];\n"
+      },
+      "id": "9cc22326-52b5-566d-a9c6-85cd5be0810c",
+      "name": "Build Queue Member Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "7wen5ULQg7DBlCvC",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "f732dce1-c79c-573c-9c95-582c216f05cc",
+      "name": "Get SF Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}/services/data/v60.0/query?q={{ encodeURIComponent($('Build Queue Member Query').first().json.soql) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').item.json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}{{ $response.body.nextRecordsUrl }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.done !== false || !$response.body.nextRecordsUrl }}",
+              "limitPagesFetched": true,
+              "maxRequests": 100
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "664bc75c-de43-533c-9689-064ad1ee1825",
+      "name": "Query Queue Members",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        780,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Splits queue members into users (005...) and nested groups (00G...).\n// Note: GroupMember has no User relationship, so User.Email cannot be selected here;\n// user details come from the \"Query Users\" node.\nconst queueIds = $('Build Queue Member Query').first().json.queueIds;\nconst records = $input.all().flatMap((page) => page.json.records || []);\nconst direct = [];\nconst nestedParents = {};\nfor (const r of records) {\n  const id = String(r.UserOrGroupId || '');\n  if (id.startsWith('005')) {\n    direct.push({ queueId: r.GroupId, userId: id });\n  } else if (id.startsWith('00G')) {\n    (nestedParents[id] = nestedParents[id] || []).push(r.GroupId);\n  }\n}\nconst nestedGroupIds = Object.keys(nestedParents);\nconst quote = (ids) => ids.map((id) => \"'\" + id + \"'\").join(',');\nconst allGroups = queueIds.concat(nestedGroupIds);\nreturn [{ json: {\n  queueIds,\n  direct,\n  nestedParents,\n  nestedGroupIds,\n  nestedSoql: nestedGroupIds.length\n    ? 'SELECT GroupId, UserOrGroupId FROM GroupMember WHERE GroupId IN (' + quote(nestedGroupIds) + ')'\n    : '',\n  userSoql: 'SELECT Id, Email, IsActive FROM User WHERE Id IN (SELECT UserOrGroupId FROM GroupMember WHERE GroupId IN (' + quote(allGroups) + '))',\n} }];\n"
+      },
+      "id": "7db136ca-f6e9-5241-ad4f-aae94f6b0b27",
+      "name": "Collect Members",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6aead590-18ea-5c67-b6cb-c516890a5491",
+              "leftValue": "={{ $json.nestedGroupIds.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "b2f5a431-ec3a-565b-b26d-2febfafff9ce",
+      "name": "Has Nested Groups?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}/services/data/v60.0/query?q={{ encodeURIComponent($('Collect Members').first().json.nestedSoql) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}{{ $response.body.nextRecordsUrl }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.done !== false || !$response.body.nextRecordsUrl }}",
+              "limitPagesFetched": true,
+              "maxRequests": 100
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "7062c154-bfbc-550b-8a76-7fc00423209b",
+      "name": "Query Nested Group Members",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1440,
+        -140
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "url": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}/services/data/v60.0/query?q={{ encodeURIComponent($('Collect Members').first().json.userSoql) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "responseContainsNextURL",
+              "nextURL": "={{ ($env.SF_INSTANCE_URL || 'https://bigthink.my.salesforce.com') }}{{ $response.body.nextRecordsUrl }}",
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ $response.body.done !== false || !$response.body.nextRecordsUrl }}",
+              "limitPagesFetched": true,
+              "maxRequests": 100
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "2142c1b5-39c3-582e-b434-c9495df43854",
+      "name": "Query Users",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1660,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds and signs the snapshot. Every linked queue is included, with an empty member list\n// when it has no members, so the app can apply its empty-queue safety rail.\nconst crypto = require('crypto');\nconst secret = $env.BTC_SCHEDULER_SIGNING_SECRET;\nif (!secret) throw new Error('BTC_SCHEDULER_SIGNING_SECRET is not set');\n\nconst collected = $('Collect Members').first().json;\nconst users = {};\nfor (const page of $('Query Users').all()) {\n  for (const r of page.json.records || []) users[r.Id] = r;\n}\n\n// One level of nested public groups is expanded. Deeper groups, roles and territories are skipped.\nlet nestedRecords = [];\nif (collected.nestedGroupIds.length > 0) {\n  nestedRecords = $('Query Nested Group Members').all().flatMap((page) => page.json.records || []);\n}\n\nconst byQueue = {};\nfor (const q of collected.queueIds) byQueue[q] = {};\nconst add = (queueId, userId) => {\n  const u = users[userId];\n  if (!u || !u.Email || !byQueue[queueId]) return;\n  byQueue[queueId][userId] = { sfUserId: userId, email: u.Email, isActive: u.IsActive === true };\n};\nfor (const d of collected.direct) add(d.queueId, d.userId);\nlet skippedNested = 0;\nfor (const r of nestedRecords) {\n  const id = String(r.UserOrGroupId || '');\n  if (!id.startsWith('005')) { skippedNested++; continue; }\n  for (const queueId of collected.nestedParents[r.GroupId] || []) add(queueId, id);\n}\n\nconst snapshot = {\n  snapshotId: crypto.randomUUID(),\n  takenAt: new Date().toISOString(),\n  queues: collected.queueIds.map((queueId) => ({ queueId, members: Object.values(byQueue[queueId]) })),\n};\nconst rawBody = JSON.stringify(snapshot);\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + rawBody, 'utf8').digest('hex');\nreturn [{ json: {\n  rawBody,\n  timestamp,\n  signature,\n  nonce: snapshot.snapshotId,\n  queueCount: snapshot.queues.length,\n  memberCount: snapshot.queues.reduce((n, q) => n + q.members.length, 0),\n  skippedNested,\n} }];\n"
+      },
+      "id": "c4fd74e0-eaa9-53fa-8a7d-f5961ae848b0",
+      "name": "Build Signed Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BTC_SCHEDULER_BASE_URL }}/api/sync/queue-snapshot",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-BTC-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-BTC-Signature",
+              "value": "={{ $json.signature }}"
+            },
+            {
+              "name": "X-BTC-Nonce",
+              "value": "={{ $json.nonce }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.rawBody }}",
+        "options": {
+          "timeout": 55000
+        }
+      },
+      "id": "e2b0686e-4e96-50f4-bcb2-d82d307d7e9f",
+      "name": "Post Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2100,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Every 2 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Sign Linked Queues Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Now Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Sync Now Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Sync Now Signature": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Respond 202",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 202": {
+      "main": [
+        [
+          {
+            "node": "Sign Linked Queues Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign Linked Queues Request": {
+      "main": [
+        [
+          {
+            "node": "Get Linked Queues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Linked Queues": {
+      "main": [
+        [
+          {
+            "node": "Has Linked Queues?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Linked Queues?": {
+      "main": [
+        [
+          {
+            "node": "Build Queue Member Query",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Build Queue Member Query": {
+      "main": [
+        [
+          {
+            "node": "Get SF Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get SF Token": {
+      "main": [
+        [
+          {
+            "node": "Query Queue Members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Queue Members": {
+      "main": [
+        [
+          {
+            "node": "Collect Members",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Members": {
+      "main": [
+        [
+          {
+            "node": "Has Nested Groups?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Nested Groups?": {
+      "main": [
+        [
+          {
+            "node": "Query Nested Group Members",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Nested Group Members": {
+      "main": [
+        [
+          {
+            "node": "Query Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Users": {
+      "main": [
+        [
+          {
+            "node": "Build Signed Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Signed Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Post Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Q3Ld5IrQCtGimErY",
+    "timezone": "America/New_York"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

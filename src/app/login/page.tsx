@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Image from "next/image";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { brand } from "@/theme/brand";
 import { getSessionUser } from "@/server/auth/session";
@@ -38,43 +39,13 @@ const ERRORS: Record<string, { title: string; body: string }> = {
   },
   server_config: {
     title: "Sign-in is not available yet",
-    body: "BTC Scheduling is not fully configured on the server, so sign-in cannot start. An administrator needs to finish setup (database and required settings). Details are in the server logs.",
+    body: "Sign-in is temporarily unavailable. Please try again later or contact support.",
   },
   no_id_token: {
     title: "Microsoft did not confirm your identity",
     body: "No identity token was returned. Please try again or contact IT.",
   },
 };
-
-const FEATURES = [
-  {
-    title: "Outlook, always in sync",
-    body: "Busy time blocks your slots and every booking lands on your calendar with a Teams link.",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="size-4">
-        <path d="M5.75 2a.75.75 0 0 1 .75.75V4h7V2.75a.75.75 0 0 1 1.5 0V4h.25A2.75 2.75 0 0 1 18 6.75v8.5A2.75 2.75 0 0 1 15.25 18H4.75A2.75 2.75 0 0 1 2 15.25v-8.5A2.75 2.75 0 0 1 4.75 4H5V2.75A.75.75 0 0 1 5.75 2Zm-1 5.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h10.5c.69 0 1.25-.56 1.25-1.25v-6.5c0-.69-.56-1.25-1.25-1.25H4.75Z" />
-      </svg>
-    ),
-  },
-  {
-    title: "Fair round-robin",
-    body: "Team pages route to whoever is free, synced with your Salesforce queues.",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="size-4">
-        <path fillRule="evenodd" d="M15.3 5.2a.75.75 0 0 1 0 1.06l-1.47 1.47h.42a4.25 4.25 0 0 1 0 8.5h-1.5a.75.75 0 0 1 0-1.5h1.5a2.75 2.75 0 0 0 0-5.5h-.42l1.47 1.47a.75.75 0 1 1-1.06 1.06l-2.75-2.75a.75.75 0 0 1 0-1.06l2.75-2.75a.75.75 0 0 1 1.06 0ZM4.7 14.8a.75.75 0 0 1 0-1.06l1.47-1.47h-.42a4.25 4.25 0 0 1 0-8.5h1.5a.75.75 0 0 1 0 1.5h-1.5a2.75 2.75 0 0 0 0 5.5h.42L4.7 9.3a.75.75 0 0 1 1.06-1.06l2.75 2.75a.75.75 0 0 1 0 1.06L5.76 14.8a.75.75 0 0 1-1.06 0Z" clipRule="evenodd" />
-      </svg>
-    ),
-  },
-  {
-    title: "English y Español",
-    body: "Spanish booking pages route to Spanish-speaking reps automatically.",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="size-4">
-        <path d="M7.75 2.75a.75.75 0 0 0-1.5 0v1.26a48.4 48.4 0 0 0-3.48.27.75.75 0 1 0 .16 1.49 46.9 46.9 0 0 1 5.84-.24 9.44 9.44 0 0 1-2.53 4.24 9.4 9.4 0 0 1-1.12-1.63.75.75 0 1 0-1.33.69c.36.7.8 1.36 1.31 1.96a9.44 9.44 0 0 1-2.4 1.2.75.75 0 1 0 .48 1.42 10.94 10.94 0 0 0 3.04-1.6c.52.4 1.07.75 1.65 1.05a.75.75 0 0 0 .69-1.33c-.43-.22-.84-.47-1.22-.76a10.94 10.94 0 0 0 2.9-5.1c.4.02.8.05 1.2.09a.75.75 0 1 0 .14-1.5 48.2 48.2 0 0 0-3.83-.23V2.75ZM13 8a.75.75 0 0 1 .69.46l3.5 8.25a.75.75 0 1 1-1.38.58L15.04 15.5h-4.08l-.77 1.79a.75.75 0 1 1-1.38-.58l3.5-8.25A.75.75 0 0 1 13 8Zm-1.4 6h2.8L13 10.7 11.6 14Z" />
-      </svg>
-    ),
-  },
-];
 
 const FALLBACK_ERROR = { title: "Sign-in did not complete", body: "Please try again." };
 
@@ -112,29 +83,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
             {brand.name}
           </p>
           <h1 id="login-hero" className="mt-3 font-heading text-4xl font-extrabold leading-[1.05] text-white sm:text-5xl lg:text-6xl">
-            <StaggeredText text="Scheduling, simplified." as="span" className="block" delay={110} startDelay={150} />
+            <StaggeredText text="Team sign in." as="span" className="block" delay={110} startDelay={150} />
           </h1>
           <p className="btc-fade-up mt-5 max-w-md text-base text-white/85 [animation-delay:600ms] sm:text-lg">
-            Share your booking page, sync with Outlook, and route every meeting to the right rep.
+            For Big Think Capital employees.
           </p>
 
-          <ul className="mt-8 hidden max-w-md gap-3 sm:grid">
-            {FEATURES.map((f, i) => (
-              <li
-                key={f.title}
-                className="btc-fade-up flex items-start gap-3 rounded-xl border border-white/10 bg-white/[0.06] px-4 py-3 backdrop-blur-sm"
-                style={{ animationDelay: `${750 + i * 120}ms` }}
-              >
-                <span aria-hidden="true" className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-sky/20 text-sky">
-                  {f.icon}
-                </span>
-                <span>
-                  <span className="block text-sm font-semibold text-white">{f.title}</span>
-                  <span className="block text-sm text-white/75">{f.body}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
         </section>
 
         <section aria-labelledby="signin-heading" className="btc-fade-up w-full [animation-delay:250ms] lg:justify-self-end">
@@ -144,7 +98,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
               <h2 id="signin-heading" className="mt-7 text-2xl font-bold">
                 Sign in to {brand.productName}
               </h2>
-              <p className="mt-2 text-sm text-muted">Use your Big Think Capital Microsoft 365 account. Your Outlook calendar connects automatically.</p>
+              <p className="mt-2 text-sm text-muted">Use your Big Think Capital Microsoft 365 account.</p>
 
               {signedOut && !error ? (
                 <div role="status" className="mt-6 rounded-lg border border-success/30 bg-success/5 px-4 py-3 text-sm text-success">
@@ -178,7 +132,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
                 <svg aria-hidden="true" viewBox="0 0 20 20" className="size-4 text-success" fill="currentColor">
                   <path fillRule="evenodd" d="M10 1.5 3 4.5v5c0 4.2 3 7.9 7 9 4-1.1 7-4.8 7-9v-5l-7-3Zm3.2 6.3a.75.75 0 0 0-1.1-1l-3 3.3-1.2-1.2a.75.75 0 1 0-1.06 1.06l1.75 1.75a.75.75 0 0 0 1.08-.03l3.53-3.88Z" clipRule="evenodd" />
                 </svg>
-                Single sign-on with Microsoft Entra ID. BTC accounts only.
+                Big Think Capital accounts only.
               </div>
               <p className="mt-3 text-xs text-muted">
                 Trouble signing in? Contact <a className="font-medium text-primary underline" href={`mailto:${brand.supportEmail}`}>{brand.supportEmail}</a>.
@@ -188,7 +142,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </section>
       </div>
 
-      <p className="pb-6 text-center text-xs text-white/60">{brand.productName} · Internal use only</p>
+      <p className="pb-6 text-center text-xs text-white/60"><Link href="/" className="hover:text-white">{brand.name}</Link></p>
     </main>
   );
 }

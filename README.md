@@ -94,6 +94,7 @@ Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and 
 - n8n workflows (lead creation, queue snapshot poller), with importable JSON in [`/n8n`](n8n): [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
 - Salesforce changes for BTC to apply (Named Credential, optional Flow HTTP Callout, `QueueManagementController` change): [`docs/salesforce-changes.md`](docs/salesforce-changes.md). Nothing is deployed to Salesforce by this repository.
 - Lead creation is off by default and is enabled per booking page by an admin. "Lead source" is the ISO (`csbs__ISO__c`).
+- **Admin > Lead routing (ISO)** (`/admin/salesforce/lead-routing`) lists every booking page with its lead toggle, ISO and lead owner mode, and links to each page's Salesforce settings.
 
 ## Deploying to Vercel
 
@@ -104,6 +105,10 @@ Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and 
 5. Production must not sit behind Vercel deployment protection, or at least `/api/graph/*`, `/api/sync/*` and the public booking pages must be excluded. Graph cannot validate a protected webhook URL.
 6. Optional but recommended: add a Vercel Firewall rate-limit rule for `/api/public/*`.
 7. Deploy, sign in as an admin, and check **Admin** for connection health.
+
+### Employee sign-in
+
+The public root (`/`) is a minimal branded landing page with a "Team sign in" link; it does not describe internal features. Employees sign in at `<APP_BASE_URL>/login` with their Big Think Capital Microsoft 365 account. The first sign-in creates their account automatically (any address in `ALLOWED_EMAIL_DOMAINS`) and connects their Outlook calendar. Grant tenant-wide admin consent for the Entra app so employees are not prompted for consent individually.
 
 ## Cron jobs
 

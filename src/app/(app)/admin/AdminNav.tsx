@@ -9,6 +9,7 @@ const ITEMS = [
   { href: "/admin/users", label: "Users" },
   { href: "/admin/salesforce/lead-routing", label: "Lead routing (ISO)" },
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
+  { href: "/admin/import", label: "Import" },
   { href: "/admin/audit", label: "Audit log" },
 ];
 

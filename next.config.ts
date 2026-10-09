@@ -29,6 +29,10 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   serverExternalPackages: ["postgres"],
+  experimental: {
+    // The admin Calendly import uploads a JSON snapshot through a server action.
+    serverActions: { bodySizeLimit: "4mb" },
+  },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },

@@ -18,7 +18,13 @@ export async function cancelBookingAction(_prev: ActionState, fd: FormData): Pro
   if (!parsed.success) return invalid(parsed.error);
   const res = await cancelBookingAsHost(user.id, parsed.data.bookingId, parsed.data.reason ?? null);
   if (!res.ok) {
-    return fail(res.reason === "not_found" ? "Booking not found." : "This booking can no longer be cancelled.");
+    return fail(
+      res.reason === "not_found"
+        ? "Booking not found."
+        : res.reason === "imported"
+          ? "This booking was imported from Calendly. Cancel or reschedule it in Calendly."
+          : "This booking can no longer be cancelled.",
+    );
   }
   revalidatePath(`/bookings/${parsed.data.bookingId}`);
   revalidatePath("/bookings");

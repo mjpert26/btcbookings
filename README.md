@@ -14,6 +14,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Salesforce and n8n](#salesforce-and-n8n)
 - [Deploying to Vercel](#deploying-to-vercel)
 - [Cron jobs](#cron-jobs)
+- [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
 - [Testing](#testing)
 - [Project layout](#project-layout)
@@ -122,6 +123,16 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/reminders` | every 5 minutes | Safety net for reminder emails |
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
 | `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows and old job rows |
+
+## Importing from Calendly
+
+**Admin > Import** (`/admin/import`) copies a Calendly organization from a JSON snapshot. The snapshot format is defined by `snapshotSchema` in `src/server/import/calendly/map.ts` (members with emails, event types with questions, locations and team hosts, and scheduled meetings with invitees).
+
+- Nothing is changed in Calendly, and the import notifies nobody. Imported bookings are records only. The `jobs_skip_imported_bookings` trigger drops every outbox job for them, so they create no Outlook events, emails, Slack messages or Salesforce leads. Hosts cannot cancel them in the app; changes happen in Calendly.
+- Members become users, linked to their Microsoft account at first sign-in by email. Calendly team profiles become teams, and round-robin and collective event types become team event types. Active personal event types are copied for their owners. Upcoming meetings are copied as bookings.
+- Every imported row stores `import_source = 'calendly'` and `import_ref` (the Calendly URI). Re-running the import is safe: it adds what is missing, leaves existing teams and event types unchanged, and applies Calendly cancellations and time changes to imported bookings.
+- Runs as a dry run unless **Apply** is checked. The report lists counts and warnings, for example team pages without a known host list.
+- Reps without a healthy Outlook connection are not offered as hosts, so imported pages only take bookings once their reps have signed in.
 
 ## Adding an admin
 

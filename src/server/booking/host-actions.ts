@@ -6,7 +6,7 @@ import type { JobPayloads } from "@/server/jobs/kinds";
 
 export type HostCancelResult =
   | { ok: true; alreadyCancelled: boolean }
-  | { ok: false; reason: "not_found" | "not_cancellable" };
+  | { ok: false; reason: "not_found" | "not_cancellable" | "imported" };
 
 /**
  * Cancels a booking on behalf of a signed-in host, event owner, team admin or admin.
@@ -25,10 +25,12 @@ export type HostCancelResult =
  */
 export async function cancelBookingAsHost(actorUserId: string, bookingId: string, reason: string | null): Promise<HostCancelResult> {
   const step1 = await withUser(actorUserId, async (tx) => {
-    const [b] = await tx<{ id: string; status: string; cancelled_by: string | null }[]>`
-      select id, status, cancelled_by from app.bookings where id = ${bookingId}
+    const [b] = await tx<{ id: string; status: string; cancelled_by: string | null; import_source: string | null }[]>`
+      select id, status, cancelled_by, import_source from app.bookings where id = ${bookingId}
     `;
     if (!b) return { kind: "not_found" as const };
+    // Imported bookings are records only; the source system (Calendly) still owns them.
+    if (b.import_source) return { kind: "imported" as const };
     if (b.status === "cancelled") {
       return { kind: "already" as const, finishable: b.cancelled_by === "host" };
     }
@@ -55,6 +57,7 @@ export async function cancelBookingAsHost(actorUserId: string, bookingId: string
 
   if (step1.kind === "not_found") return { ok: false, reason: "not_found" };
   if (step1.kind === "not_cancellable") return { ok: false, reason: "not_cancellable" };
+  if (step1.kind === "imported") return { ok: false, reason: "imported" };
   if (step1.kind === "already" && !step1.finishable) return { ok: true, alreadyCancelled: true };
 
   await service().begin(async (tx) => {

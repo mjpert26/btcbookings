@@ -35,6 +35,7 @@ type Booking = {
   rescheduled_from_id: string | null;
   sf_lead_id: string | null;
   sf_lead_status: string | null;
+  import_source: string | null;
   created_at: Date;
 };
 
@@ -58,7 +59,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
       select b.id, b.event_type_id, et.name as event_type_name, b.language, b.status, b.start_at, b.end_at,
              b.invitee_name, b.invitee_email, b.invitee_phone, b.invitee_timezone, b.location_type, b.location_detail,
              b.online_meeting_url, b.cancel_reason, b.cancelled_by, b.cancelled_at, b.flagged_reason,
-             b.rescheduled_from_id, b.sf_lead_id, b.sf_lead_status, b.created_at
+             b.rescheduled_from_id, b.sf_lead_id, b.sf_lead_status, b.import_source, b.created_at
       from app.bookings b join app.event_types et on et.id = b.event_type_id
       where b.id = ${id}
     `;
@@ -81,7 +82,8 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
   if (!data) notFound();
   const { b, hosts, answers } = data;
   const zone = user.timezone;
-  const cancellable = (b.status === "confirmed" || b.status === "flagged") && new Date(b.end_at) > new Date();
+  const imported = b.import_source === "calendly";
+  const cancellable = !imported && (b.status === "confirmed" || b.status === "flagged") && new Date(b.end_at) > new Date();
 
   return (
     <>
@@ -92,6 +94,11 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
         actions={
           <>
             <StatusBadge status={b.status} />
+            {imported ? (
+              <Badge tone="navy" title="Copied from Calendly. Changes, reminders and cancellations still happen in Calendly.">
+                From Calendly
+              </Badge>
+            ) : null}
             {cancellable ? <CancelBooking bookingId={b.id} inviteeName={b.invitee_name} /> : null}
           </>
         }

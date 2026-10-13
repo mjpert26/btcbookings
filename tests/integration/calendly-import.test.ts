@@ -6,6 +6,8 @@ import { goLiveImportedPages, listImportedPages, pauseImportedPages, CutoverForb
 import { snapshotSchema, type CalendlySnapshot } from "@/server/import/calendly/map";
 import { enqueue } from "@/server/jobs/queue";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
+import { completeLogin } from "@/server/auth/login";
+import { withUser } from "@/server/db/client";
 
 let sql: Sql;
 beforeAll(() => {
@@ -346,5 +348,128 @@ describe("Calendly import", () => {
     expect(r.bookings.flagged).toBe(1);
     const [dup] = await sql<{ status: string }[]>`select status from app.bookings where import_ref = ${EV("dup")}`;
     expect(dup.status).toBe("flagged");
+  });
+
+  it("keeps the Calendly link when sign-in by user principal name changes the stored email", async () => {
+    await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
+    const [before] = await sql<{ id: string }[]>`select id from app.users where email = 'aidan.miller@bigthinkcapital.com'`;
+    const id = await completeLogin(
+      { oid: "oid-aidan", tid: "t", email: "a.miller@bigthinkcapital.com", name: "Aidan Miller", preferredUsername: "aidan.miller@bigthinkcapital.com" },
+      { accessToken: "a", refreshToken: "r", idToken: "i", expiresAt: new Date(Date.now() + 3600_000), scopes: [] },
+    );
+    expect(id).toBe(before.id);
+    const r = await importCalendly(snapshot({ pulledAt: "2026-10-10T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW });
+    expect(r.users).toMatchObject({ created: 0, existing: 3 });
+    expect(r.bookings.reassigned).toBe(0);
+    expect(await count(sql`select count(*)::int as n from app.users`)).toBe(3);
+  });
+
+  it("frees a rescheduled meeting's old time before holding the new one", async () => {
+    await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
+    const snap = snapshot({ pulledAt: "2026-10-10T12:00:00Z" });
+    // Calendly models a reschedule as a cancelled event plus a new one; the new one sorts first here.
+    const moved = { ...snap.events[0], uri: EV("1b"), start_time: "2026-10-12T14:05:00Z", end_time: "2026-10-12T14:20:00Z", buffered_start_time: null, buffered_end_time: null };
+    snap.events = [moved, { ...snap.events[0], status: "canceled" }, ...snap.events.slice(1)];
+    const r = await importCalendly(snap, { apply: true, actorUserId: null, now: NOW });
+    expect(r.bookings).toMatchObject({ cancelled: 1, created: 1, flagged: 0 });
+    const [b] = await sql<{ status: string; active: boolean }[]>`
+      select b.status, bh.active from app.bookings b join app.booking_hosts bh on bh.booking_id = b.id where b.import_ref = ${EV("1b")}`;
+    expect(b).toMatchObject({ status: "confirmed", active: true });
+  });
+
+  it("restores the hold of a booking flagged for an overlap once the overlap is gone", async () => {
+    const snap = snapshot();
+    snap.events.push({ ...snap.events[0], uri: EV("dup"), invitees: [{ ...snap.events[0].invitees[0], email: "other@example.com" }] });
+    await importCalendly(snap, { apply: true, actorUserId: null, now: NOW });
+    const next = snapshot({ pulledAt: "2026-10-10T12:00:00Z" });
+    next.events[0] = { ...next.events[0], status: "canceled" };
+    next.events.push({ ...snap.events[snap.events.length - 1] });
+    const r = await importCalendly(next, { apply: true, actorUserId: null, now: NOW });
+    expect(r.bookings).toMatchObject({ cancelled: 1, restored: 1 });
+    const [dup] = await sql<{ status: string; active: boolean }[]>`
+      select b.status, bh.active from app.bookings b join app.booking_hosts bh on bh.booking_id = b.id where b.import_ref = ${EV("dup")}`;
+    expect(dup).toMatchObject({ status: "confirmed", active: true });
+  });
+
+  it("refreshes Calendly's flags on re-runs and keeps unmatched team pages from going live", async () => {
+    const snap = snapshot();
+    snap.eventTypes.push({
+      ...snap.eventTypes[1],
+      uri: ET("orphan"),
+      name: "Orphan Page",
+      scheduling_url: "https://calendly.com/ripe-funds/orphan",
+      hosts: ["https://api.calendly.com/users/departed"],
+      hostsComplete: true,
+    });
+    const first = await importCalendly(snap, { apply: true, actorUserId: null, now: NOW });
+    expect(first.warnings.some((w) => w.includes("Orphan Page") && w.includes("assign hosts"))).toBe(true);
+    const admin = await makeUser(sql, { role: "admin" });
+
+    const next = snapshot({ pulledAt: "2026-10-10T12:00:00Z" });
+    next.eventTypes = next.eventTypes.map((et) => (et.uri === ET("personal") ? { ...et, active: false } : et));
+    next.eventTypes.push(snap.eventTypes[snap.eventTypes.length - 1]);
+    await importCalendly(next, { apply: true, actorUserId: null, now: NOW });
+    const [meta] = await sql<{ import_meta: { active: boolean } }[]>`select import_meta from app.event_types where import_ref = ${ET("personal")}`;
+    expect(meta.import_meta.active).toBe(false);
+
+    // Turned off in Calendly, and the orphan has no hosts: neither goes live.
+    expect(await goLiveImportedPages(admin, { kind: "all" })).toBe(2);
+    const live = await sql<{ name: string }[]>`select name from app.event_types where is_active order by name`;
+    expect(live.map((r) => r.name)).toEqual(["15 Minute Financing Call", "Quick Question (Español)"]);
+    const team = (await listImportedPages(admin)).find((r) => r.kind === "team")!;
+    expect(team.needsHosts).toBe(1);
+
+    // Once an admin assigns a host, the page can go live.
+    const [orphan] = await sql<{ id: string }[]>`select id from app.event_types where import_ref = ${ET("orphan")}`;
+    const [member] = await sql<{ id: string }[]>`select id from app.team_members limit 1`;
+    await sql`insert into app.event_type_hosts (event_type_id, team_member_id) values (${orphan.id}, ${member.id})`;
+    expect(await goLiveImportedPages(admin, { kind: "all" })).toBe(1);
+  });
+
+  it("lets only admins activate an imported page until it is released, then the owner manages it", async () => {
+    await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
+    const [aidan] = await sql<{ id: string }[]>`select id from app.users where email = 'aidan.miller@bigthinkcapital.com'`;
+    const [page] = await sql<{ id: string }[]>`select id from app.event_types where import_ref = ${ET("personal")}`;
+    const activate = (userId: string) => withUser(userId, (tx) => tx`update app.event_types set is_active = true where id = ${page.id}`);
+    await expect(activate(aidan.id)).rejects.toMatchObject({ code: "42501" });
+    await expect(withUser(aidan.id, (tx) => tx`update app.event_types set import_meta = '{"active":true,"released_at":"x"}' where id = ${page.id}`)).rejects.toMatchObject({ code: "42501" });
+
+    const admin = await makeUser(sql, { role: "admin" });
+    await goLiveImportedPages(admin, { kind: "user", userId: aidan.id });
+    await withUser(aidan.id, (tx) => tx`update app.event_types set is_active = false where id = ${page.id}`);
+    await activate(aidan.id); // released: the owner may switch it back on
+    await pauseImportedPages(admin, { kind: "user", userId: aidan.id });
+    await expect(activate(aidan.id)).rejects.toMatchObject({ code: "42501" }); // paused by an admin: dormant again
+  });
+
+  it("refuses an older snapshot and a snapshot that would cancel many bookings as missing", async () => {
+    await importCalendly(snapshot({ pulledAt: "2026-10-10T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW });
+    await expect(importCalendly(snapshot({ pulledAt: "2026-10-09T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW })).rejects.toBeInstanceOf(ImportRefusedError);
+    const dry = await importCalendly(snapshot({ pulledAt: "2026-10-09T12:00:00Z" }), { apply: false, actorUserId: null, now: NOW });
+    expect(dry.warnings.some((w) => w.includes("cannot be applied"))).toBe(true);
+
+    const many = snapshot({ pulledAt: "2026-10-11T12:00:00Z" });
+    many.events = Array.from({ length: 20 }, (_, i) => ({
+      ...many.events[0],
+      uri: EV(`m${i}`),
+      start_time: `2026-10-${String(15 + (i % 10)).padStart(2, "0")}T${String(13 + Math.floor(i / 10)).padStart(2, "0")}:00:00Z`,
+      end_time: `2026-10-${String(15 + (i % 10)).padStart(2, "0")}T${String(13 + Math.floor(i / 10)).padStart(2, "0")}:15:00Z`,
+      buffered_start_time: null,
+      buffered_end_time: null,
+    }));
+    await importCalendly(many, { apply: true, actorUserId: null, now: NOW });
+    const cancelledBefore = await count(sql`select count(*)::int as n from app.bookings where status = 'cancelled'`);
+    const partial = snapshot({ pulledAt: "2026-10-12T12:00:00Z" });
+    partial.events = many.events.slice(0, 5);
+    await expect(importCalendly(partial, { apply: true, actorUserId: null, now: NOW })).rejects.toBeInstanceOf(ImportRefusedError);
+    expect(await count(sql`select count(*)::int as n from app.bookings where status = 'cancelled'`)).toBe(cancelledBefore);
+  });
+
+  it("collapses duplicate meetings in a snapshot instead of failing", async () => {
+    const snap = snapshot();
+    snap.events.push({ ...snap.events[1] });
+    const r = await importCalendly(snap, { apply: true, actorUserId: null, now: NOW });
+    expect(r.bookings.created).toBe(3);
+    expect(r.warnings.some((w) => w.includes("more than once"))).toBe(true);
   });
 });

@@ -37,10 +37,14 @@ import {
  *   secret and kind flags are kept in event_types.import_meta for that step.
  * - Silent: imported bookings never create jobs (see the jobs_skip_imported_bookings
  *   trigger), so no Outlook writes, emails, Slack messages or Salesforce leads.
- * - Idempotent: rows are keyed by (import_source, import_ref). Existing users, teams, team
- *   members and event types are left as they are (admins may have edited them). Existing
- *   bookings pick up Calendly cancellations, time changes and host reassignments, and imported
- *   bookings in the snapshot's window that are missing from it are cancelled.
+ * - Idempotent: rows are keyed by (import_source, import_ref); users fall back to email. Existing
+ *   users, teams, team members and event types are left as they are (admins may have edited
+ *   them), except that Calendly's flags in import_meta are refreshed. Existing bookings pick up
+ *   Calendly cancellations, time changes and host reassignments, and imported bookings in the
+ *   snapshot's window that are missing from it are cancelled. Cancellations run before moves
+ *   and inserts, so a reschedule frees the old time before the new one is held.
+ * - Guarded: a snapshot older than the last applied one is refused, and so is a snapshot that
+ *   would cancel an unusually large share of imported bookings as missing.
  * - Dry run by default: everything runs in one transaction that is rolled back unless
  *   `apply` is true, so the report reflects real constraint checks.
  */
@@ -58,6 +62,7 @@ export type ImportReport = {
     reassigned: number;
     cancelled: number;
     cancelledMissing: number;
+    restored: number;
     unchanged: number;
     flagged: number;
     skipped: number;
@@ -92,7 +97,7 @@ export async function importCalendly(
     teams: { created: 0, existing: 0 },
     teamMembers: { added: 0 },
     eventTypes: { created: 0, existing: 0, skipped: 0, goLiveEligible: 0 },
-    bookings: { created: 0, updated: 0, reassigned: 0, cancelled: 0, cancelledMissing: 0, unchanged: 0, flagged: 0, skipped: 0 },
+    bookings: { created: 0, updated: 0, reassigned: 0, cancelled: 0, cancelledMissing: 0, restored: 0, unchanged: 0, flagged: 0, skipped: 0 },
     warnings: [],
   };
   const warn = (m: string) => {
@@ -103,7 +108,15 @@ export async function importCalendly(
     await serviceTx(async (tx) => {
       // One import at a time.
       await tx`select pg_advisory_xact_lock(hashtext('calendly_import'))`;
-      await runImport(tx, snapshot, report, warn, opts.now ?? new Date());
+      const [last] = await tx<{ pulled_at: Date | null }[]>`
+        select max((after ->> 'pulledAt')::timestamptz) as pulled_at from app.audit_log where action = 'import.calendly'
+      `;
+      if (last?.pulled_at && new Date(snapshot.pulledAt) < last.pulled_at) {
+        const msg = `This snapshot was pulled at ${snapshot.pulledAt}, before the last applied one (${last.pulled_at.toISOString()}).`;
+        if (opts.apply) throw new ImportRefusedError(`${msg} Pull a fresh snapshot.`);
+        warn(`${msg} It cannot be applied.`);
+      }
+      await runImport(tx, snapshot, report, warn, opts.now ?? new Date(), opts.apply);
       await writeAudit(tx, {
         actorUserId: opts.actorUserId,
         action: "import.calendly",
@@ -126,7 +139,21 @@ function summaryCounts(r: ImportReport) {
 
 type UserRef = { userId: string; email: string; timezone: string };
 type ImportedType = { id: string; language: "en" | "es"; teamId: string | null; location: MappedLocation; questions: { key: string; label: string }[] };
-type ExistingBooking = { id: string; status: string; start_at: Date; end_at: Date; import_ref: string; host_user_id: string | null };
+type ExistingBooking = {
+  id: string;
+  status: string;
+  start_at: Date;
+  end_at: Date;
+  import_ref: string;
+  flagged_reason: string | null;
+  host_user_id: string | null;
+  host_active: boolean | null;
+};
+
+const OVERLAP_REASON = "Imported from Calendly; overlaps another booking for the same host";
+/** cancelMissing refuses to apply when more than this share of the window would be cancelled. */
+const MISSING_SHARE_LIMIT = 0.25;
+const MISSING_FLOOR = 10;
 
 type Ctx = {
   tx: Tx;
@@ -136,7 +163,9 @@ type Ctx = {
   /** Calendly user URI -> app user. */
   users: Map<string, UserRef>;
   /** Lowercased email -> existing app user. */
-  usersByEmail: Map<string, { id: string; timezone: string }>;
+  usersByEmail: Map<string, { id: string; timezone: string; importRef: string | null }>;
+  /** Calendly user URI -> existing app user linked by import_ref. */
+  usersByRef: Map<string, { id: string; email: string; timezone: string }>;
   userSlugs: Set<string>;
   teamSlugs: Set<string>;
   /** Calendly team URI -> existing imported team id. */
@@ -156,9 +185,24 @@ type Ctx = {
   bookingsByRef: Map<string, ExistingBooking>;
 };
 
-async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, warn: (m: string) => void, now: Date): Promise<void> {
+/** One record per meeting URI; a cancelled copy wins over an active one. */
+function uniqueEvents(events: CalendlyEvent[], warn: (m: string) => void): CalendlyEvent[] {
+  const byUri = new Map<string, CalendlyEvent>();
+  for (const ev of events) {
+    const prev = byUri.get(ev.uri);
+    if (prev) {
+      warn(`Meeting ${ev.uri} appears more than once in the snapshot; using one copy.`);
+      if (isCancelled(prev) && !isCancelled(ev)) continue;
+    }
+    byUri.set(ev.uri, ev);
+  }
+  return [...byUri.values()];
+}
+
+async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, warn: (m: string) => void, now: Date, apply: boolean): Promise<void> {
+  const events = uniqueEvents(snap.events, warn);
   const bookedHosts = new Map<string, Set<string>>();
-  for (const ev of snap.events) {
+  for (const ev of events) {
     const set = bookedHosts.get(ev.event_type) ?? new Set<string>();
     ev.hosts.forEach((h) => set.add(h));
     bookedHosts.set(ev.event_type, set);
@@ -166,7 +210,9 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
 
   // Preload what the import compares against, so per-row work is inserts only.
   const [users, teams, types, bookings] = await Promise.all([
-    tx<{ id: string; email: string; timezone: string; slug: string }[]>`select id, email::text as email, timezone, slug from app.users`,
+    tx<{ id: string; email: string; timezone: string; slug: string; import_ref: string | null }[]>`
+      select id, email::text as email, timezone, slug, case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref
+      from app.users`,
     tx<{ id: string; slug: string; import_ref: string | null }[]>`
       select id, slug, case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref from app.teams`,
     tx<{ id: string; language: "en" | "es"; slug: string; owner: string; import_ref: string | null }[]>`
@@ -174,7 +220,8 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
              case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref
       from app.event_types`,
     tx<ExistingBooking[]>`
-      select b.id, b.status::text as status, b.start_at, b.end_at, b.import_ref, bh.user_id as host_user_id
+      select b.id, b.status::text as status, b.start_at, b.end_at, b.import_ref, b.flagged_reason,
+             bh.user_id as host_user_id, bh.active as host_active
       from app.bookings b
       left join app.booking_hosts bh on bh.booking_id = b.id and bh.role = 'primary'
       where b.import_source = ${IMPORT_SOURCE}`,
@@ -192,7 +239,8 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
     report,
     today: DateTime.fromJSDate(now).toUTC().toISODate()!,
     users: new Map(),
-    usersByEmail: new Map(users.map((u) => [u.email.toLowerCase(), { id: u.id, timezone: u.timezone }])),
+    usersByEmail: new Map(users.map((u) => [u.email.toLowerCase(), { id: u.id, timezone: u.timezone, importRef: u.import_ref }])),
+    usersByRef: new Map(users.filter((u) => u.import_ref).map((u) => [u.import_ref!, { id: u.id, email: u.email.toLowerCase(), timezone: u.timezone }])),
     userSlugs: new Set(users.map((u) => u.slug)),
     teamSlugs: new Set(teams.map((t) => t.slug)),
     teamsByRef: new Map(teams.filter((t) => t.import_ref).map((t) => [t.import_ref!, t.id])),
@@ -205,17 +253,23 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
     bookingsByRef: new Map(bookings.map((b) => [b.import_ref, b])),
   };
 
-  await importUsers(ctx, snap);
+  await importUsers(ctx, snap, now);
 
   // Active event types, plus inactive ones that still have meetings to copy.
-  const referenced = new Set(snap.events.map((e) => e.event_type));
+  const referenced = new Set(events.map((e) => e.event_type));
   const selected = snap.eventTypes.filter((et) => et.active || referenced.has(et.uri));
 
   await importTeams(ctx, selected);
   await loadExistingQuestions(ctx, selected);
   for (const et of selected) await importEventType(ctx, et);
-  for (const ev of snap.events) await importBooking(ctx, ev, now);
-  await cancelMissing(ctx, snap);
+  await refreshImportMeta(ctx, snap.eventTypes);
+
+  // Bookings in three passes, so freed time is available to the moves and inserts after it.
+  const existing = events.filter((ev) => ctx.bookingsByRef.has(ev.uri));
+  for (const ev of existing) if (isCancelled(ev)) await cancelExisting(ctx, ctx.bookingsByRef.get(ev.uri)!);
+  await cancelMissing(ctx, snap, events, apply);
+  for (const ev of existing) if (!isCancelled(ev)) await syncExisting(ctx, ctx.bookingsByRef.get(ev.uri)!, ev);
+  for (const ev of events) if (!ctx.bookingsByRef.has(ev.uri)) await importBooking(ctx, ev, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,13 +286,26 @@ function allocate(taken: Set<string>, base: string, reserved: (s: string) => boo
   throw new Error(`Could not allocate a slug for ${base}`);
 }
 
-async function importUsers(ctx: Ctx, snap: CalendlySnapshot): Promise<void> {
+async function importUsers(ctx: Ctx, snap: CalendlySnapshot, now: Date): Promise<void> {
   const { tx } = ctx;
   const domains = allowedEmailDomains();
   for (const m of snap.members) {
     const email = m.email.toLowerCase();
+    // The Calendly link wins: sign-in may have changed the stored email since the last import.
+    const linked = ctx.usersByRef.get(m.uri);
+    if (linked) {
+      ctx.users.set(m.uri, { userId: linked.id, email: linked.email, timezone: linked.timezone });
+      ctx.report.users.existing++;
+      continue;
+    }
     const existing = ctx.usersByEmail.get(email);
     if (existing) {
+      if (!existing.importRef) {
+        await tx`update app.users set import_source = ${IMPORT_SOURCE}, import_ref = ${m.uri} where id = ${existing.id}`;
+        existing.importRef = m.uri;
+      } else if (existing.importRef !== m.uri) {
+        ctx.warn(`Member ${m.name} (${email}) matches a user already linked to another Calendly member; using that user.`);
+      }
       ctx.users.set(m.uri, { userId: existing.id, email, timezone: existing.timezone });
       ctx.report.users.existing++;
       continue;
@@ -250,14 +317,16 @@ async function importUsers(ctx: Ctx, snap: CalendlySnapshot): Promise<void> {
     const slug = allocate(ctx.userSlugs, userSlugFromCalendly(m.slug, m.name), isReservedSlug);
     // No entra_oid: the first Microsoft sign-in with this email links the account.
     const [row] = await tx<{ id: string }[]>`
-      insert into app.users (email, name, slug, timezone, role)
-      values (${email}, ${m.name.slice(0, 200)}, ${slug}, ${timezone}, 'user')
+      insert into app.users (email, name, slug, timezone, role, import_source, import_ref)
+      values (${email}, ${m.name.slice(0, 200)}, ${slug}, ${timezone}, 'user', ${IMPORT_SOURCE}, ${m.uri})
       returning id
     `;
-    ctx.usersByEmail.set(email, { id: row.id, timezone });
+    ctx.usersByEmail.set(email, { id: row.id, timezone, importRef: m.uri });
 
     if (m.availability?.rules.length) {
-      const { weekly, overrides } = mapAvailability(m.availability.rules, ctx.today);
+      // Override dates are wall dates in the schedule's timezone.
+      const today = DateTime.fromJSDate(now).setZone(timezone).toISODate() ?? ctx.today;
+      const { weekly, overrides } = mapAvailability(m.availability.rules, today);
       const [schedule] = await tx<{ id: string }[]>`
         insert into app.availability_schedules (owner_user_id, name, timezone, weekly_rules, is_default)
         values (${row.id}, 'Working hours', ${timezone}, ${tx.json(weekly)}, true)
@@ -413,6 +482,17 @@ async function importEventType(ctx: Ctx, et: CalendlyEventType): Promise<void> {
 
   const isGroup = et.kind === "group";
   if (isGroup) ctx.warn(`Event type "${et.name}" (${et.scheduling_url}) is a Calendly group event; group events are not supported, so it will not go live.`);
+  const enabledQuestions = (et.custom_questions ?? []).filter((q) => q.enabled).length;
+  if (enabledQuestions > LIMITS.questions - (location.needsPhone ? 1 : 0)) {
+    ctx.warn(`Event type "${et.name}" (${et.scheduling_url}) has more questions than the editor allows; only the first ${LIMITS.questions} were copied.`);
+  }
+
+  // Team pages need hosts that are members here; without any, the page would use the whole team.
+  const hostMemberIds = teamId
+    ? [...new Set(hostsFor(ctx, et).map((h) => ctx.users.get(h)).map((u) => (u ? ctx.members.get(`${teamId}:${u.userId}`) : undefined)).filter((v): v is string => Boolean(v)))]
+    : [];
+  const needsHosts = Boolean(teamId) && hostMemberIds.length === 0;
+  if (needsHosts) ctx.warn(`Team page "${et.profile.name} / ${et.name}": no Calendly host is a team member here; assign hosts before it can go live.`);
 
   const { durations, defaultDuration } = durationsFor(et);
   const slugKey = `${teamId ?? ownerUserId}:${language}`;
@@ -422,7 +502,7 @@ async function importEventType(ctx: Ctx, et: CalendlyEventType): Promise<void> {
   const description = et.description_plain?.trim() ? { [language]: et.description_plain.trim().slice(0, LIMITS.description) } : {};
   const mode = et.pooling_type ?? "individual";
   // Calendly's flags, kept for the go-live step. Imported pages always start inactive.
-  const meta = { active: et.active && !isGroup, secret: et.secret, kind: et.kind ?? "solo" };
+  const meta = { active: et.active && !isGroup, secret: et.secret, kind: et.kind ?? "solo", needsHosts };
 
   const [row] = await tx<{ id: string }[]>`
     insert into app.event_types (
@@ -436,7 +516,7 @@ async function importEventType(ctx: Ctx, et: CalendlyEventType): Promise<void> {
     )
     returning id
   `;
-  if (meta.active) ctx.report.eventTypes.goLiveEligible++;
+  if (meta.active && !needsHosts) ctx.report.eventTypes.goLiveEligible++;
 
   for (const q of questions) {
     await tx`
@@ -445,21 +525,31 @@ async function importEventType(ctx: Ctx, et: CalendlyEventType): Promise<void> {
     `;
   }
 
-  if (teamId) {
-    for (const hostUri of hostsFor(ctx, et)) {
-      const u = ctx.users.get(hostUri);
-      const memberId = u ? ctx.members.get(`${teamId}:${u.userId}`) : undefined;
-      if (!memberId) continue;
-      await tx`
-        insert into app.event_type_hosts (event_type_id, team_member_id, is_required)
-        values (${row.id}, ${memberId}, true)
-        on conflict do nothing
-      `;
-    }
+  for (const memberId of hostMemberIds) {
+    await tx`
+      insert into app.event_type_hosts (event_type_id, team_member_id, is_required)
+      values (${row.id}, ${memberId}, true)
+      on conflict do nothing
+    `;
   }
 
   ctx.eventTypes.set(et.uri, { id: row.id, language, teamId, location, questions });
   ctx.report.eventTypes.created++;
+}
+
+/** Refreshes Calendly's flags on previously imported pages; nothing else about them changes. */
+async function refreshImportMeta(ctx: Ctx, types: CalendlyEventType[]): Promise<void> {
+  const rows = types
+    .filter((et) => ctx.eventTypesByRef.has(et.uri))
+    .map((et) => ({ ref: et.uri, meta: { active: et.active && et.kind !== "group", secret: et.secret, kind: et.kind ?? "solo" } }));
+  if (!rows.length) return;
+  await ctx.tx`
+    update app.event_types e
+    set import_meta = coalesce(e.import_meta, '{}'::jsonb) || v.meta
+    from jsonb_to_recordset(${ctx.tx.json(rows)}) as v(ref text, meta jsonb)
+    where e.import_source = ${IMPORT_SOURCE} and e.import_ref = v.ref
+      and (coalesce(e.import_meta, '{}'::jsonb) || v.meta) is distinct from e.import_meta
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,15 +565,20 @@ async function cancelBooking(tx: Tx, bookingId: string, reason: string): Promise
   await tx`update app.booking_hosts set active = false where booking_id = ${bookingId}`;
 }
 
-async function syncExisting(ctx: Ctx, existing: ExistingBooking, ev: CalendlyEvent): Promise<void> {
-  const { tx } = ctx;
+async function cancelExisting(ctx: Ctx, existing: ExistingBooking): Promise<void> {
   if (existing.status === "cancelled") {
     ctx.report.bookings.unchanged++;
     return;
   }
-  if (isCancelled(ev)) {
-    await cancelBooking(tx, existing.id, "Cancelled in Calendly");
-    ctx.report.bookings.cancelled++;
+  await cancelBooking(ctx.tx, existing.id, "Cancelled in Calendly");
+  existing.status = "cancelled";
+  ctx.report.bookings.cancelled++;
+}
+
+async function syncExisting(ctx: Ctx, existing: ExistingBooking, ev: CalendlyEvent): Promise<void> {
+  const { tx } = ctx;
+  if (existing.status === "cancelled") {
+    ctx.report.bookings.unchanged++;
     return;
   }
 
@@ -495,8 +590,10 @@ async function syncExisting(ctx: Ctx, existing: ExistingBooking, ev: CalendlyEve
   const resolved = ev.hosts.map((h) => ctx.users.get(h)).filter((u): u is UserRef => Boolean(u));
   const newHost = resolved.length && !resolved.some((u) => u.userId === existing.host_user_id) ? resolved[0] : null;
   if (!resolved.length) ctx.warn(`Meeting ${ev.uri}: its Calendly host is not an organization member; host left unchanged.`);
+  // A hold dropped earlier because of an overlap is retried; the overlap may be gone now.
+  const retryHold = existing.status === "flagged" && existing.flagged_reason === OVERLAP_REASON && existing.host_active === false;
 
-  if (!timeChanged && !newHost) {
+  if (!timeChanged && !newHost && !retryHold) {
     ctx.report.bookings.unchanged++;
     return;
   }
@@ -504,24 +601,28 @@ async function syncExisting(ctx: Ctx, existing: ExistingBooking, ev: CalendlyEve
   const range = blockedRange(ev);
   if (timeChanged) await tx`update app.bookings set start_at = ${start}, end_at = ${end}, updated_at = now() where id = ${existing.id}`;
   const type = ctx.eventTypes.get(ev.event_type);
-  const memberId = newHost && type?.teamId ? (ctx.members.get(`${type.teamId}:${newHost.userId}`) ?? null) : undefined;
+  const userId = newHost?.userId ?? existing.host_user_id;
+  const memberId = newHost ? (type?.teamId ? (ctx.members.get(`${type.teamId}:${newHost.userId}`) ?? null) : null) : undefined;
+  const setHost = (db: Tx, active: boolean) =>
+    memberId === undefined
+      ? db`update app.booking_hosts set user_id = ${userId}, blocked_range = ${range}::tstzrange, active = ${active}
+           where booking_id = ${existing.id} and role = 'primary'`
+      : db`update app.booking_hosts set user_id = ${userId}, team_member_id = ${memberId}, blocked_range = ${range}::tstzrange, active = ${active}
+           where booking_id = ${existing.id} and role = 'primary'`;
+  let held = true;
   try {
-    await tx.savepoint((sp) =>
-      newHost
-        ? sp`update app.booking_hosts set user_id = ${newHost.userId}, team_member_id = ${memberId ?? null}, blocked_range = ${range}::tstzrange
-             where booking_id = ${existing.id} and role = 'primary'`
-        : sp`update app.booking_hosts set blocked_range = ${range}::tstzrange where booking_id = ${existing.id}`,
-    );
+    await tx.savepoint((sp) => setHost(sp as unknown as Tx, true));
   } catch (err) {
     if ((err as { code?: string }).code !== "23P01") throw err;
-    if (newHost) {
-      await tx`update app.booking_hosts set user_id = ${newHost.userId}, team_member_id = ${memberId ?? null}, blocked_range = ${range}::tstzrange, active = false
-               where booking_id = ${existing.id} and role = 'primary'`;
-    } else {
-      await tx`update app.booking_hosts set blocked_range = ${range}::tstzrange, active = false where booking_id = ${existing.id}`;
-    }
-    await flagOverlap(tx, existing.id);
+    held = false;
+    await setHost(tx, false);
+  }
+  if (!held) {
+    if (existing.status !== "flagged") await flagOverlap(tx, existing.id);
     ctx.report.bookings.flagged++;
+  } else if (retryHold) {
+    await tx`update app.bookings set status = 'confirmed', flagged_reason = null, updated_at = now() where id = ${existing.id}`;
+    ctx.report.bookings.restored++;
   }
   if (timeChanged) ctx.report.bookings.updated++;
   if (newHost) ctx.report.bookings.reassigned++;
@@ -529,13 +630,6 @@ async function syncExisting(ctx: Ctx, existing: ExistingBooking, ev: CalendlyEve
 
 async function importBooking(ctx: Ctx, ev: CalendlyEvent, now: Date): Promise<void> {
   const { tx } = ctx;
-  // Existing bookings first: a cancellation must apply even if the type or host is gone.
-  const existing = ctx.bookingsByRef.get(ev.uri);
-  if (existing) {
-    await syncExisting(ctx, existing, ev);
-    return;
-  }
-
   const start = new Date(ev.start_time);
   const end = new Date(ev.end_time);
   // New bookings: copy only meetings that are still on, and only upcoming ones.
@@ -617,26 +711,48 @@ async function importBooking(ctx: Ctx, ev: CalendlyEvent, now: Date): Promise<vo
               ${String(qa.answer).slice(0, 5000)})
     `;
   }
+  ctx.bookingsByRef.set(ev.uri, {
+    id: b.id,
+    status: held ? "confirmed" : "flagged",
+    start_at: start,
+    end_at: end,
+    import_ref: ev.uri,
+    flagged_reason: held ? null : OVERLAP_REASON,
+    host_user_id: host.userId,
+    host_active: held,
+  });
   ctx.report.bookings.created++;
 }
 
-/** Imported bookings inside the snapshot's window that Calendly no longer lists. */
-async function cancelMissing(ctx: Ctx, snap: CalendlySnapshot): Promise<void> {
+/**
+ * Imported bookings inside the snapshot's window that Calendly no longer lists. A snapshot that
+ * would cancel an unusually large share of them is refused when applying: it is more likely
+ * an incomplete pull than a wave of cancellations.
+ */
+async function cancelMissing(ctx: Ctx, snap: CalendlySnapshot, events: CalendlyEvent[], apply: boolean): Promise<void> {
   const from = new Date(snap.eventsWindow.from).getTime();
   const to = new Date(snap.eventsWindow.to).getTime();
-  const listed = new Set(snap.events.map((e) => e.uri));
-  for (const b of ctx.bookingsByRef.values()) {
-    if (b.status === "cancelled" || listed.has(b.import_ref)) continue;
+  const listed = new Set(events.map((e) => e.uri));
+  const inWindow = [...ctx.bookingsByRef.values()].filter((b) => {
     const start = b.start_at.getTime();
-    if (start < from || start >= to) continue;
+    return b.status !== "cancelled" && start >= from && start < to;
+  });
+  const missing = inWindow.filter((b) => !listed.has(b.import_ref));
+  if (missing.length > MISSING_FLOOR && missing.length > inWindow.length * MISSING_SHARE_LIMIT) {
+    const msg = `${missing.length} of ${inWindow.length} imported bookings in the window are missing from this snapshot. That looks like an incomplete pull.`;
+    if (apply) throw new ImportRefusedError(`${msg} Nothing was saved.`);
+    ctx.warn(`${msg} Applying it will be refused.`);
+  }
+  for (const b of missing) {
     await cancelBooking(ctx.tx, b.id, "No longer listed in Calendly");
+    b.status = "cancelled";
     ctx.report.bookings.cancelledMissing++;
   }
 }
 
 async function flagOverlap(tx: Tx, bookingId: string): Promise<void> {
   await tx`
-    update app.bookings set status = 'flagged', flagged_reason = 'Imported from Calendly; overlaps another booking for the same host'
+    update app.bookings set status = 'flagged', flagged_reason = ${OVERLAP_REASON}
     where id = ${bookingId}
   `;
 }

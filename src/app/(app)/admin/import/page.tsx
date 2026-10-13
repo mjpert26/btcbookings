@@ -8,6 +8,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { ActionButton } from "@/components/app/ActionButton";
 import { goLiveImportedAction, pauseImportedAction } from "../_actions/import";
 import { ImportForm } from "./ImportForm";
+import { GoLiveAll } from "./GoLiveAll";
 
 export const metadata: Metadata = { title: "Import from Calendly" };
 // Large snapshots run several thousand statements in one transaction.
@@ -46,7 +47,14 @@ function Rows({ rows, kind }: { rows: ImportedPagesRow[]; kind: "team" | "user" 
               )}
             </TD>
             <TD>{r.live}</TD>
-            <TD>{r.ready}</TD>
+            <TD>
+              {r.ready}
+              {r.needsHosts ? (
+                <Badge tone="warning" className="ml-2" title="Assign hosts on the page before it can go live.">
+                  {r.needsHosts} need{r.needsHosts === 1 ? "s" : ""} hosts
+                </Badge>
+              ) : null}
+            </TD>
             <TD className="text-right">
               <div className="flex justify-end gap-2">
                 {r.ready ? (
@@ -75,6 +83,7 @@ export default async function ImportPage() {
   const reps = rows.filter((r) => r.kind === "user");
   const ready = rows.reduce((n, r) => n + r.ready, 0);
   const live = rows.reduce((n, r) => n + r.live, 0);
+  const readyWithoutOutlook = rows.reduce((n, r) => n + (r.connected === 0 ? r.ready : 0), 0);
 
   return (
     <>
@@ -98,11 +107,7 @@ export default async function ImportPage() {
             <div className="flex flex-wrap items-center gap-3">
               <Badge tone="success">{live} live</Badge>
               <Badge tone="navy">{ready} ready to go live</Badge>
-              {ready ? (
-                <ActionButton action={goLiveImportedAction} hidden={{ kind: "all" }} size="sm" variant="primary" pendingLabel="Working…">
-                  Take everything live
-                </ActionButton>
-              ) : null}
+              {ready ? <GoLiveAll ready={ready} notConnected={readyWithoutOutlook} /> : null}
               {live ? (
                 <ActionButton action={pauseImportedAction} hidden={{ kind: "all" }} size="sm" pendingLabel="Working…">
                   Pause everything

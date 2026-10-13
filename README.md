@@ -126,13 +126,12 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 
 ## Importing from Calendly
 
-**Admin > Import** (`/admin/import`) copies a Calendly organization from a JSON snapshot. The snapshot format is defined by `snapshotSchema` in `src/server/import/calendly/map.ts`: members with emails and their default availability, event types with questions, locations and team hosts, and the meetings in a start-time window (`eventsWindow`, including cancelled meetings).
+**Admin > Import** (`/admin/import`) copies the Calendly organization from a JSON snapshot built by `scripts/calendly-snapshot.py`. The runbook covers pulling the data, building the snapshot, the dry run, going live and keeping in sync: [`docs/calendly-import.md`](docs/calendly-import.md). In short:
 
-- **Nothing is changed in Calendly, and the import notifies nobody.** Imported bookings are records only. The `jobs_skip_imported_bookings` trigger drops every outbox job for them, so they create no Outlook events, emails, Slack messages or Salesforce leads. Hosts cannot cancel them in the app; changes happen in Calendly.
-- **Imported pages start inactive.** Calendly's own flags are kept in `event_types.import_meta`. The **Imported booking pages** panel on the same page takes pages that were active in Calendly live per rep, per team or all at once, and can pause them again (audited). Group event types are imported but never go live. Reps without a healthy Outlook connection are never offered as hosts, so take a page live once its reps have signed in.
-- **What is copied.** Members become users, linked to their Microsoft account at first sign-in by email or user principal name, with their Calendly working hours as the default schedule. Calendly team profiles become teams, and round-robin and collective event types become team event types. Where Calendly's host list is incomplete, the hosts of the type's meetings are added. Upcoming meetings become bookings, holding the host's time including Calendly buffers.
-- **Re-running is safe.** Rows are keyed by `import_source = 'calendly'` and `import_ref` (the Calendly URI). A re-run adds missing users, teams and pages, but leaves existing ones unchanged, including team membership. It applies Calendly cancellations, time changes and host reassignments to imported bookings. It cancels imported bookings in the snapshot's window that Calendly no longer lists.
-- **Runs as a dry run unless Apply is checked.** The report lists counts, timing and warnings. A snapshot marked `placeholder` (made-up emails for testing) can only be dry-run.
+- **Nothing changes in Calendly and nobody is notified.** Imported bookings never create outbox jobs (`jobs_skip_imported_bookings` trigger), and hosts cannot cancel them in the app.
+- **Imported pages start inactive.** An admin takes them live per rep, per team or all at once on the same page. Until then, only admins can activate them (`event_types_guard_imported` trigger).
+- **What is copied.** Members get their default Calendly schedule as working hours and are linked to their Microsoft account at first sign-in. Calendly team profiles become teams. Upcoming meetings hold the host's time, including buffers.
+- **Re-runs are safe.** They apply Calendly cancellations, moves and reassignments. Older or apparently incomplete snapshots are refused.
 
 ## Adding an admin
 

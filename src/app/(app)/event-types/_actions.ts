@@ -251,6 +251,9 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
   } catch (err) {
     if (err instanceof HostError) return fail(err.message, { hosts: err.message });
     if (slugConflict(err)) return fail("That slug is already used.", { slug: "Another event type of yours uses this slug in the same language." });
+    if (pgCode(err) === "42501" && String((err as Error).message).includes("admin cutover")) {
+      return fail("This page was imported from Calendly. An admin takes it live from Admin > Import.");
+    }
     throw err;
   }
   revalidatePath(`/event-types/${id}`);

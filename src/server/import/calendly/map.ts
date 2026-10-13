@@ -34,7 +34,8 @@ const availabilityRule = z.object({
 
 export const snapshotSchema = z.object({
   source: z.literal("calendly"),
-  pulledAt: z.string(),
+  /** When the data was pulled. An older snapshot is never applied over a newer one. */
+  pulledAt: z.string().datetime({ offset: true }),
   /** Set by tooling that fills in made-up emails for local testing. Such a snapshot is never applied. */
   placeholder: z.boolean().optional(),
   /**
@@ -115,7 +116,7 @@ export type CalendlyEvent = CalendlySnapshot["events"][number];
 export const IMPORT_SOURCE = "calendly";
 
 /** Field limits of the event type editor; imported rows must stay editable. */
-export const LIMITS = { name: 120, questionLabel: 200, description: 2000 } as const;
+export const LIMITS = { name: 120, questionLabel: 200, description: 2000, questions: 30, options: 50 } as const;
 
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -178,49 +179,63 @@ export type MappedQuestion = {
   position: number;
 };
 
-function questionKey(label: string, taken: Set<string>): string {
-  let base = label
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 40)
-    .replace(/_+$/g, "");
-  if (!/^[a-z]/.test(base)) base = `q_${base}`.replace(/_+$/g, "") || "q";
-  let key = base;
-  for (let i = 2; taken.has(key); i++) key = `${base}_${i}`;
-  taken.add(key);
-  return key;
+/** Allocates keys with a per-base counter, so many duplicate labels stay linear. */
+function keyAllocator() {
+  const taken = new Set<string>();
+  const next = new Map<string, number>();
+  return {
+    has: (key: string) => taken.has(key),
+    add: (key: string) => taken.add(key),
+    key(label: string): string {
+      let base = label
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 40)
+        .replace(/_+$/g, "");
+      if (!/^[a-z]/.test(base)) base = `q_${base}`.replace(/_+$/g, "") || "q";
+      let key = base;
+      let i = next.get(base) ?? 2;
+      while (taken.has(key)) key = `${base}_${i++}`;
+      next.set(base, i);
+      taken.add(key);
+      return key;
+    },
+  };
 }
 
 /** Enabled Calendly questions as app questions. Name and email are built in and not copied. */
 export function mapQuestions(questions: CalendlyEventType["custom_questions"], needsPhone: boolean, language: "en" | "es" = "en"): MappedQuestion[] {
-  const taken = new Set<string>();
+  const keys = keyAllocator();
   const out: MappedQuestion[] = [];
   const sorted = [...(questions ?? [])].filter((q) => q.enabled).sort((a, b) => a.position - b.position);
+  // The editor allows at most LIMITS.questions; keep room for a required phone question.
+  const room = LIMITS.questions - (needsPhone ? 1 : 0);
   for (const q of sorted) {
+    if (out.length >= room) break;
     const label = q.name.trim().slice(0, LIMITS.questionLabel);
     if (!label) continue;
-    if (q.type === "phone_number" && !taken.has("phone")) {
-      taken.add("phone");
+    if (q.type === "phone_number" && !keys.has("phone")) {
+      keys.add("phone");
       out.push({ key: "phone", type: "phone", label, options: [], required: q.required || needsPhone, position: out.length });
       continue;
     }
-    const choices = (q.answer_choices ?? []).map((c) => c.trim()).filter(Boolean);
+    const choices = [...new Set((q.answer_choices ?? []).map((c) => c.trim()).filter(Boolean))].slice(0, LIMITS.options);
     const type: MappedQuestion["type"] =
       q.type === "text" ? "textarea" : q.type === "single_select" && choices.length ? "dropdown" : "text";
-    const optionKeys = new Set<string>();
+    const optionKeys = keyAllocator();
     out.push({
-      key: questionKey(label, taken),
+      key: keys.key(label),
       type,
       label,
-      options: type === "dropdown" ? choices.map((c) => ({ value: questionKey(c, optionKeys), label: { [language]: c } })) : [],
+      options: type === "dropdown" ? choices.map((c) => ({ value: optionKeys.key(c), label: { [language]: c.slice(0, LIMITS.questionLabel) } })) : [],
       required: q.required,
       position: out.length,
     });
   }
-  if (needsPhone && !taken.has("phone")) {
+  if (needsPhone && !keys.has("phone")) {
     out.unshift({ key: "phone", type: "phone", label: language === "es" ? "Número de teléfono" : "Phone number", options: [], required: true, position: -1 });
   }
   return out.map((q, i) => ({ ...q, position: i }));

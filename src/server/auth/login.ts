@@ -36,13 +36,15 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
 
   return serviceTx(async (tx) => {
     // Pre-provisioned accounts (for example from the Calendly import) are linked by email. The
-    // user principal name is also tried, because it can differ from the primary mail address.
+    // user principal name is also tried, but only for rows not yet linked to any Microsoft
+    // account, and a mail address match always wins.
     const upn = claims.preferredUsername.toLowerCase();
-    const emails = upn.includes("@") && upn !== email ? [email, upn] : [email];
-    const [existing] = await tx<{ id: string; role: "user" | "admin"; entra_oid: string | null; is_active: boolean }[]>`
-      select id, role, entra_oid, is_active from app.users
-      where entra_oid = ${claims.oid} or email = any(${emails}::citext[])
-      order by (entra_oid = ${claims.oid}) desc nulls last, (email = ${email}::citext) desc
+    const alias = upn.includes("@") && upn !== email ? upn : null;
+    const [existing] = await tx<{ id: string; email: string; role: "user" | "admin"; entra_oid: string | null; is_active: boolean }[]>`
+      select id, email::text as email, role, entra_oid, is_active from app.users
+      where entra_oid = ${claims.oid} or email = ${email}::citext
+         or (${alias}::citext is not null and email = ${alias}::citext and entra_oid is null)
+      order by (entra_oid = ${claims.oid}) is true desc, (email = ${email}::citext) desc
       limit 1
     `;
     if (existing && !existing.is_active) {
@@ -64,6 +66,16 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
             role = case when ${shouldBeAdmin} then 'admin'::app.user_role else role end
         where id = ${userId}
       `;
+      if (!existing.entra_oid) {
+        await writeAudit(tx, {
+          actorUserId: null,
+          action: "user.linked",
+          entityType: "user",
+          entityId: userId,
+          before: { email: existing.email },
+          after: { email, entra_oid: claims.oid },
+        });
+      }
       if (shouldBeAdmin && existing.role !== "admin") {
         await writeAudit(tx, {
           actorUserId: null,

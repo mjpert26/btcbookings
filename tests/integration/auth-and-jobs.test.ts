@@ -68,6 +68,19 @@ describe("first login", () => {
     expect(u).toMatchObject({ email: "john.doe@bigthinkcapital.com", entra_oid: "oid-john.doe@bigthinkcapital.com" });
     const [{ n }] = await sql<{ n: number }[]>`select count(*)::int as n from app.users`;
     expect(n).toBe(1);
+    const [audit] = await sql`select before, after from app.audit_log where action = 'user.linked' and entity_id = ${id}`;
+    expect(audit.before).toEqual({ email: "jdoe@bigthinkcapital.com" });
+  });
+
+  it("prefers the mail match and never links by user principal name to an account linked elsewhere", async () => {
+    // Another person's linked account happens to use this user's UPN as its email.
+    const other = await makeUser(sql, { email: "jdoe@bigthinkcapital.com" });
+    await sql`update app.users set entra_oid = 'oid-other' where id = ${other.id}`;
+    const own = await makeUser(sql, { email: "john.doe@bigthinkcapital.com", calendar: null });
+    const id = await completeLogin({ ...claims("john.doe@bigthinkcapital.com"), preferredUsername: "jdoe@bigthinkcapital.com" }, tokens());
+    expect(id).toBe(own.id);
+    const [o] = await sql`select entra_oid from app.users where id = ${other.id}`;
+    expect(o.entra_oid).toBe("oid-other");
   });
 
   it("activates pending queue memberships on sign-in", async () => {

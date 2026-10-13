@@ -25,9 +25,24 @@ const location = z.object({
   additional_info: z.string().nullish(),
 });
 
+const availabilityRule = z.object({
+  type: z.enum(["wday", "date"]),
+  wday: z.string().nullish(),
+  date: z.string().nullish(),
+  intervals: z.array(z.object({ from: z.string(), to: z.string() })),
+});
+
 export const snapshotSchema = z.object({
   source: z.literal("calendly"),
   pulledAt: z.string(),
+  /** Set by tooling that fills in made-up emails for local testing. Such a snapshot is never applied. */
+  placeholder: z.boolean().optional(),
+  /**
+   * The start-time window the meetings were pulled for, including cancelled meetings. Imported
+   * bookings in this window that are missing from the snapshot are treated as cancelled.
+   */
+  eventsWindow: z.object({ from: z.string().datetime({ offset: true }), to: z.string().datetime({ offset: true }) }),
+  includesCanceled: z.literal(true),
   members: z.array(
     z.object({
       uri,
@@ -35,6 +50,8 @@ export const snapshotSchema = z.object({
       email: z.string().email(),
       slug: z.string().nullish(),
       timezone: z.string().nullish(),
+      /** The member's default Calendly availability schedule. */
+      availability: z.object({ timezone: z.string().nullish(), rules: z.array(availabilityRule) }).nullish(),
     }),
   ),
   eventTypes: z.array(
@@ -43,6 +60,7 @@ export const snapshotSchema = z.object({
       name: z.string().min(1),
       slug: z.string().nullish(),
       active: z.boolean(),
+      kind: z.enum(["solo", "group"]).nullish(),
       pooling_type: z.enum(["round_robin", "collective"]).nullish(),
       duration: z.number().int().positive(),
       duration_options: z.array(z.number().int().positive()).nullish(),
@@ -54,6 +72,8 @@ export const snapshotSchema = z.object({
       locations: z.array(location).nullish(),
       /** Host user URIs for team event types, when known. */
       hosts: z.array(uri).nullish(),
+      /** False when the host list may be incomplete (the source caps or fails the lookup). */
+      hostsComplete: z.boolean().optional(),
     }),
   ),
   events: z.array(
@@ -68,6 +88,10 @@ export const snapshotSchema = z.object({
         .object({ type: z.string().nullish(), location: z.string().nullish(), join_url: z.string().nullish() })
         .nullish(),
       hosts: z.array(uri),
+      /** The primary host's blocked time including Calendly buffers. */
+      buffered_start_time: z.string().nullish(),
+      buffered_end_time: z.string().nullish(),
+      /** May be empty for cancelled meetings: a cancellation needs only the URI and status. */
       invitees: z.array(
         z.object({
           name: z.string().min(1),
@@ -89,6 +113,9 @@ export type CalendlyEventType = CalendlySnapshot["eventTypes"][number];
 export type CalendlyEvent = CalendlySnapshot["events"][number];
 
 export const IMPORT_SOURCE = "calendly";
+
+/** Field limits of the event type editor; imported rows must stay editable. */
+export const LIMITS = { name: 120, questionLabel: 200, description: 2000 } as const;
 
 const SLUG_RE = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -116,8 +143,13 @@ export function languageFor(name: string): "en" | "es" {
 
 export type MappedLocation = { type: "teams" | "phone" | "in_person" | "custom"; detail: string | null; needsPhone: boolean };
 
+const NO_LOCATION_DETAIL: Record<"en" | "es", string> = {
+  en: "Your advisor will contact you with the meeting details.",
+  es: "Su asesor se comunicará con usted con los detalles de la reunión.",
+};
+
 /** Calendly allows several locations; the app has one, so the first one wins. */
-export function mapLocation(locations: CalendlyEventType["locations"]): MappedLocation {
+export function mapLocation(locations: CalendlyEventType["locations"], language: "en" | "es" = "en"): MappedLocation {
   const first = locations?.[0];
   switch (first?.kind) {
     case "microsoft_teams_conference":
@@ -130,9 +162,10 @@ export function mapLocation(locations: CalendlyEventType["locations"]): MappedLo
     case "physical":
       return { type: "in_person", detail: first.location ?? null, needsPhone: false };
     case undefined:
-      return { type: "custom", detail: null, needsPhone: false };
+      // The editor requires a detail for custom locations.
+      return { type: "custom", detail: NO_LOCATION_DETAIL[language], needsPhone: false };
     default:
-      return { type: "custom", detail: first?.location ?? first?.additional_info ?? null, needsPhone: false };
+      return { type: "custom", detail: first?.location ?? first?.additional_info ?? NO_LOCATION_DETAIL[language], needsPhone: false };
   }
 }
 
@@ -140,7 +173,7 @@ export type MappedQuestion = {
   key: string;
   type: "text" | "textarea" | "phone" | "email" | "dropdown" | "checkbox";
   label: string;
-  options: { value: string; label: { en: string } }[];
+  options: { value: string; label: Record<string, string> }[];
   required: boolean;
   position: number;
 };
@@ -162,12 +195,12 @@ function questionKey(label: string, taken: Set<string>): string {
 }
 
 /** Enabled Calendly questions as app questions. Name and email are built in and not copied. */
-export function mapQuestions(questions: CalendlyEventType["custom_questions"], needsPhone: boolean): MappedQuestion[] {
+export function mapQuestions(questions: CalendlyEventType["custom_questions"], needsPhone: boolean, language: "en" | "es" = "en"): MappedQuestion[] {
   const taken = new Set<string>();
   const out: MappedQuestion[] = [];
   const sorted = [...(questions ?? [])].filter((q) => q.enabled).sort((a, b) => a.position - b.position);
   for (const q of sorted) {
-    const label = q.name.trim().slice(0, 300);
+    const label = q.name.trim().slice(0, LIMITS.questionLabel);
     if (!label) continue;
     if (q.type === "phone_number" && !taken.has("phone")) {
       taken.add("phone");
@@ -182,13 +215,13 @@ export function mapQuestions(questions: CalendlyEventType["custom_questions"], n
       key: questionKey(label, taken),
       type,
       label,
-      options: type === "dropdown" ? choices.map((c) => ({ value: questionKey(c, optionKeys), label: { en: c } })) : [],
+      options: type === "dropdown" ? choices.map((c) => ({ value: questionKey(c, optionKeys), label: { [language]: c } })) : [],
       required: q.required,
       position: out.length,
     });
   }
   if (needsPhone && !taken.has("phone")) {
-    out.unshift({ key: "phone", type: "phone", label: "Phone number", options: [], required: true, position: -1 });
+    out.unshift({ key: "phone", type: "phone", label: language === "es" ? "Número de teléfono" : "Phone number", options: [], required: true, position: -1 });
   }
   return out.map((q, i) => ({ ...q, position: i }));
 }
@@ -224,4 +257,67 @@ export function mapBookingLocation(
 export function answerKey(question: string, questions: Pick<MappedQuestion, "key" | "label">[]): string | null {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
   return questions.find((q) => norm(q.label) === norm(question))?.key ?? null;
+}
+
+const WDAY: Record<string, "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"> = {
+  monday: "mon",
+  tuesday: "tue",
+  wednesday: "wed",
+  thursday: "thu",
+  friday: "fri",
+  saturday: "sat",
+  sunday: "sun",
+};
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+type WallInterval = { start: string; end: string };
+
+function toIntervals(intervals: { from: string; to: string }[]): WallInterval[] {
+  const out: WallInterval[] = [];
+  for (const i of intervals) {
+    // Calendly may express end of day as 24:00 or 00:00.
+    const end = i.to === "24:00" || i.to === "00:00" ? "23:59" : i.to;
+    if (!HHMM.test(i.from) || !HHMM.test(end) || i.from >= end) continue;
+    out.push({ start: i.from, end });
+  }
+  return out.sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/**
+ * Calendly availability rules as the app's weekly rules plus date overrides. Weekdays without a
+ * rule are unavailable. Date overrides before `today` (YYYY-MM-DD) are dropped.
+ */
+export function mapAvailability(
+  rules: { type: "wday" | "date"; wday?: string | null; date?: string | null; intervals: { from: string; to: string }[] }[],
+  today: string,
+): { weekly: Record<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun", WallInterval[]>; overrides: { date: string; intervals: WallInterval[] }[] } {
+  const weekly = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] } as Record<"mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun", WallInterval[]>;
+  const overrides: { date: string; intervals: WallInterval[] }[] = [];
+  for (const r of rules) {
+    if (r.type === "wday") {
+      const day = WDAY[(r.wday ?? "").toLowerCase()];
+      if (day) weekly[day] = [...weekly[day], ...toIntervals(r.intervals)];
+    } else if (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) && r.date >= today) {
+      overrides.push({ date: r.date, intervals: toIntervals(r.intervals) });
+    }
+  }
+  return { weekly, overrides };
+}
+
+/**
+ * The blocked range for an imported meeting: Calendly's buffered times when they enclose the
+ * meeting, otherwise the meeting itself.
+ */
+export function blockedRange(ev: Pick<CalendlyEvent, "start_time" | "end_time" | "buffered_start_time" | "buffered_end_time">): string {
+  const start = new Date(ev.start_time);
+  const end = new Date(ev.end_time);
+  const bs = ev.buffered_start_time ? new Date(ev.buffered_start_time) : start;
+  const be = ev.buffered_end_time ? new Date(ev.buffered_end_time) : end;
+  const ok = !Number.isNaN(bs.getTime()) && !Number.isNaN(be.getTime()) && bs <= start && be >= end;
+  return `[${(ok ? bs : start).toISOString()},${(ok ? be : end).toISOString()})`;
+}
+
+/** True when Calendly considers the meeting cancelled. */
+export function isCancelled(ev: Pick<CalendlyEvent, "status" | "invitees">): boolean {
+  return ev.status === "canceled" || (ev.invitees.length > 0 && ev.invitees.every((i) => i.status === "canceled"));
 }

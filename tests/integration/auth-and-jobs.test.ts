@@ -60,6 +60,16 @@ describe("first login", () => {
     await expect(completeLogin(claims("x@bigthinkcapital.com"), tokens({ refreshToken: null }))).rejects.toBeInstanceOf(LoginRejected);
   });
 
+  it("links a pre-provisioned account by user principal name when the mail address differs", async () => {
+    const pre = await makeUser(sql, { email: "jdoe@bigthinkcapital.com", calendar: null });
+    const id = await completeLogin({ ...claims("john.doe@bigthinkcapital.com"), preferredUsername: "JDoe@bigthinkcapital.com" }, tokens());
+    expect(id).toBe(pre.id);
+    const [u] = await sql`select email, entra_oid from app.users where id = ${id}`;
+    expect(u).toMatchObject({ email: "john.doe@bigthinkcapital.com", entra_oid: "oid-john.doe@bigthinkcapital.com" });
+    const [{ n }] = await sql<{ n: number }[]>`select count(*)::int as n from app.users`;
+    expect(n).toBe(1);
+  });
+
   it("activates pending queue memberships on sign-in", async () => {
     const [team] = await sql`insert into app.teams (name, slug, membership_source) values ('SDR', 'sdr', 'salesforce_queue') returning id`;
     await sql`insert into app.team_members (team_id, email, status, source) values (${team.id}, 'rep@bigthinkcapital.com', 'pending_onboarding', 'queue')`;

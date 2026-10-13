@@ -55,11 +55,16 @@ export function ImportForm() {
             Report {r.applied ? <Badge tone="success">Applied</Badge> : <Badge>Dry run</Badge>}
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Stat label="Users" value={`${r.users.created} new, ${r.users.existing} existing`} />
+            <Stat label="Users" value={`${r.users.created} new (${r.users.schedulesImported} with Calendly hours), ${r.users.existing} existing`} />
             <Stat label="Teams" value={`${r.teams.created} new, ${r.teams.existing} existing, ${r.teamMembers.added} members added`} />
-            <Stat label="Booking pages" value={`${r.eventTypes.created} new, ${r.eventTypes.existing} existing, ${r.eventTypes.skipped} skipped`} />
-            <Stat label="Bookings" value={`${r.bookings.created} new, ${r.bookings.updated} moved, ${r.bookings.cancelled} cancelled`} />
+            <Stat
+              label="Booking pages"
+              value={`${r.eventTypes.created} new (inactive, ${r.eventTypes.goLiveEligible} ready to go live), ${r.eventTypes.existing} existing, ${r.eventTypes.skipped} skipped`}
+            />
+            <Stat label="Bookings" value={`${r.bookings.created} new, ${r.bookings.updated} moved, ${r.bookings.reassigned} reassigned`} />
+            <Stat label="Cancelled in Calendly" value={`${r.bookings.cancelled} cancelled, ${r.bookings.cancelledMissing} no longer listed`} />
             <Stat label="Bookings (other)" value={`${r.bookings.unchanged} unchanged, ${r.bookings.flagged} flagged, ${r.bookings.skipped} skipped`} />
+            <Stat label="Time" value={`${(r.elapsedMs / 1000).toFixed(1)} s`} />
           </div>
           {r.warnings.length ? (
             <details className="rounded-lg border border-border bg-surface p-4 text-sm">

@@ -35,10 +35,14 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
   }
 
   return serviceTx(async (tx) => {
+    // Pre-provisioned accounts (for example from the Calendly import) are linked by email. The
+    // user principal name is also tried, because it can differ from the primary mail address.
+    const upn = claims.preferredUsername.toLowerCase();
+    const emails = upn.includes("@") && upn !== email ? [email, upn] : [email];
     const [existing] = await tx<{ id: string; role: "user" | "admin"; entra_oid: string | null; is_active: boolean }[]>`
       select id, role, entra_oid, is_active from app.users
-      where entra_oid = ${claims.oid} or email = ${email}
-      order by (entra_oid = ${claims.oid}) desc nulls last
+      where entra_oid = ${claims.oid} or email = any(${emails}::citext[])
+      order by (entra_oid = ${claims.oid}) desc nulls last, (email = ${email}::citext) desc
       limit 1
     `;
     if (existing && !existing.is_active) {

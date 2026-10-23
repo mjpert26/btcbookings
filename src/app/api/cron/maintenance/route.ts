@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { assertCron } from "@/server/http/cron";
 import { service } from "@/server/db/client";
 import { purgeRateLimits } from "@/server/http/rate-limit";
+import { purgeErrorLog } from "@/server/errors/admin";
 
 export const dynamic = "force-dynamic";
 
-/** Daily cleanup of expired sessions, OAuth state, nonces, rate-limit windows, and old job attempts. */
+/** Daily cleanup of expired sessions, OAuth state, nonces, rate-limit windows, old job attempts, and old error log entries. */
 export async function GET(req: Request) {
   const denied = assertCron(req);
   if (denied) return denied;
@@ -16,5 +17,6 @@ export async function GET(req: Request) {
   await purgeRateLimits(sql);
   await sql`delete from app.job_attempts where created_at < now() - interval '180 days'`;
   await sql`delete from app.jobs where status = 'succeeded' and updated_at < now() - interval '90 days'`;
+  await purgeErrorLog(sql);
   return NextResponse.json({ ok: true });
 }

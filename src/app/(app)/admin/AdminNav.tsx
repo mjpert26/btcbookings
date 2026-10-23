@@ -11,6 +11,7 @@ const ITEMS = [
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/audit", label: "Audit log" },
+  { href: "/admin/errors", label: "Errors" },
 ];
 
 export function AdminNav() {

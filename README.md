@@ -16,6 +16,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Cron jobs](#cron-jobs)
 - [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
+- [Error log](#error-log)
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Future work](#future-work)
@@ -122,7 +123,7 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/graph-delta` | every 15 minutes | Delta reconciliation for every healthy calendar connection |
 | `/api/cron/reminders` | every 5 minutes | Safety net for reminder emails |
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
-| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows and old job rows |
+| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows, old job rows and old error log entries |
 
 ## Importing from Calendly
 
@@ -142,6 +143,12 @@ Admins are global (`users.role = 'admin'`). Any of these works:
 - An existing admin uses **Admin > Users** to change the role (audited).
 
 Team admins (manage one team's members and settings, but not Salesforce, Slack or queue links) are assigned on the team page.
+
+## Error log
+
+Server errors from pages, route handlers, server actions, cron routes, the REST API, the MCP server and failed jobs are recorded in `app.error_log` and listed at **Admin > Errors** (`/admin/errors`, admins only). Repeats of the same error are grouped and counted. Messages, stacks and context are redacted before they are stored (tokens, cookies, email addresses, phone numbers and long digit runs). Admins resolve or reopen entries; both actions are audited. Resolved entries are purged after 90 days and all entries after 180 days.
+
+Request errors are captured by the `onRequestError` hook in `src/instrumentation.ts`. Other modules record errors they handle with `logError(err, { source, route, method, context })` from `src/server/errors/log.ts`, which never throws. No environment variables are needed. Details: [`docs/error-log.md`](docs/error-log.md).
 
 ## Testing
 
@@ -179,6 +186,7 @@ src/server/slack        Slack channel sync
 src/server/salesforce   Lead payload mapping and outbox handler
 src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts
+src/server/errors       error log: redaction, fingerprinting, logError(), admin queries
 supabase/migrations     schema and RLS
 n8n/                    importable n8n workflows
 docs/                   plan, setup guides, runbook

@@ -107,6 +107,13 @@ curl -X POST "$APP_BASE_URL/api/v1/bookings" \
   -d '{"eventTypeId":"<id>","start":"2026-11-03T15:00:00Z","invitee":{"name":"Pat","email":"pat@example.com","timezone":"America/New_York"}}'
 ```
 
+## Request log and limits
+
+- **Rate limits:** 120 requests per minute per API key on the REST API, and 240 per minute per token on the MCP server. Over the limit, the response is 429 with `Retry-After`.
+- **Request log:** every authenticated request is written to `app.api_request_log` after the response is sent. Each entry records the user, the API key or OAuth app, the method, the route with identifiers replaced by `:id`, the JSON-RPC methods (for example `tools/call list_bookings`), the status and the duration. Request and response bodies, query strings and headers are never stored, and the client IP is stored only as a salted hash. Entries are deleted after 30 days.
+- **Who sees it:** users see their own last 25 requests on **Settings > Integrations**; admins see the last 100 from everyone on **Admin > Integrations**.
+- **Errors:** unexpected failures are also recorded in the error log (**Admin > Errors**).
+
 ## Code layout
 
 ```
@@ -115,6 +122,7 @@ src/server/oauth/               authorization server, tokens, metadata
 src/server/api/context.ts       Caller, ApiError, asCaller (RLS and audit channel)
 src/server/api/services/        bookings, booking pages and questions, teams, users, audit
 src/server/api/http.ts          REST plumbing (API keys, rate limits, errors)
+src/server/api/request-log.ts   request log for the REST API and MCP server
 src/server/mcp/                 MCP protocol handler and tools
 src/app/api/v1/                 REST routes
 src/app/api/mcp/route.ts        MCP endpoint (also at /mcp)

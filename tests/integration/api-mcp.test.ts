@@ -20,6 +20,8 @@ import { GET as openapiGET } from "@/app/api/v1/openapi.json/route";
 import { GET as protectedResourceGET } from "@/app/.well-known/oauth-protected-resource/[[...path]]/route";
 import { GET as asMetadataGET } from "@/app/.well-known/oauth-authorization-server/route";
 import { isAllowedRedirect, matchesPattern } from "@/lib/oauth-redirects";
+import { rpcMethodsOf } from "@/server/api/request-log";
+import { withUser } from "@/server/db/client";
 
 let sql: Sql;
 beforeAll(() => {
@@ -314,5 +316,38 @@ describe("REST API", () => {
     const doc = (await (await openapiGET()).json()) as { openapi: string; paths: Record<string, unknown> };
     expect(doc.openapi).toBe("3.1.0");
     expect(Object.keys(doc.paths)).toContain("/bookings");
+  });
+});
+
+describe("request log", () => {
+  it("names JSON-RPC methods and tools", () => {
+    expect(rpcMethodsOf({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_bookings" } })).toEqual(["tools/call list_bookings"]);
+    expect(rpcMethodsOf([{ method: "initialize" }, { method: "notifications/initialized" }, "junk", null])).toEqual(["initialize", "notifications/initialized"]);
+    expect(rpcMethodsOf({ method: "tools/call", params: { name: "x<script>" } })).toEqual(["tools/call xscript"]);
+  });
+
+  it("records authenticated API and MCP requests without bodies and scopes them by user", async () => {
+    const agent = await makeHost(sql, { name: "Agent A" });
+    const admin = await makeUser(sql, { role: "admin", name: "Admin" });
+    const { key } = await createApiKey(agent.id, "logged");
+    const tok = (await oauthTokens(admin.id)).access_token;
+
+    expect((await meGET(req("/api/v1/me"), ctx({}))).status).toBe(401);
+    expect((await meGET(req("/api/v1/me?secret=abc", { token: key }), ctx({}))).status).toBe(200);
+    await rpc(tok, "tools/call", { name: "whoami", arguments: {} });
+
+    const rows = await sql<{ via: string; user_id: string; method: string; route: string; rpc_methods: string[]; status: number; client_id: string | null }[]>`
+      select via, user_id, method, route, rpc_methods, status, client_id from app.api_request_log order by id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ via: "api", user_id: agent.id, method: "GET", route: "/api/v1/me", rpc_methods: [], status: 200 });
+    expect(rows[1]).toMatchObject({ via: "mcp", user_id: admin.id, method: "POST", rpc_methods: ["tools/call whoami"], status: 200 });
+    expect(rows[1].client_id).not.toBeNull();
+
+    const seenByAgent = await withUser(agent.id, (tx) => tx`select user_id from app.api_request_log`);
+    const seenByAdmin = await withUser(admin.id, (tx) => tx`select user_id from app.api_request_log`);
+    expect(seenByAgent.map((r) => r.user_id)).toEqual([agent.id]);
+    expect(seenByAdmin).toHaveLength(2);
+    await expect(withUser(agent.id, (tx) => tx`delete from app.api_request_log`)).rejects.toMatchObject({ code: "42501" });
   });
 });

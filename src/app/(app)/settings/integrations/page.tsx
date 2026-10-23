@@ -3,6 +3,7 @@ import { requireUser } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { mcpResource } from "@/server/oauth/config";
 import { myIntegrations } from "@/server/integrations/admin";
+import { RequestLogTable } from "@/components/app/RequestLogTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
@@ -21,7 +22,7 @@ function Code({ children }: { children: string }) {
 
 export default async function IntegrationsPage() {
   const user = await requireUser();
-  const { keys, apps } = await myIntegrations(user);
+  const { keys, apps, requests } = await myIntegrations(user);
   const mcpUrl = mcpResource();
   const apiBase = `${env().APP_BASE_URL}/api/v1`;
   const zone = user.timezone;
@@ -130,6 +131,13 @@ export default async function IntegrationsPage() {
                 </TBody>
               </Table>
             ) : null}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title="Recent requests" description="Your last 25 requests through the REST API and MCP server, kept for 30 days." />
+          <CardBody>
+            <RequestLogTable rows={requests} zone={zone} caption="Your recent API and MCP requests" />
           </CardBody>
         </Card>
       </div>

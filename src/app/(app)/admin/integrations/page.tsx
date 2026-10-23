@@ -11,6 +11,7 @@ import { ActionButton } from "@/components/app/ActionButton";
 import { ActionForm } from "@/components/ui/Form";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { formatDateTime } from "@/lib/format";
+import { RequestLogTable } from "@/components/app/RequestLogTable";
 import { addCallbackAction, registerClientAction, removeCallbackAction, revokeAnyTokenAction, toggleClientAction } from "../_actions/integrations";
 
 export const metadata: Metadata = { title: "Integrations" };
@@ -29,7 +30,7 @@ function Row({ label, value }: { label: string; value: string }) {
 
 export default async function AdminIntegrationsPage() {
   const user = await requireAdmin();
-  const { allowlist, clients, tokens } = await adminIntegrations(user);
+  const { allowlist, clients, tokens, requests } = await adminIntegrations(user);
   const meta = authorizationServerMetadata();
   const zone = user.timezone;
 
@@ -195,6 +196,13 @@ export default async function AdminIntegrationsPage() {
             ) : (
               <p className="text-sm text-muted">No active keys or connections.</p>
             )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title="Recent requests" description="The last 100 REST API and MCP requests from signed-in callers. Bodies are never stored; entries are kept for 30 days." />
+          <CardBody>
+            <RequestLogTable rows={requests} zone={zone} showUser caption="Recent API and MCP requests" />
           </CardBody>
         </Card>
       </div>

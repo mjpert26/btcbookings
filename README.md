@@ -139,7 +139,7 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/graph-delta` | every 15 minutes | Delta reconciliation for every healthy calendar connection |
 | `/api/cron/reminders` | every 5 minutes | Safety net for reminders (email, SMS and Slack direct messages) |
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
-| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows, old job rows and old error log entries |
+| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, codes and tokens, nonces, rate-limit windows, old job rows, old error log entries and API request log entries older than 30 days |
 
 ## REST API and MCP server
 
@@ -149,7 +149,7 @@ AI assistants connect to the MCP server at `https://mcp.bigthinkcapital.com/mcp`
 - **Manager:** reads everything.
 - **Admin:** manages everything.
 
-Every change is audited with its channel. Users manage their API keys and connected apps under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients under **Admin > Integrations**. For setup (including the mcp.bigthinkcapital.com domain), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
+Every change is audited with its channel. Each authenticated request is recorded in `app.api_request_log` (caller, key or app, route, JSON-RPC methods, status and duration; never bodies) for 30 days. Users manage their API keys and connected apps, and see their recent requests, under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients, and see all recent requests, under **Admin > Integrations**. For setup (including the mcp.bigthinkcapital.com domain), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
 
 ## Importing from Calendly
 

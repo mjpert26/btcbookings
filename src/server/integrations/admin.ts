@@ -1,5 +1,5 @@
 import "server-only";
-import { withUser } from "@/server/db/client";
+import { withUser, type Tx } from "@/server/db/client";
 import { writeAudit } from "@/server/audit";
 import { checkRedirectPattern, checkRedirectUri } from "@/lib/oauth-redirects";
 import { createApiKey, registerClient } from "@/server/oauth/server";
@@ -26,7 +26,26 @@ async function assertAdmin(user: SessionUser): Promise<void> {
 export type ApiKeyRow = { id: string; name: string | null; prefix: string; created_at: Date; last_used_at: Date | null; expires_at: Date | null };
 export type ConnectedApp = { client_id: string; name: string; connected_at: Date; last_used_at: Date | null };
 
-export async function myIntegrations(user: SessionUser): Promise<{ keys: ApiKeyRow[]; apps: ConnectedApp[] }> {
+export type RequestLogRow = {
+  id: string;
+  created_at: Date;
+  via: "api" | "mcp";
+  user_name: string | null;
+  key_name: string | null;
+  client_name: string | null;
+  method: string;
+  route: string;
+  rpc_methods: string[];
+  status: number;
+  duration_ms: number;
+};
+
+const requestLogColumns = (tx: Tx) => tx`
+  l.id::text as id, l.created_at, l.via, u.name as user_name, t.name as key_name, c.name as client_name,
+  l.method, l.route, l.rpc_methods, l.status, l.duration_ms
+`;
+
+export async function myIntegrations(user: SessionUser): Promise<{ keys: ApiKeyRow[]; apps: ConnectedApp[]; requests: RequestLogRow[] }> {
   return withUser(user.id, async (tx) => {
     const keys = await tx<ApiKeyRow[]>`
       select id, name, prefix, created_at, last_used_at, expires_at from app.api_tokens
@@ -40,7 +59,17 @@ export async function myIntegrations(user: SessionUser): Promise<{ keys: ApiKeyR
       group by t.client_id, c.name
       order by c.name
     `;
-    return { keys, apps };
+    const requests = await tx<RequestLogRow[]>`
+      select ${requestLogColumns(tx)}
+      from app.api_request_log l
+      left join app.users u on u.id = l.user_id
+      left join app.api_tokens t on t.id = l.token_id
+      left join app.oauth_clients c on c.client_id = l.client_id
+      where l.user_id = ${user.id}
+      order by l.created_at desc
+      limit 25
+    `;
+    return { keys, apps, requests };
   });
 }
 
@@ -87,7 +116,9 @@ export type AllowlistRow = { id: string; pattern: string; note: string | null; c
 export type ClientRow = { client_id: string; name: string; redirect_uris: string[]; registered_via: string; disabled_at: Date | null; created_at: Date; last_used_at: Date | null; users: number };
 export type TokenRow = { id: string; kind: string; prefix: string; name: string | null; user_name: string; client_name: string | null; created_at: Date; last_used_at: Date | null; expires_at: Date | null };
 
-export async function adminIntegrations(user: SessionUser): Promise<{ allowlist: AllowlistRow[]; clients: ClientRow[]; tokens: TokenRow[] }> {
+export async function adminIntegrations(
+  user: SessionUser,
+): Promise<{ allowlist: AllowlistRow[]; clients: ClientRow[]; tokens: TokenRow[]; requests: RequestLogRow[] }> {
   await assertAdmin(user);
   return withUser(user.id, async (tx) => {
     const allowlist = await tx<AllowlistRow[]>`select id, pattern, note, created_at from app.oauth_redirect_allowlist order by created_at`;
@@ -106,7 +137,16 @@ export async function adminIntegrations(user: SessionUser): Promise<{ allowlist:
       order by t.last_used_at desc nulls last, t.created_at desc
       limit 300
     `;
-    return { allowlist, clients, tokens };
+    const requests = await tx<RequestLogRow[]>`
+      select ${requestLogColumns(tx)}
+      from app.api_request_log l
+      left join app.users u on u.id = l.user_id
+      left join app.api_tokens t on t.id = l.token_id
+      left join app.oauth_clients c on c.client_id = l.client_id
+      order by l.created_at desc
+      limit 100
+    `;
+    return { allowlist, clients, tokens, requests };
   });
 }
 

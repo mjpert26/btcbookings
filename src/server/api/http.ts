@@ -7,6 +7,7 @@ import { service } from "@/server/db/client";
 import { rateLimit } from "@/server/http/rate-limit";
 import { ApiError, type Caller } from "@/server/api/context";
 import { logError } from "@/server/errors/log";
+import { logRequest } from "@/server/api/request-log";
 
 /**
  * HTTP plumbing for the REST API (/api/v1). Requests authenticate with an API key
@@ -74,30 +75,38 @@ type Handler<C> = (args: { req: Request; caller: Caller; ctx: C }) => Promise<un
  */
 export function apiRoute<C = unknown>(handler: Handler<C>, opts: { successStatus?: number } = {}) {
   return async (req: Request, ctx: C): Promise<Response> => {
-    const route = new URL(req.url).pathname;
-    try {
-      const caller = await apiCaller(req);
-      if (!caller) {
-        return apiErrorResponse(new ApiError(401, "unauthorized", "Provide a valid API key: Authorization: Bearer btc_pat_..."), {
-          "WWW-Authenticate": 'Bearer realm="BTC Scheduler API"',
-        });
+    const startedAt = Date.now();
+    // Assigned inside the closure below; the cast keeps TypeScript from narrowing it to null.
+    let caller = null as Caller | null;
+    const res = await (async (): Promise<Response> => {
+      const route = new URL(req.url).pathname;
+      try {
+        caller = await apiCaller(req);
+        if (!caller) {
+          return apiErrorResponse(new ApiError(401, "unauthorized", "Provide a valid API key: Authorization: Bearer btc_pat_..."), {
+            "WWW-Authenticate": 'Bearer realm="BTC Scheduler API"',
+          });
+        }
+        const limited = await rateLimit(`api:${caller.tokenId}`, RATE_LIMIT, 60);
+        if (!limited.allowed) {
+          return apiErrorResponse(new ApiError(429, "rate_limited", "Too many requests."), { "Retry-After": String(limited.retryAfterSeconds) });
+        }
+        const result = await handler({ req, caller, ctx });
+        if (result === undefined) return new Response(null, { status: 204 });
+        if (result && typeof result === "object" && "status" in result && "body" in result) {
+          const r = result as { status: number; body: unknown };
+          return apiJson(r.body, r.status);
+        }
+        return apiJson({ data: result }, opts.successStatus ?? 200);
+      } catch (err) {
+        if (err instanceof ApiError) return apiErrorResponse(err);
+        if (err instanceof ZodError) return apiErrorResponse(new ApiError(400, "invalid_request", "The request is invalid."));
+        await logError(err, { source: "api", route, method: req.method });
+        return apiErrorResponse(new ApiError(500, "internal_error", "Something went wrong. The error has been logged."));
       }
-      const limited = await rateLimit(`api:${caller.tokenId}`, RATE_LIMIT, 60);
-      if (!limited.allowed) {
-        return apiErrorResponse(new ApiError(429, "rate_limited", "Too many requests."), { "Retry-After": String(limited.retryAfterSeconds) });
-      }
-      const result = await handler({ req, caller, ctx });
-      if (result === undefined) return new Response(null, { status: 204 });
-      if (result && typeof result === "object" && "status" in result && "body" in result) {
-        const r = result as { status: number; body: unknown };
-        return apiJson(r.body, r.status);
-      }
-      return apiJson({ data: result }, opts.successStatus ?? 200);
-    } catch (err) {
-      if (err instanceof ApiError) return apiErrorResponse(err);
-      if (err instanceof ZodError) return apiErrorResponse(new ApiError(400, "invalid_request", "The request is invalid."));
-      await logError(err, { source: "api", route, method: req.method });
-      return apiErrorResponse(new ApiError(500, "internal_error", "Something went wrong. The error has been logged."));
-    }
+    })();
+    // Authenticated requests only: unauthenticated traffic has no user to attribute it to.
+    if (caller) await logRequest({ via: "api", caller, req, status: res.status, startedAt });
+    return res;
   };
 }

@@ -7,6 +7,7 @@ import { handleBody, PARSE_ERROR, rpcError } from "@/server/mcp/server";
 import { rateLimit } from "@/server/http/rate-limit";
 import type { Caller } from "@/server/api/context";
 import { reportMcpError } from "@/server/mcp/report";
+import { logRequest, rpcMethodsOf } from "@/server/api/request-log";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -36,23 +37,29 @@ async function callerFor(req: Request): Promise<Caller | null> {
 
 /** POST /mcp (Streamable HTTP): JSON-RPC requests in, JSON responses out. */
 export async function POST(req: Request) {
+  const startedAt = Date.now();
   const caller = await callerFor(req);
   if (!caller) return unauthorized(req, req.headers.get("authorization") ? "invalid_token" : "invalid_request");
+  let rpcMethods: string[] = [];
+  const res = await (async (): Promise<Response> => {
+    const limited = await rateLimit(`mcp:${caller.tokenId}`, 240, 60);
+    if (!limited.allowed) return corsJson(rpcError(null, -32000, "Too many requests"), 429, { "Retry-After": String(limited.retryAfterSeconds) });
 
-  const limited = await rateLimit(`mcp:${caller.tokenId}`, 240, 60);
-  if (!limited.allowed) return corsJson(rpcError(null, -32000, "Too many requests"), 429, { "Retry-After": String(limited.retryAfterSeconds) });
-
-  const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) return corsJson(rpcError(null, -32600, "Request too large"), 413);
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return corsJson(rpcError(null, PARSE_ERROR, "Parse error"), 400);
-  }
-  const result = await handleBody(caller, body, (err, tool) => reportMcpError(err, tool));
-  if (result === null) return new Response(null, { status: 202, headers: CORS_HEADERS });
-  return corsJson(result, 200);
+    const text = await req.text();
+    if (text.length > MAX_BODY_BYTES) return corsJson(rpcError(null, -32600, "Request too large"), 413);
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      return corsJson(rpcError(null, PARSE_ERROR, "Parse error"), 400);
+    }
+    rpcMethods = rpcMethodsOf(body);
+    const result = await handleBody(caller, body, (err, tool) => reportMcpError(err, tool));
+    if (result === null) return new Response(null, { status: 202, headers: CORS_HEADERS });
+    return corsJson(result, 200);
+  })();
+  await logRequest({ via: "mcp", caller, req, status: res.status, startedAt, rpcMethods });
+  return res;
 }
 
 /** No server-initiated streams: the server never sends requests or notifications. */

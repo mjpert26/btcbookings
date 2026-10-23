@@ -60,11 +60,6 @@ const isReminder = (j: JobRowT) =>
     j.kind === "sms_send" ||
     j.kind === "slack_dm_send");
 
-const isAgentReminder = (j: JobRowT) =>
-  (j.kind === "email_send" && j.payload.template === "host_booking_reminder") ||
-  j.kind === "slack_dm_send" ||
-  (j.kind === "sms_send" && j.payload.recipient !== "invitee");
-
 async function teamSetup(opts: { channels?: boolean; partner?: string; locationType?: "teams" | "phone" } = {}) {
   const host = await makeHost(sql, { name: "Dana Host", timezone: "America/Los_Angeles" });
   const team = await makeTeam(sql, [host.id], { name: opts.partner ?? "Acme ISO" });

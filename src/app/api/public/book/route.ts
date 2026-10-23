@@ -51,6 +51,7 @@ export async function POST(req: NextRequest) {
         name: body.name,
         email: body.email,
         phone: body.phone || null,
+        smsConsent: body.smsConsent === true,
         timezone: body.timezone,
         answers: body.answers,
         idempotencyKey: body.idempotencyKey ?? null,

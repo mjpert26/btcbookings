@@ -5,7 +5,8 @@ import { isLocale, type Locale } from "@/i18n/locales";
 import { PermanentJobError, type JobContext, type JobHandler, type JobResult, type JobRow } from "@/server/jobs/types";
 import { bookingById } from "@/server/booking/view";
 import { buildInviteeData } from "@/server/email/jobs";
-import { loadAgentReminderData, reminderSkipReason } from "@/server/email/reminders";
+import { loadAgentReminderData, reminderDisabledReason, reminderSkipReason } from "@/server/email/reminders";
+import { loadReminderSettings } from "@/server/booking/side-effects";
 import { isOptedOut } from "@/server/sms/opt-out";
 import { normalizeE164, redactPhone } from "@/server/sms/phone";
 import { sendSms } from "@/server/sms/sendblue";
@@ -24,8 +25,10 @@ function skip(reason: string): JobResult {
 
 /**
  * sms_send: one reminder text to the merchant (invitee_phone) or to a host
- * (user_settings.sms_phone). Loads fresh booking state, normalizes the number to E.164,
- * and never sends to an invalid or opted-out number.
+ * (user_settings.sms_phone). Loads fresh booking state and the event type's current
+ * reminder settings, normalizes the number to E.164, and never sends to an invalid or
+ * opted-out number. Merchant texts also require the consent recorded at booking time
+ * (bookings.sms_consent_at).
  */
 export async function handleSmsSend(
   job: Pick<JobRow, "id" | "payload">,
@@ -39,8 +42,11 @@ export async function handleSmsSend(
   const booking = await bookingById(sql, p.bookingId);
   if (!booking) return skip("booking_not_found");
   const audience = p.recipient === "invitee" ? "merchant" : "agent";
-  const reason = reminderSkipReason(audience, booking, p.offsetMin, opts.now ?? Date.now());
+  const now = opts.now ?? Date.now();
+  const reason = reminderSkipReason(audience, booking, p.offsetMin, now);
   if (reason) return skip(reason);
+  const disabled = reminderDisabledReason(await loadReminderSettings(sql, p.bookingId), audience, "sms", p.offsetMin);
+  if (disabled) return skip(disabled);
 
   let rawPhone: string | null;
   let body: string;
@@ -48,6 +54,7 @@ export async function handleSmsSend(
     rawPhone = booking.invitee_phone;
     const phone = normalizeE164(rawPhone);
     if (!phone) return skip(rawPhone ? "invalid_phone" : "no_phone");
+    if (!booking.sms_consent_at) return skip("no_consent");
     if (await isOptedOut(sql, phone)) return skip("opted_out");
     const data = await buildInviteeData(sql, booking);
     body = merchantReminderSms({
@@ -62,7 +69,7 @@ export async function handleSmsSend(
     return send(ctx, phone, body, booking.language);
   }
 
-  const data = await loadAgentReminderData(sql, booking, p.recipient.userId, p.offsetMin);
+  const data = await loadAgentReminderData(sql, booking, p.recipient.userId, p.offsetMin, now);
   if (!data) return skip("not_a_host");
   const [settings] = await sql<{ sms_phone: string | null }[]>`
     select sms_phone from app.user_settings where user_id = ${p.recipient.userId}

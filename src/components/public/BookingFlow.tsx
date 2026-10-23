@@ -16,7 +16,10 @@ export function useDetectedTimezone(): string | null {
 }
 
 type Props = {
-  event: Pick<PublicEventType, "ownerKind" | "ownerSlug" | "eventSlug" | "language" | "durations" | "defaultDuration" | "questions">;
+  event: Pick<
+    PublicEventType,
+    "ownerKind" | "ownerSlug" | "eventSlug" | "language" | "durations" | "defaultDuration" | "questions" | "smsReminders"
+  >;
   windowEnd: string;
   turnstileSiteKey: string | null;
 };
@@ -95,6 +98,7 @@ function IntakeForm(props: {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [smsConsent, setSmsConsent] = useState(false);
   const [answers, setAnswers] = useState<Record<string, string | boolean>>({});
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -146,6 +150,8 @@ function IntakeForm(props: {
           name: name.trim(),
           email: email.trim(),
           phone: phone.trim() || null,
+          // Consent is sent only from the checkbox, shown when the page sends reminder texts.
+          smsConsent: event.smsReminders && smsConsent && !!phone.trim(),
           timezone,
           answers: Object.fromEntries(Object.entries(answers).filter(([, v]) => v !== "")),
           idempotencyKey,
@@ -220,6 +226,25 @@ function IntakeForm(props: {
         <Field id="f-phone" label={phoneQuestion?.label || t("phone")} optional={!phoneRequired ? t("optional") : undefined} error={errorText("phone")}>
           <input id="f-phone" name="phone" type="tel" autoComplete="tel" required={phoneRequired} maxLength={40} value={phone} onChange={(e) => setPhone(e.target.value)} {...aria("f-phone", errors.phone)} className={inputClass(errors.phone)} />
         </Field>
+        {event.smsReminders ? (
+          <div>
+            <label htmlFor="f-sms-consent" className="flex items-start gap-3 text-sm text-ink">
+              <input
+                id="f-sms-consent"
+                name="smsConsent"
+                type="checkbox"
+                checked={smsConsent}
+                onChange={(e) => setSmsConsent(e.target.checked)}
+                aria-describedby="f-sms-consent-disclosure"
+                className="mt-0.5 h-5 w-5 rounded border-border accent-[var(--btc-primary)]"
+              />
+              <span>{t("smsConsent")}</span>
+            </label>
+            <p id="f-sms-consent-disclosure" className="mt-1 pl-8 text-xs text-muted">
+              {t("smsDisclosure")}
+            </p>
+          </div>
+        ) : null}
         {otherQuestions.map((q) => {
           const id = `f-q-${q.key}`;
           const value = answers[q.key];

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { service, type Sql } from "@/server/db/client";
 import { PermanentJobError, type JobContext, type JobHandler, type JobResult, type JobRow } from "@/server/jobs/types";
 import { bookingById } from "@/server/booking/view";
-import { loadAgentReminderData, reminderSkipReason } from "@/server/email/reminders";
+import { loadAgentReminderData, reminderDisabledReason, reminderSkipReason } from "@/server/email/reminders";
+import { loadReminderSettings } from "@/server/booking/side-effects";
 import { SLACK_CONFIG_ERRORS, slackClientFromEnv, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
 import { agentReminderSlackText } from "@/server/slack/dm";
 import { configErrorMessage, resolveSlackUserId, SlackConfigError } from "@/server/slack/sync";
@@ -26,7 +27,8 @@ export type SlackDmDeps = { client?: () => SlackClient; sql?: Sql; now?: number 
 
 /**
  * slack_dm_send: a reminder posted as a direct message from the bot to a host. The Slack
- * user id is resolved by email and cached in app.slack_identities. Without
+ * user id is resolved by email and cached in app.slack_identities. The event type's
+ * current reminder settings are re-checked before sending. Without
  * SLACK_BOT_TOKEN the job completes as skipped.
  */
 export async function handleSlackDm(job: Pick<JobRow, "id" | "payload">, ctx: Pick<JobContext, "log">, deps: SlackDmDeps = {}): Promise<JobResult> {
@@ -36,9 +38,12 @@ export async function handleSlackDm(job: Pick<JobRow, "id" | "payload">, ctx: Pi
   const sql = deps.sql ?? service();
   const booking = await bookingById(sql, p.bookingId);
   if (!booking) return skip("booking_not_found");
-  const reason = reminderSkipReason("agent", booking, p.offsetMin, deps.now ?? Date.now());
+  const now = deps.now ?? Date.now();
+  const reason = reminderSkipReason("agent", booking, p.offsetMin, now);
   if (reason) return skip(reason);
-  const data = await loadAgentReminderData(sql, booking, p.userId, p.offsetMin);
+  const disabled = reminderDisabledReason(await loadReminderSettings(sql, p.bookingId), "agent", "slack", p.offsetMin);
+  if (disabled) return skip(disabled);
+  const data = await loadAgentReminderData(sql, booking, p.userId, p.offsetMin, now);
   if (!data) return skip("not_a_host");
 
   let client: SlackClient;

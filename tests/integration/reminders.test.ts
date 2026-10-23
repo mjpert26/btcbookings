@@ -4,6 +4,7 @@ import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
 import { futureSlot, invitee, makeEvent, makeHost, makeTeam } from "../helpers/booking-flow-fixtures";
 import { withUser, type Sql } from "@/server/db/client";
 import { createBooking } from "@/server/booking/create";
+import { loadPublicEventType, toPublicEventType } from "@/server/booking/load";
 import { cancelByInvitee, rescheduleByInvitee } from "@/server/booking/manage";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
 import { reassignBooking } from "@/server/booking/jobs";
@@ -59,6 +60,11 @@ const isReminder = (j: JobRowT) =>
     j.kind === "sms_send" ||
     j.kind === "slack_dm_send");
 
+const isAgentReminder = (j: JobRowT) =>
+  (j.kind === "email_send" && j.payload.template === "host_booking_reminder") ||
+  j.kind === "slack_dm_send" ||
+  (j.kind === "sms_send" && j.payload.recipient !== "invitee");
+
 async function teamSetup(opts: { channels?: boolean; partner?: string; locationType?: "teams" | "phone" } = {}) {
   const host = await makeHost(sql, { name: "Dana Host", timezone: "America/Los_Angeles" });
   const team = await makeTeam(sql, [host.id], { name: opts.partner ?? "Acme ISO" });
@@ -76,7 +82,11 @@ async function teamSetup(opts: { channels?: boolean; partner?: string; locationT
   return { host, team, ev };
 }
 
-async function book(team: { slug: string }, ev: { slug: string }, over: { phone?: string | null; language?: "en" | "es"; start?: string } = {}) {
+async function book(
+  team: { slug: string },
+  ev: { slug: string },
+  over: { phone?: string | null; language?: "en" | "es"; start?: string; smsConsent?: boolean } = {},
+) {
   const res = await createBooking({
     owner: { kind: "team", slug: team.slug },
     eventSlug: ev.slug,
@@ -85,6 +95,7 @@ async function book(team: { slug: string }, ev: { slug: string }, over: { phone?
     durationMin: 30,
     ...invitee({ name: "Pat Smith" }),
     phone: over.phone === undefined ? "(212) 555-0142" : over.phone,
+    smsConsent: over.smsConsent ?? true,
     answers: { company: "Pat's Pizza" },
   });
   return res;
@@ -182,6 +193,53 @@ describe("reminder scheduling", () => {
     expect((await jobsFor(res.bookingId)).filter((j) => j.payload.template === "booking_reminder" && j.kind === "email_send").every((j) => j.status === "pending")).toBe(true);
   });
 
+  it("gives a host reminders again when a booking is reassigned away and back (A -> B -> A)", async () => {
+    const a = await makeHost(sql);
+    const b = await makeHost(sql);
+    const team = await makeTeam(sql, [a.id, b.id]);
+    const ev = await makeEvent(sql, { teamId: team.id });
+    await sql`update app.event_types set agent_reminder_channels = '{email,slack,sms}', agent_reminder_offsets_min = '{15}' where id = ${ev.id}`;
+    await sql`insert into app.event_type_questions (event_type_id, key, type, label, position) values (${ev.id}, 'company', 'text', ${sql.json({ en: "Company" })}, 0)`;
+    const res = await book(team, ev);
+    const [{ user_id: first }] = await sql<{ user_id: string }[]>`select user_id from app.booking_hosts where booking_id = ${res.bookingId} and active`;
+    const second = first === a.id ? b.id : a.id;
+
+    await sql`update app.team_members set status = 'paused' where user_id = ${first}`;
+    expect(await reassignBooking({ bookingId: res.bookingId, fromUserId: first, reason: "paused" })).toEqual({ result: { reassignedTo: second } });
+    const deadAfterFirst = (await jobsFor(res.bookingId)).filter((j) => isAgentReminder(j) && j.status === "dead");
+    expect(deadAfterFirst).toHaveLength(3);
+    expect(deadAfterFirst.every((j) => j.last_error === "host removed")).toBe(true);
+
+    await sql`update app.team_members set status = 'active' where user_id = ${first}`;
+    await sql`update app.team_members set status = 'paused' where user_id = ${second}`;
+    expect(await reassignBooking({ bookingId: res.bookingId, fromUserId: second, reason: "paused" })).toEqual({ result: { reassignedTo: first } });
+
+    const agentJobs = (await jobsFor(res.bookingId)).filter(isAgentReminder);
+    const owner = (j: JobRowT) => (j.payload.userId ?? (j.payload.recipient as { userId: string }).userId) as string;
+    const status = Object.fromEntries(agentJobs.map((j) => [`${j.kind}:${owner(j) === first ? "first" : "second"}`, j.status]));
+    expect(status).toEqual({
+      "email_send:first": "pending",
+      "slack_dm_send:first": "pending",
+      "sms_send:first": "pending",
+      "email_send:second": "dead",
+      "slack_dm_send:second": "dead",
+      "sms_send:second": "dead",
+    });
+    const revived = agentJobs.find((j) => j.kind === "slack_dm_send" && owner(j) === first)!;
+    expect(revived.last_error).toBeNull();
+    const [{ attempts }] = await sql<{ attempts: number }[]>`select attempts from app.jobs where id = ${revived.id}`;
+    expect(attempts).toBe(0);
+  });
+
+  it("does not revive reminders of a cancelled booking", async () => {
+    const { host, team, ev } = await teamSetup();
+    const res = await book(team, ev);
+    await cancelByInvitee(res.token, undefined);
+    const [b] = await sql<{ start_at: Date }[]>`select start_at from app.bookings where id = ${res.bookingId}`;
+    await enqueueAllReminders(sql, { bookingId: res.bookingId, startMs: b.start_at.getTime(), hostUserIds: [host.id] });
+    expect((await jobsFor(res.bookingId)).filter(isReminder).every((j) => j.status === "dead")).toBe(true);
+  });
+
   it("never enqueues reminders for imported bookings", async () => {
     const { host, ev } = await teamSetup();
     const id = randomUUID();
@@ -262,6 +320,130 @@ describe("sms_send", () => {
     expect(out).toEqual({ result: { sent: false, providerId: null, status: null } });
     await cancelByInvitee(res.token, undefined);
     expect(await handleSmsSend(j, ctx, { now: Date.parse(start) - 60 * 60_000 })).toEqual({ result: { skipped: "status_cancelled" } });
+  });
+});
+
+describe("reminder settings changed after booking", () => {
+  it("stops queued merchant texts when SMS is turned off on the page", async () => {
+    const { team, ev } = await teamSetup();
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start });
+    const j = await job(res.bookingId, "sms_send", `${res.bookingId}:sms:invitee:60`);
+    await sql`update app.event_types set merchant_reminder_channels = '{email}' where id = ${ev.id}`;
+    expect(await handleSmsSend(j, ctx, { now: Date.parse(start) - 60 * 60_000 })).toEqual({ result: { skipped: "channel_disabled" } });
+    expect(texts).toHaveLength(0);
+  });
+
+  it("stops queued reminders at a time that was removed, on every channel", async () => {
+    const { host, team, ev } = await teamSetup();
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start });
+    await sql`update app.event_types set reminder_offsets_min = '{1440}', agent_reminder_offsets_min = '{60}' where id = ${ev.id}`;
+    const at60 = Date.parse(start) - 60 * 60_000;
+    const at15 = Date.parse(start) - 15 * 60_000;
+    expect(await handleEmailSend(await job(res.bookingId, "email_send", `${res.bookingId}:reminder:60`), ctx, { now: at60 })).toEqual({ result: { skipped: "offset_disabled" } });
+    expect(await handleSmsSend(await job(res.bookingId, "sms_send", `${res.bookingId}:sms:invitee:60`), ctx, { now: at60 })).toEqual({ result: { skipped: "offset_disabled" } });
+    expect(await handleSmsSend(await job(res.bookingId, "sms_send", `${res.bookingId}:sms:${host.id}:15`), ctx, { now: at15 })).toEqual({ result: { skipped: "offset_disabled" } });
+    const slack = fakeSlack();
+    expect(await handleSlackDm(await job(res.bookingId, "slack_dm_send", `${res.bookingId}:slack_dm:${host.id}:15`), ctx, { client: slack.client, now: at15 })).toEqual({
+      result: { skipped: "offset_disabled" },
+    });
+    // The 60 minute agent reminder is still enabled and goes out.
+    expect(await handleEmailSend(await job(res.bookingId, "email_send", `${res.bookingId}:host_reminder:${host.id}:60`), ctx, { now: at60 })).toMatchObject({ result: { sent: true } });
+    expect(texts).toHaveLength(0);
+    expect(slack.calls).toHaveLength(0);
+    expect(emails).toHaveLength(1);
+  });
+
+  it("stops queued agent reminders when their channel is turned off", async () => {
+    const { host, team, ev } = await teamSetup();
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start });
+    await sql`update app.event_types set agent_reminder_channels = '{}', merchant_reminder_channels = '{sms}' where id = ${ev.id}`;
+    const at15 = Date.parse(start) - 15 * 60_000;
+    const slack = fakeSlack();
+    expect(await handleSlackDm(await job(res.bookingId, "slack_dm_send", `${res.bookingId}:slack_dm:${host.id}:15`), ctx, { client: slack.client, now: at15 })).toEqual({
+      result: { skipped: "channel_disabled" },
+    });
+    expect(await handleEmailSend(await job(res.bookingId, "email_send", `${res.bookingId}:host_reminder:${host.id}:15`), ctx, { now: at15 })).toEqual({ result: { skipped: "channel_disabled" } });
+    expect(await handleSmsSend(await job(res.bookingId, "sms_send", `${res.bookingId}:sms:${host.id}:15`), ctx, { now: at15 })).toEqual({ result: { skipped: "channel_disabled" } });
+    expect(await handleEmailSend(await job(res.bookingId, "email_send", `${res.bookingId}:reminder:60`), ctx, { now: Date.parse(start) - 60 * 60_000 })).toEqual({
+      result: { skipped: "channel_disabled" },
+    });
+    expect(slack.calls).toHaveLength(0);
+    expect(texts).toHaveLength(0);
+    expect(emails).toHaveLength(0);
+  });
+});
+
+describe("overdue reminders", () => {
+  it("drops stale reminders after a backlog instead of sending them all at once", async () => {
+    const { host, team, ev } = await teamSetup();
+    await sql`update app.event_types set agent_reminder_offsets_min = '{1440,15}' where id = ${ev.id}`;
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start });
+    const now = Date.parse(start) - 20 * 60_000;
+    expect(await handleSmsSend(await job(res.bookingId, "sms_send", `${res.bookingId}:sms:invitee:1440`), ctx, { now })).toEqual({ result: { skipped: "stale" } });
+    expect(await handleSmsSend(await job(res.bookingId, "sms_send", `${res.bookingId}:sms:invitee:60`), ctx, { now })).toEqual({ result: { skipped: "stale" } });
+    const slack = fakeSlack();
+    expect(await handleSlackDm(await job(res.bookingId, "slack_dm_send", `${res.bookingId}:slack_dm:${host.id}:1440`), ctx, { client: slack.client, now })).toEqual({
+      result: { skipped: "stale" },
+    });
+    expect(texts).toHaveLength(0);
+    expect(slack.calls).toHaveLength(0);
+  });
+
+  it("states the time actually left when a reminder runs late but not stale", async () => {
+    const { host, team, ev } = await teamSetup();
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start });
+    const now = Date.parse(start) - 35 * 60_000; // the 60 minute reminder, 25 minutes late
+    const slack = fakeSlack();
+    expect(await handleSlackDm(await job(res.bookingId, "slack_dm_send", `${res.bookingId}:slack_dm:${host.id}:60`), ctx, { client: slack.client, now })).toMatchObject({
+      result: { sent: true },
+    });
+    const post = slack.calls.find((c) => c.method === "chat.postMessage")!;
+    expect(String(post.body.text)).toContain("*Reminder: Funding consultation starts in 35 minutes*");
+    await handleEmailSend(await job(res.bookingId, "email_send", `${res.bookingId}:host_reminder:${host.id}:60`), ctx, { now });
+    expect(emails[0].html).toContain("Your meeting starts in 35 minutes");
+  });
+});
+
+describe("merchant SMS consent", () => {
+  it("does not text a merchant who did not check the consent box", async () => {
+    const { team, ev } = await teamSetup();
+    const start = futureSlot(3);
+    const res = await book(team, ev, { start, smsConsent: false });
+    const [b] = await sql`select sms_consent_at from app.bookings where id = ${res.bookingId}`;
+    expect(b.sms_consent_at).toBeNull();
+    const j = await job(res.bookingId, "sms_send", `${res.bookingId}:sms:invitee:60`);
+    expect(await handleSmsSend(j, ctx, { now: Date.parse(start) - 60 * 60_000 })).toEqual({ result: { skipped: "no_consent" } });
+    expect(texts).toHaveLength(0);
+  });
+
+  it("records consent only with a phone number and keeps it across a reschedule", async () => {
+    const { team, ev } = await teamSetup();
+    const noPhone = await book(team, ev, { phone: null, smsConsent: true, start: futureSlot(3) });
+    const [a] = await sql`select sms_consent_at from app.bookings where id = ${noPhone.bookingId}`;
+    expect(a.sms_consent_at).toBeNull();
+
+    const withPhone = await book(team, ev, { smsConsent: true, start: futureSlot(4) });
+    const [b] = await sql<{ sms_consent_at: Date | null }[]>`select sms_consent_at from app.bookings where id = ${withPhone.bookingId}`;
+    expect(b.sms_consent_at).toBeInstanceOf(Date);
+    const moved = await rescheduleByInvitee(withPhone.token, { start: futureSlot(5) });
+    const [c] = await sql<{ sms_consent_at: Date | null }[]>`select sms_consent_at from app.bookings where id = ${moved.bookingId}`;
+    expect(c.sms_consent_at?.getTime()).toBe(b.sms_consent_at!.getTime());
+  });
+
+  it("tells the public form when the page sends merchant texts", async () => {
+    const { team, ev } = await teamSetup({ channels: false });
+    const load = async () => {
+      const loaded = await loadPublicEventType(sql, { kind: "team", slug: team.slug }, ev.slug, "en");
+      return (await toPublicEventType(sql, loaded!)).smsReminders;
+    };
+    expect(await load()).toBe(false);
+    await sql`update app.event_types set merchant_reminder_channels = '{email,sms}' where id = ${ev.id}`;
+    expect(await load()).toBe(true);
   });
 });
 

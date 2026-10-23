@@ -6,6 +6,7 @@ import type { Sql } from "@/server/db/client";
 import { decryptSecret, encryptSecret } from "@/server/crypto/aes";
 import { enqueue } from "@/server/jobs/queue";
 import { syncDelta, deltaWindow } from "@/server/graph/delta";
+import { enqueueReminders } from "@/server/booking/side-effects";
 import { syncCalendarWindow, liveFreeBusyDetailed } from "@/server/graph/busy";
 import { BOOKING_PROP_ID } from "@/server/graph/client";
 
@@ -171,6 +172,24 @@ describe("Outlook-side changes to the app's own events", () => {
     mock = installGraphMock();
     mock.on("GET", LINK_1_RE, json(200, { value: [removed("own-1")], "@odata.deltaLink": LINK_2 }));
     expect((await syncDelta(host.id, NOW)).conflicts).toEqual([]);
+  });
+
+  it("auto_cancel also cancels the booking's queued reminders", async () => {
+    const host = await makeUser(sql);
+    const et = await makeIndividualEventType(sql, host.id, { policy: "auto_cancel" });
+    const bookingId = await makeBooking(sql, { eventTypeId: et, start, end, hosts: [{ userId: host.id, graphEventId: "own-r" }] });
+    await enqueueReminders(sql, bookingId, start.getTime(), [1440, 60], NOW.getTime());
+    await withDeltaState(host.id);
+    mock.on("GET", LINK_1_RE, json(200, { value: [removed("own-r")], "@odata.deltaLink": LINK_2 }));
+
+    await syncDelta(host.id, NOW);
+    const reminders = await sql`
+      select status, last_error from app.jobs where booking_id = ${bookingId} and payload ->> 'template' = 'booking_reminder'
+    `;
+    expect(reminders).toEqual([
+      { status: "dead", last_error: "booking cancelled" },
+      { status: "dead", last_error: "booking cancelled" },
+    ]);
   });
 
   it("flag (team policy): a moved own event flags the booking and notifies the primary host", async () => {

@@ -16,7 +16,8 @@ import { redactPhone } from "@/server/sms/phone";
  * - HTTP 429, or a send-time capacity decline (HTTP 400 with error_code 429), retries later.
  * - Rate-limit error codes in the body (4001, 5003, 5509, SMS_LIMIT_REACHED) retry later.
  * - Other 4xx responses and ERROR / DECLINED statuses are permanent (bad number, blacklisted).
- * - 5xx responses and transport failures are retried with the worker's backoff.
+ * - 5xx responses, transport failures and timeouts (SENDBLUE_TIMEOUT_MS) are retried with
+ *   the worker's backoff.
  */
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -27,7 +28,16 @@ export type SendblueOptions = {
   fromNumber?: string;
   fetch?: FetchLike;
   baseUrl?: string;
+  /** Request timeout. Defaults to SENDBLUE_TIMEOUT_MS. */
+  timeoutMs?: number;
 };
+
+/**
+ * Each send is aborted after this long, well inside the 60 second function limit, so a
+ * stalled request fails and retries with backoff instead of the function being killed
+ * while the job is running.
+ */
+export const SENDBLUE_TIMEOUT_MS = 15_000;
 
 export type SmsMessage = { to: string; content: string };
 
@@ -58,20 +68,29 @@ function errorSummary(json: Record<string, unknown> | null, status: number): str
 export function createSendblueClient(opts: SendblueOptions): SendblueClient {
   const doFetch: FetchLike = opts.fetch ?? ((input, init) => fetch(input, init));
   const base = (opts.baseUrl ?? "https://api.sendblue.com").replace(/\/$/, "");
+  const timeoutMs = opts.timeoutMs ?? SENDBLUE_TIMEOUT_MS;
 
   return {
     async sendMessage(msg) {
       const body: Record<string, string> = { number: msg.to, content: msg.content };
       if (opts.fromNumber) body.from_number = opts.fromNumber;
-      const res = await doFetch(`${base}/api/send-message`, {
-        method: "POST",
-        headers: {
-          "sb-api-key-id": opts.apiKey,
-          "sb-api-secret-key": opts.apiSecret,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      try {
+        res = await doFetch(`${base}/api/send-message`, {
+          method: "POST",
+          headers: {
+            "sb-api-key-id": opts.apiKey,
+            "sb-api-secret-key": opts.apiSecret,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        const name = (err as Error)?.name;
+        // Retryable: the worker's backoff applies. The message never includes the key or secret.
+        throw new Error(name === "TimeoutError" || name === "AbortError" ? "SendBlue request timed out" : "SendBlue request failed");
+      }
       let json: Record<string, unknown> | null = null;
       try {
         json = (await res.json()) as Record<string, unknown>;

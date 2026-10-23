@@ -113,7 +113,7 @@ Each booking page sets its own reminders in the editor (**Reminders** section):
 - Merchant (invitee) reminders by email and/or text message at the chosen times. Default: email at 1 day and 1 hour before, as before.
 - Agent (host) reminders by email, Slack direct message and/or text message, at 5, 15, 30, 60 minutes or 1 day before. Default: off.
 
-Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through SendBlue; merchants can reply STOP to opt out and START to opt back in. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
+Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through SendBlue. Merchants get texts only when they enter a phone number and check the consent box that the booking form shows on pages with text reminders; they can reply STOP to opt out and START to opt back in. Agents set their own number under **Availability > Booking preferences**. Turning a channel or reminder time off also stops reminders already scheduled for existing bookings. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
 
 ## Salesforce and n8n
 

@@ -4,9 +4,9 @@ import { env } from "@/server/env";
 import { pickLocalized } from "@/i18n/locales";
 import { bookingHosts, eventInfo, type BookingRow } from "@/server/booking/view";
 import { partnerNameForEventType } from "@/server/email/partner";
-import type { AgentReminderData } from "@/server/email/reminder-rules";
+import { effectiveLeadMin, type AgentReminderData } from "@/server/email/reminder-rules";
 
-export { reminderSkipReason, leadTimeLabel, type AgentReminderData } from "@/server/email/reminder-rules";
+export { reminderDisabledReason, reminderSkipReason, leadTimeLabel, type AgentReminderData } from "@/server/email/reminder-rules";
 
 function meetingFor(b: BookingRow): { text: string; url: string | null } {
   switch (b.location_type) {
@@ -24,9 +24,16 @@ function meetingFor(b: BookingRow): { text: string; url: string | null } {
 
 /**
  * Reminder data for one agent, loaded from fresh booking state. Returns null when the
- * user is no longer an active host of the booking (reassigned or removed).
+ * user is no longer an active host of the booking (reassigned or removed). `now` sets the
+ * lead time shown when the reminder runs late.
  */
-export async function loadAgentReminderData(db: Db, b: BookingRow, userId: string, offsetMin: number): Promise<AgentReminderData | null> {
+export async function loadAgentReminderData(
+  db: Db,
+  b: BookingRow,
+  userId: string,
+  offsetMin: number,
+  now: number = Date.now(),
+): Promise<AgentReminderData | null> {
   const hosts = await bookingHosts(db, b.id, true);
   const host = hosts.find((h) => h.user_id === userId);
   if (!host) return null;
@@ -55,5 +62,6 @@ export async function loadAgentReminderData(db: Db, b: BookingRow, userId: strin
     meeting: meetingFor(b),
     bookingUrl: `${env().APP_BASE_URL}/bookings/${b.id}`,
     offsetMin,
+    leadMin: effectiveLeadMin(b.start_at, offsetMin, now),
   };
 }

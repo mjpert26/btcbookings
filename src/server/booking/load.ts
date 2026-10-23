@@ -243,6 +243,14 @@ export function publicQuestions(questions: EventTypeQuestionRow[], language: str
     }));
 }
 
+/** Whether the event type row sends merchant reminders by text (merchant_reminder_channels). */
+async function sendsMerchantSms(db: Db, eventTypeId: string): Promise<boolean> {
+  const [row] = await db<{ sms: boolean }[]>`
+    select 'sms' = any(merchant_reminder_channels) as sms from app.event_types where id = ${eventTypeId}
+  `;
+  return row?.sms ?? false;
+}
+
 export async function toPublicEventType(db: Db, loaded: LoadedEventType): Promise<PublicEventType> {
   const et = loaded.resolved.eventType;
   const language = (isLocale(et.language) ? et.language : "en") as Locale;
@@ -264,6 +272,7 @@ export async function toPublicEventType(db: Db, loaded: LoadedEventType): Promis
     team: owner.kind === "team" ? { name: owner.name, description: owner.description } : null,
     alternates: await loadAlternates(db, loaded),
     path: eventPath(owner.kind, owner.slug, et.slug, language),
+    smsReminders: await sendsMerchantSms(db, et.id),
   };
 }
 

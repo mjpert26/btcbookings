@@ -24,13 +24,15 @@ export type BookingRow = {
   sf_lead_id: string | null;
   sf_lead_status: string | null;
   created_at: Date;
+  /** When the invitee agreed to reminder texts (null: no merchant texts). */
+  sms_consent_at: Date | null;
 };
 
 export async function bookingById(db: Db, id: string, opts: { forUpdate?: boolean } = {}): Promise<BookingRow | null> {
   const [row] = await db<BookingRow[]>`
     select id, event_type_id, language, status, start_at, end_at, invitee_name, invitee_email,
            invitee_phone, invitee_timezone, location_type, location_detail, online_meeting_url,
-           cancel_reason, rescheduled_from_id, sf_lead_id, sf_lead_status, created_at
+           cancel_reason, rescheduled_from_id, sf_lead_id, sf_lead_status, created_at, sms_consent_at
     from app.bookings where id = ${id}
     ${opts.forUpdate ? db`for update` : db``}
   `;

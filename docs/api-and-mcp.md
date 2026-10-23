@@ -107,6 +107,8 @@ curl -X POST "$APP_BASE_URL/api/v1/bookings" \
   -d '{"eventTypeId":"<id>","start":"2026-11-03T15:00:00Z","invitee":{"name":"Pat","email":"pat@example.com","timezone":"America/New_York"}}'
 ```
 
+On booking pages that send merchant reminders by text, the invitee is texted only when the request includes `invitee.phone` and `invitee.smsConsent: true`. Send `smsConsent: true` only when the invitee agreed to receive reminder texts at that number. The same field applies to the MCP `schedule_meeting` tool. See [reminders.md](reminders.md#merchant-consent-for-text-messages).
+
 ## Request log and limits
 
 - **Rate limits:** 120 requests per minute per API key on the REST API, and 240 per minute per token on the MCP server. Over the limit, the response is 429 with `Retry-After`.

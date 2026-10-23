@@ -149,6 +149,8 @@ export async function createBooking(input: BookingInput, opts: BookingOptions = 
               name: v.name,
               email: v.email,
               phone: answers.value.phone,
+              // Consent counts only together with a number to text.
+              smsConsentAt: v.smsConsent === true && answers.value.phone ? new Date(now) : null,
               timezone: v.timezone,
               tokenHash: issued.hash,
               tokenEnc: issued.encrypted,
@@ -223,6 +225,8 @@ export async function insertBooking(
     name: string;
     email: string;
     phone: string | null;
+    /** When the invitee agreed to reminder texts; null when they did not. */
+    smsConsentAt?: Date | null;
     timezone: string;
     tokenHash: string;
     tokenEnc: string;
@@ -238,12 +242,14 @@ export async function insertBooking(
     insert into app.bookings (
       id, event_type_id, language, status, start_at, end_at, invitee_name, invitee_email,
       invitee_phone, invitee_timezone, location_type, location_detail, manage_token_hash,
-      manage_token_enc, idempotency_key, rescheduled_from_id, sf_lead_id, sf_lead_status, created_via
+      manage_token_enc, idempotency_key, rescheduled_from_id, sf_lead_id, sf_lead_status, created_via,
+      sms_consent_at
     ) values (
       ${b.id}, ${et.id}, ${et.language}, 'confirmed', ${new Date(b.startMs)}, ${new Date(b.endMs)},
       ${b.name}, ${b.email}, ${b.phone}, ${b.timezone}, ${et.location_type}, ${et.location_detail},
       ${b.tokenHash}, ${b.tokenEnc}, ${b.idempotencyKey}, ${b.rescheduledFromId ?? null},
-      ${b.sfLeadId ?? null}, ${b.sfLeadStatus ?? null}, ${b.createdVia ?? (b.rescheduledFromId ? "reschedule" : "public")}
+      ${b.sfLeadId ?? null}, ${b.sfLeadStatus ?? null}, ${b.createdVia ?? (b.rescheduledFromId ? "reschedule" : "public")},
+      ${b.smsConsentAt ?? null}
     )
   `;
 }

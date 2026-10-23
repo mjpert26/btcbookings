@@ -298,12 +298,21 @@ describe("REST API", () => {
       req("/api/v1/bookings", {
         method: "POST",
         token: key,
-        body: JSON.stringify({ eventTypeId: page.id, start: futureSlot(2), invitee: { name: "M", email: "m@example.com", timezone: "America/New_York" }, answers: { company: "Acme" } }),
+        body: JSON.stringify({
+          eventTypeId: page.id,
+          start: futureSlot(2),
+          invitee: { name: "M", email: "m@example.com", phone: "(212) 555-0142", smsConsent: true, timezone: "America/New_York" },
+          answers: { company: "Acme" },
+        }),
       }),
       ctx({}),
     );
     expect(booked.status).toBe(201);
-    expect(((await booked.json()) as { data: { createdVia: string } }).data.createdVia).toBe("api");
+    const bookedData = ((await booked.json()) as { data: { id: string; createdVia: string } }).data;
+    expect(bookedData.createdVia).toBe("api");
+    // The caller confirmed the invitee agreed to reminder texts.
+    const [consent] = await sql<{ sms_consent_at: Date | null }[]>`select sms_consent_at from app.bookings where id = ${bookedData.id}`;
+    expect(consent.sms_consent_at).toBeInstanceOf(Date);
 
     const removed = await questionDELETE(req(`/api/v1/event-types/${page.id}/questions/company`, { method: "DELETE", token: key }), ctx({ id: page.id, key: "company" }));
     expect(((await removed.json()) as { data: unknown[] }).data).toEqual([]);

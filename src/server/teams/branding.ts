@@ -121,7 +121,22 @@ export async function getPartnerBrandingForManageToken(token: string, db: Db = s
   return row?.team_id ? getPartnerBranding(row.team_id, db) : null;
 }
 
-/** The stored logo for the public logo route. */
+/**
+ * Logo metadata for the public logo route: no bytes, so that redirects and 304 responses
+ * never read the image. Returns null when the team has no logo.
+ */
+export async function loadTeamLogoMeta(
+  teamId: string,
+  db: Db = service(),
+): Promise<{ contentType: LogoContentType; sha256: string; updatedAt: Date } | null> {
+  if (!z.string().uuid().safeParse(teamId).success) return null;
+  const [row] = await db<{ content_type: LogoContentType; sha256: string; updated_at: Date }[]>`
+    select content_type, sha256, updated_at from app.team_logos where team_id = ${teamId}
+  `;
+  return row ? { contentType: row.content_type, sha256: row.sha256, updatedAt: row.updated_at } : null;
+}
+
+/** The stored logo, including its bytes, for the public logo route. */
 export async function loadTeamLogo(
   teamId: string,
   db: Db = service(),

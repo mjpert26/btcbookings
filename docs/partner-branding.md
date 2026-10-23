@@ -28,7 +28,7 @@ Stored in `app.teams.page_settings` (JSON) and validated by `src/server/teams/pa
 - PNG, JPEG or WebP only, up to 512 KB and 4096 pixels per side. SVG is never accepted.
 - The format is detected from the file's leading bytes; a declared type that does not match is rejected.
 - Stored in `app.team_logos` (one row per team) with its SHA-256 hash and dimensions. Signed-in users can read the metadata of teams they administer (managers can read all), never the bytes.
-- Served at `GET /api/public/team-logo/{teamId}` with the stored `Content-Type`, `X-Content-Type-Options: nosniff`, a `default-src 'none'; sandbox` Content Security Policy and an `ETag` of the hash. Page links include `?v=<hash prefix>`, which makes the response cacheable for a year; a new upload changes the link.
+- Served at `GET /api/public/team-logo/{teamId}` with the stored `Content-Type`, `X-Content-Type-Options: nosniff`, a `default-src 'none'; sandbox` Content Security Policy and an `ETag` of the hash. Page links include `?v=<first 16 hex characters of the hash>` (`teamLogoPath()`), and the image is served only at that canonical URL, cacheable for a year; a new upload changes the link. Any other URL (no `v`, an old or random `v`, or extra query parameters) gets a `307` to the canonical URL, cached for 5 minutes, so varying the query string cannot bypass the CDN cache. Redirects and `304` responses read only the logo metadata; the bytes are read only for a `200`.
 
 ## For developers
 

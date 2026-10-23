@@ -50,7 +50,11 @@ python3 -I scripts/calendly-snapshot.py <inventory_dir> snapshot.json --pages-on
 
 - `--pages-only` copies people, working hours, teams and booking pages. The events window is empty, so no imported booking is ever treated as missing. Bookings can be imported later with a full snapshot.
 - `--emails` is a `{calendly_user_uri: email}` map used for members whose email is redacted. Calendly booking links follow the email local part (`first-last-bigthinkcapital` for `first.last@bigthinkcapital.com`), so the map can be derived from slugs. Review the exceptions by hand.
-- A derived email that turns out to be wrong is corrected at sign-in: when no account matches the Microsoft email or user principal name, a single unlinked imported account with the same display name is linked instead (`user.linked` audit entry with `linkedBy: "name"`).
+- A derived email that turns out to be wrong is corrected by an admin, never by a name match alone. When a sign-in matches no account by Microsoft object id, email or user principal name, but its display name matches exactly one active imported account that has never signed in, the sign-in is held: the person sees "An administrator needs to confirm your account", and a request appears under **Sign-ins waiting for confirmation** on **Admin > Users**.
+  - **Confirm and link** links the imported account to that Microsoft account (object id and email) and closes other pending requests for the same account. The person's next sign-in opens it with its pages, teams and role.
+  - **Not the same person** lets that Microsoft account get a new, empty account at its next sign-in.
+  - Audit entries: `user.link_requested` (first held sign-in, actor none), `user.link_approved` and `user.link_rejected` (actor the admin). Requests are stored in `app.account_link_requests`.
+  - Names that match several imported accounts, a deactivated one, or one that is already linked are never held: the sign-in creates a new account.
 
 ## 3. Dry run, then apply
 

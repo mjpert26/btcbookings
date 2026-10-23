@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { service } from "@/server/db/client";
 import { exchangeCode, verifyIdToken } from "@/server/auth/entra";
-import { completeLogin, LoginRejected } from "@/server/auth/login";
+import { completeLogin, LoginPendingLink, LoginRejected } from "@/server/auth/login";
 import { createSession } from "@/server/auth/session";
 import { sha256Hex } from "@/server/crypto/random";
 import { decryptSecret } from "@/server/crypto/aes";
@@ -45,6 +45,7 @@ export async function GET(req: Request) {
     await createSession(service(), userId);
     return NextResponse.redirect(`${env().APP_BASE_URL}${row.return_to ?? "/dashboard"}`);
   } catch (err) {
+    if (err instanceof LoginPendingLink) return fail("link_pending");
     if (err instanceof LoginRejected) return fail("not_allowed");
     console.error("sign-in failed", { message: (err as Error).message });
     return fail("signin_failed");

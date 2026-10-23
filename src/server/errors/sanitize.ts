@@ -40,9 +40,10 @@ const TEXT_RULES: [RegExp, string][] = [
   [/\bxox[abprs]-[A-Za-z0-9-]+/g, `xox-${REDACTED}`],
   // JWT-like strings (three base64url segments, the first starting with a JSON header).
   [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, "[jwt]"],
-  // key=value or key: value pairs whose key names a secret.
+  // key=value or key: value pairs whose key names a secret, including keys with a prefix such
+  // as refreshToken, clientSecret, x_api_key or "csrf-token" (camelCase, snake_case, kebab-case).
   [
-    /\b(password|passwd|pwd|secret|client_secret|token|access_token|refresh_token|id_token|api[_-]?key|code_verifier|signature|authorization)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi,
+    /\b([A-Za-z0-9_-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|code_verifier|signature|authorization))(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi,
     `$1$2${REDACTED}`,
   ],
   // Sensitive URL query parameters, such as an OAuth authorization code.
@@ -119,12 +120,21 @@ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
  */
 export function normalizeRoute(path: string): string {
   const withoutQuery = path.split(/[?#]/, 1)[0] ?? "";
-  const segments = withoutQuery.split("/").map((segment) => {
-    if (segment === "") return segment;
-    if (/^\[.*\]$/.test(segment) || /^\(.*\)$/.test(segment)) return segment; // route file patterns
+  const segments = withoutQuery.split("/").map((raw) => {
+    if (raw === "") return raw;
+    if (/^\[.*\]$/.test(raw) || /^\(.*\)$/.test(raw)) return raw; // route file patterns
+    // Percent-encoded segments are checked decoded, so that "a%40b.co" is seen as an email.
+    let segment = raw;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      // Malformed encoding: check the raw segment.
+    }
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return ":id";
     if (/^\d+$/.test(segment)) return ":id";
-    if (segment.length >= 20 && /^[A-Za-z0-9_~.%=-]+$/.test(segment) && /\d/.test(segment)) return ":id";
+    // Random tokens, such as base64url manage tokens, whether or not they contain a digit.
+    if (segment.length >= 32 && /^[A-Za-z0-9_-]+$/.test(segment)) return ":id";
+    if (raw.length >= 20 && /^[A-Za-z0-9_~.%=-]+$/.test(raw) && /\d/.test(raw)) return ":id";
     if (segment.includes("@")) return ":id";
     return truncate(sanitizeText(segment), 80);
   });

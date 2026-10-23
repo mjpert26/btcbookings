@@ -7,9 +7,11 @@ import { Switch } from "@/components/ui/Switch";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { FormAction } from "@/lib/form-state";
 import { cn } from "@/lib/cn";
+import { SF_LEAD_MODE_OPTIONS, type SfLeadMode } from "@/lib/salesforce";
 
 export type SfFormValues = {
   createSfLead: boolean;
+  leadMode: SfLeadMode;
   isoAccountId: string;
   campaignId: string;
   ownerMode: "assigned_host" | "fixed" | "assignment_rules";
@@ -136,6 +138,8 @@ function StaticEditor({ initial }: { initial: SfFormValues["staticValues"] }) {
 export function SfSettingsForm({ action, values, sources, readOnly = false }: { action: FormAction; values: SfFormValues; sources: Source[]; readOnly?: boolean }) {
   const [enabled, setEnabled] = useState(values.createSfLead);
   const [ownerMode, setOwnerMode] = useState(values.ownerMode);
+  const [leadMode, setLeadMode] = useState(values.leadMode);
+  const creates = leadMode === "create";
   return (
     <ActionForm action={action} className="space-y-6" aria-label="Salesforce lead settings">
       <fieldset disabled={readOnly} className="space-y-6">
@@ -144,13 +148,35 @@ export function SfSettingsForm({ action, values, sources, readOnly = false }: { 
           <Switch
             name="createSfLead"
             size="lg"
-            label="Create a Salesforce Lead for every booking"
-            description={enabled ? "On: each confirmed booking sends a Lead to Salesforce through n8n." : "Off: bookings do not create Leads."}
+            label="Send bookings to Salesforce"
+            description={
+              enabled
+                ? "On: each confirmed booking updates or creates a Lead in Salesforce through n8n, as chosen under Lead handling."
+                : "Off: bookings are not sent to Salesforce."
+            }
             checked={enabled}
             onCheckedChange={setEnabled}
             disabled={readOnly}
           />
         </div>
+
+        <Fieldset
+          legend="Lead handling"
+          description="The invitee's email decides which Lead is updated. Like the Calendly flow, the update sets Status Working - Contacted, Status Detail Meeting Booked and the meeting time, moves the Lead to the booking's host when the Lead owner below is Assigned host, and adds a Meeting Booked note and task."
+          errorKey="leadMode"
+        >
+          <div className="space-y-2">
+            {SF_LEAD_MODE_OPTIONS.map((o) => (
+              <label key={o.value} className="flex items-start gap-2.5 text-sm">
+                <input type="radio" name="leadMode" value={o.value} checked={leadMode === o.value} onChange={() => setLeadMode(o.value)} className="mt-0.5 size-4 accent-primary" />
+                <span>
+                  <span className="font-medium text-ink">{o.label}</span>
+                  <span className="block text-xs text-muted">{o.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </Fieldset>
 
         <Input
           label="Lead source (ISO)"
@@ -201,7 +227,11 @@ export function SfSettingsForm({ action, values, sources, readOnly = false }: { 
 
         <Fieldset
           legend="Follow-up in Salesforce"
-          description="Optional steps n8n runs after a new Lead is created. They follow the conventions of the existing Meeting Booked writer. All are off by default."
+          description={
+            creates
+              ? "Optional steps n8n runs after a new Lead is created. They follow the conventions of the existing Meeting Booked writer. All are off by default."
+              : "With the selected lead handling, the Meeting Booked writer always sets the Meeting Booked fields and adds the note and task, so the switches below apply only to “Always create a new Lead”."
+          }
         >
           <div className="space-y-4">
             <Switch

@@ -54,7 +54,7 @@ export default async function SfJobsPage({ searchParams }: { searchParams: Promi
 
   return (
     <>
-      <PageHeader title="Salesforce lead jobs" description="Every booking with lead creation on queues one job. Jobs retry with backoff; dead jobs need a manual retry." />
+      <PageHeader title="Salesforce lead jobs" description="Every booking sent to Salesforce queues one job, and so does each reschedule unless the lead handling is Always create. Jobs retry with backoff; dead jobs need a manual retry." />
       <form method="get" className="mb-4 flex flex-col gap-3 rounded-brand border border-border bg-surface p-4 sm:flex-row sm:items-end" aria-label="Filter jobs">
         {f.eventType ? <input type="hidden" name="eventType" value={f.eventType} /> : null}
         <Select
@@ -81,7 +81,7 @@ export default async function SfJobsPage({ searchParams }: { searchParams: Promi
       </form>
 
       {jobs.length === 0 ? (
-        <EmptyState title="No lead jobs" description="Jobs appear when bookings are made on event types with lead creation turned on." />
+        <EmptyState title="No lead jobs" description="Jobs appear when bookings are made on event types that send bookings to Salesforce." />
       ) : (
         <Card>
           <Table caption="Salesforce lead jobs">

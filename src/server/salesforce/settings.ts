@@ -1,12 +1,15 @@
 import "server-only";
 import { DateTime } from "luxon";
 import { service, type Db } from "@/server/db/client";
+import { SF_LEAD_MODES, type SfLeadMode } from "@/lib/salesforce";
+
+export { SF_LEAD_MODES, type SfLeadMode };
 
 /**
  * Salesforce lead settings: resolution of the effective settings row for an event type
  * (variants inherit from their parent) and the pure mapping from a booking to the payload
  * sent to the n8n lead workflow. The payload contract is documented in
- * docs/n8n-workflows.md ("Salesforce lead creation").
+ * docs/n8n-workflows.md ("Salesforce leads").
  */
 
 export type SfOwnerMode = "assigned_host" | "fixed" | "assignment_rules";
@@ -23,6 +26,7 @@ export type SfSettingsRow = {
   create_task: boolean;
   create_note: boolean;
   set_meeting_booked_fields: boolean;
+  lead_mode: SfLeadMode;
   updated_by: string | null;
   updated_at: Date;
 };
@@ -51,6 +55,7 @@ export const SF_SETTINGS_COLUMNS = [
   "create_task",
   "create_note",
   "set_meeting_booked_fields",
+  "lead_mode",
   "updated_by",
   "updated_at",
 ] as const;
@@ -199,6 +204,10 @@ export type LeadOwner =
 export type LeadPayload = {
   idempotencyKey: string;
   bookingId: string;
+  /** Lead handling (event_type_sf_settings.lead_mode). n8n treats a reschedule as update only. */
+  mode: SfLeadMode;
+  /** True for the job of a rescheduled booking. Same value as meeting.isReschedule. */
+  isReschedule: boolean;
   lead: Record<string, StaticValue>;
   owner: LeadOwner;
   autoAssign: boolean;
@@ -209,10 +218,26 @@ export type LeadPayload = {
     eventTypeName: string;
     hostEmail: string | null;
     hostName: string | null;
-    isReschedule: false;
+    isReschedule: boolean;
   };
   options: { createTask: boolean; createNote: boolean; setMeetingBookedFields: boolean };
+  /** The invitee's answer to a notes-style question, for the Meeting Booked note. */
+  noteText: string | null;
+  /** "Source" line of the Meeting Booked note. */
+  sourceLabel: string;
+  /** Number for text messages: the invitee's phone. */
+  mobilePhone: string | null;
+  /** Partner display name, when the page belongs to a partner team and an ISO is set. */
+  isoName: string | null;
   source: "btc-scheduler";
+};
+
+/** Question metadata used to pick the note text. Rows come from app.event_type_questions. */
+export type NoteQuestion = {
+  key: string;
+  type: string | null;
+  label: Record<string, string> | null;
+  position: number | null;
 };
 
 export type LeadBuildInput = {
@@ -231,6 +256,12 @@ export type LeadBuildInput = {
   host: { email: string; name: string } | null;
   /** question_key -> answer value */
   answers: Record<string, string>;
+  /** Metadata of the answered questions (labels, types, order). Optional. */
+  questions?: NoteQuestion[];
+  /** The partner (team) the page belongs to, or null for an individual page. */
+  partner?: { displayName: string } | null;
+  /** True for the job of a rescheduled booking. */
+  isReschedule?: boolean;
   settings: Pick<
     SfSettingsRow,
     | "field_mapping"
@@ -241,6 +272,7 @@ export type LeadBuildInput = {
     | "create_task"
     | "create_note"
     | "set_meeting_booked_fields"
+    | "lead_mode"
   >;
 };
 
@@ -259,6 +291,54 @@ export function splitName(full: string): { firstName: string | null; lastName: s
   if (words.length === 0) return { firstName: null, lastName: "Unknown" };
   if (words.length === 1) return { firstName: null, lastName: words[0] };
   return { firstName: words[0], lastName: words.slice(1).join(" ") };
+}
+
+/**
+ * Text fragments that mark a notes question, matched case-insensitively against the question
+ * key (underscores read as spaces) and its English label. Same list as the Calendly lead flow.
+ */
+export const NOTE_QUESTION_PATTERNS = ["help prepare", "anything that will help", "additional", "notes"] as const;
+const NOTE_TEXT_MAX = 5000;
+
+function isNoteQuestion(key: string, label: string | null | undefined): boolean {
+  const texts = [key.replace(/_/g, " ").toLowerCase(), (label ?? "").toLowerCase()];
+  return NOTE_QUESTION_PATTERNS.some((p) => texts.some((t) => t.includes(p)));
+}
+
+/**
+ * The answer to the first notes-style question, in question order. Questions are matched by
+ * key or English label (NOTE_QUESTION_PATTERNS). Checkbox, dropdown, email and phone
+ * questions are ignored. Answers whose question no longer exists are matched by key only,
+ * after the known questions. Returns null when nothing matches.
+ */
+export function selectNoteText(answers: Record<string, string>, questions: NoteQuestion[] = []): string | null {
+  const FREE_TEXT = new Set(["text", "textarea"]);
+  const byKey = new Map(questions.map((q) => [q.key, q]));
+  const ordered = [...questions]
+    .filter((q) => Object.hasOwn(answers, q.key))
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.key.localeCompare(b.key))
+    .map((q) => q.key);
+  const orphans = Object.keys(answers)
+    .filter((k) => !byKey.has(k))
+    .sort();
+  for (const key of [...ordered, ...orphans]) {
+    const q = byKey.get(key);
+    if (q && q.type && !FREE_TEXT.has(q.type)) continue;
+    const raw = answers[key];
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!value) continue;
+    if (isNoteQuestion(key, q?.label?.en)) return value.slice(0, NOTE_TEXT_MAX);
+  }
+  return null;
+}
+
+/**
+ * "Source" line of the Meeting Booked note: "<partner display name> BTC Scheduler" for a
+ * partner (team) page, "BTC Scheduler - <event type name>" otherwise.
+ */
+export function buildSourceLabel(input: { partnerName?: string | null; eventTypeName: string }): string {
+  const partner = input.partnerName?.trim();
+  return partner ? `${partner} BTC Scheduler` : `BTC Scheduler - ${input.eventTypeName.trim()}`;
 }
 
 function toUtcIso(value: Date | string): string {
@@ -287,6 +367,13 @@ export function buildLeadPayload(input: LeadBuildInput): LeadPayload {
   validateOwner(settings.owner_mode, settings.owner_fixed_id);
   if (settings.campaign_id && !isSalesforceId(settings.campaign_id, [ID_PREFIX.campaign])) {
     throw new SfSettingsError("Campaign Id must start with 701");
+  }
+  if (!(SF_LEAD_MODES as readonly string[]).includes(settings.lead_mode)) {
+    throw new SfSettingsError(`Unknown lead mode: ${JSON.stringify(settings.lead_mode)}`);
+  }
+  // The Meeting Booked writer needs the assigned host (Task owner, note agent, rep lookup).
+  if (settings.lead_mode !== "create" && !input.host?.email) {
+    throw new SfSettingsError("Updating an existing Lead needs the booking's assigned host");
   }
 
   const startUtc = toUtcIso(booking.startAt);
@@ -352,9 +439,15 @@ export function buildLeadPayload(input: LeadBuildInput): LeadPayload {
       break;
   }
 
+  const isReschedule = input.isReschedule === true;
+  const iso = lead.get(ISO_FIELD.toLowerCase())?.value;
+  const partnerName = input.partner?.displayName?.trim() || null;
+
   const payload: LeadPayload = {
     idempotencyKey: booking.id,
     bookingId: booking.id,
+    mode: settings.lead_mode,
+    isReschedule,
     lead: Object.fromEntries([...lead.values()].map((e) => [e.field, e.value])),
     owner,
     autoAssign: settings.owner_mode === "assignment_rules",
@@ -364,13 +457,17 @@ export function buildLeadPayload(input: LeadBuildInput): LeadPayload {
       eventTypeName: input.eventTypeName,
       hostEmail: input.host?.email ?? null,
       hostName: input.host?.name ?? null,
-      isReschedule: false,
+      isReschedule,
     },
     options: {
       createTask: settings.create_task,
       createNote: settings.create_note,
       setMeetingBookedFields: settings.set_meeting_booked_fields,
     },
+    noteText: selectNoteText(input.answers, input.questions),
+    sourceLabel: buildSourceLabel({ partnerName, eventTypeName: input.eventTypeName }),
+    mobilePhone: builtins.invitee_phone,
+    isoName: partnerName && typeof iso === "string" && iso ? partnerName : null,
     source: "btc-scheduler",
   };
   if (settings.campaign_id) payload.campaignId = settings.campaign_id;

@@ -1,6 +1,6 @@
 # BTC Scheduler
 
-Big Think Capital's scheduling platform, replacing Calendly. Employees sign in with Microsoft 365, their Outlook calendars drive availability, and every booking is written to Outlook. Individual and team booking pages (round-robin and collective), English and Spanish variants, Salesforce Queue-driven team membership, Slack channel sync, and optional Salesforce Lead creation per booking page.
+Big Think Capital's scheduling platform, replacing Calendly. Employees sign in with Microsoft 365, their Outlook calendars drive availability, and every booking is written to Outlook. Individual and team booking pages (round-robin and collective), English and Spanish variants, Salesforce Queue-driven team membership, Slack channel sync, and optional per booking page Salesforce Lead updates (Meeting Booked, like the Calendly flow) and Lead creation.
 
 The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 
@@ -110,10 +110,11 @@ Team pages show the partner (team) name in merchant emails, texts, agent reminde
 
 ## Salesforce and n8n
 
-- n8n workflows (lead creation, queue snapshot poller), with importable JSON in [`/n8n`](n8n): [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
+- n8n workflows (Salesforce leads, queue snapshot poller), with importable JSON in [`/n8n`](n8n): [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
 - Salesforce changes for BTC to apply (Named Credential, optional Flow HTTP Callout, `QueueManagementController` change): [`docs/salesforce-changes.md`](docs/salesforce-changes.md). Nothing is deployed to Salesforce by this repository.
-- Lead creation is off by default and is enabled per booking page by an admin. "Lead source" is the ISO (`csbs__ISO__c`).
-- **Admin > Lead routing (ISO)** (`/admin/salesforce/lead-routing`) lists every booking page with its lead toggle, ISO and lead owner mode, and links to each page's Salesforce settings.
+- Sending bookings to Salesforce is off by default and is enabled per booking page by an admin. "Lead source" is the ISO (`csbs__ISO__c`).
+- **Lead handling** per booking page: *Update the invitee's Lead, or create one* (`match_or_create`, the default for new pages, like the Calendly flow), *Update the invitee's Lead only* (`update_only`) or *Always create a new Lead* (`create`, the original behavior, kept by pages configured before lead modes). Updates go through the shared n8n writer "Calendly — SF Meeting Booked (shared)" (status, Meeting Booked fields, owner, note and task), and reschedules update the Lead in every mode except `create`. Importing the lead workflow requires that writer to accept calls from it; see [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
+- **Admin > Lead routing (ISO)** (`/admin/salesforce/lead-routing`) lists every booking page with its Salesforce switch, lead handling, ISO and lead owner mode, and links to each page's Salesforce settings.
 
 ## Deploying to Vercel
 

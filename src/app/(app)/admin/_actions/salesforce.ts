@@ -9,7 +9,7 @@ import type { ActionState } from "@/lib/form-state";
 import { bool, fail, invalid, isUuid, json, ok, pgCode, str } from "@/server/ui/form";
 import { adminError, audited } from "@/server/ui/admin";
 import { SF_ACCOUNT_ID_RE, SF_CAMPAIGN_ID_RE, SF_FIELD_RE, SF_OWNER_ID_RE } from "@/lib/ids";
-import { ISO_FIELD, SF_BUILTIN_SOURCES } from "@/lib/salesforce";
+import { ISO_FIELD, SF_BUILTIN_SOURCES, SF_LEAD_MODES, type SfLeadMode } from "@/lib/salesforce";
 
 /**
  * Admin actions for Salesforce lead settings and the lead outbox. Each action parses the form
@@ -22,6 +22,7 @@ const builtins = new Set<string>(SF_BUILTIN_SOURCES.map((s) => s.value));
 const settingsSchema = z
   .object({
     createSfLead: z.boolean(),
+    leadMode: z.enum(SF_LEAD_MODES, "Choose how bookings update Salesforce Leads."),
     isoAccountId: z.union([z.literal(""), z.string().regex(SF_ACCOUNT_ID_RE, "Account IDs start with 001 and are 15 or 18 characters.")]),
     campaignId: z.union([z.literal(""), z.string().regex(SF_CAMPAIGN_ID_RE, "Campaign IDs start with 701 and are 15 or 18 characters.")]),
     ownerMode: z.enum(["assigned_host", "fixed", "assignment_rules"]),
@@ -73,6 +74,7 @@ export async function saveSfSettingsAction(eventTypeId: string, _prev: ActionSta
   if (!isUuid(eventTypeId)) return fail("Event type not found.");
   const parsed = settingsSchema.safeParse({
     createSfLead: bool(fd, "createSfLead"),
+    leadMode: str(fd, "leadMode"),
     isoAccountId: str(fd, "isoAccountId"),
     campaignId: str(fd, "campaignId"),
     ownerMode: str(fd, "ownerMode"),
@@ -103,6 +105,7 @@ export async function saveSfSettingsAction(eventTypeId: string, _prev: ActionSta
     await audited(() =>
       saveSfSettings(user, eventTypeId, {
         createSfLead: v.createSfLead,
+        leadMode: v.leadMode,
         isoAccountId: v.isoAccountId || null,
         fieldMapping: Object.fromEntries(v.fieldMapping.map((m) => [m.source, m.field])),
         staticValues: Object.fromEntries(v.staticValues.map((s) => [s.key, s.value])),
@@ -119,8 +122,15 @@ export async function saveSfSettingsAction(eventTypeId: string, _prev: ActionSta
     return adminError(err);
   }
   revalidatePath(`/admin/event-types/${eventTypeId}/salesforce`);
-  return ok(v.createSfLead ? "Saved. New bookings will create a Salesforce Lead." : "Saved. Lead creation is off.");
+  revalidatePath("/admin/salesforce/lead-routing");
+  return ok(v.createSfLead ? SAVED_MESSAGE[v.leadMode] : "Saved. Bookings are not sent to Salesforce.");
 }
+
+const SAVED_MESSAGE: Record<SfLeadMode, string> = {
+  match_or_create: "Saved. New bookings will update the invitee's open Lead, or create one.",
+  update_only: "Saved. New bookings will update the invitee's open Lead.",
+  create: "Saved. New bookings will create a Salesforce Lead.",
+};
 
 const RETRY_ERRORS: Record<string, string> = {
   "55000": "Only failed or dead jobs can be retried.",

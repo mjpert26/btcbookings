@@ -427,12 +427,14 @@ describe("invitee manage flows", () => {
     await expect(cancelByInvitee(res.token, undefined)).rejects.toThrow();
   });
 
-  it("reschedules to a linked booking, prefers the original host, and never enqueues a second lead", async () => {
+  it("reschedules to a linked booking, prefers the original host, and enqueues no second lead in create mode", async () => {
     const a = await makeHost(sql);
     const b = await makeHost(sql);
     const team = await makeTeam(sql, [a.id, b.id]);
     const ev = await makeEvent(sql, { teamId: team.id });
-    await sql`insert into app.event_type_sf_settings (event_type_id, create_sf_lead) values (${ev.id}, true)`;
+    // 'create' (always insert) keeps the original behavior: Salesforce is not called on a
+    // reschedule. The other lead modes are covered in salesforce-lead-modes.test.ts.
+    await sql`insert into app.event_type_sf_settings (event_type_id, create_sf_lead, lead_mode) values (${ev.id}, true, 'create')`;
     const ref = { kind: "team" as const, slug: team.slug };
     const r1 = await createBooking(input(ref, ev.slug, futureSlot(2, 13)));
     const original = (await hostOf(r1.token))[0];

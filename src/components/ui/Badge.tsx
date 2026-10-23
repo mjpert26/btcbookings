@@ -49,6 +49,8 @@ const STATUS: Record<string, { tone: BadgeTone; label: string }> = {
   bot_not_in_channel: { tone: "danger", label: "Bot not in channel" },
   error: { tone: "danger", label: "Error" },
   created: { tone: "success", label: "Created" },
+  updated: { tone: "success", label: "Updated" },
+  skipped: { tone: "neutral", label: "Skipped" },
   duplicate: { tone: "warning", label: "Duplicate" },
 };
 

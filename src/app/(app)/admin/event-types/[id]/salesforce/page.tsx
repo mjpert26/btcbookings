@@ -11,7 +11,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Notice } from "@/components/ui/Toast";
 import { pickLocalized } from "@/i18n/locales";
-import { SF_BUILTIN_SOURCES } from "@/lib/salesforce";
+import { DEFAULT_SF_LEAD_MODE, SF_BUILTIN_SOURCES, SF_LEAD_MODE_OPTIONS } from "@/lib/salesforce";
 import { loadBundle } from "../../../../event-types/_data";
 import { toggleOverrideAction } from "../../../../event-types/_actions";
 import { GroupToggle } from "../../../../event-types/[id]/variants/GroupToggle";
@@ -23,6 +23,7 @@ export const metadata: Metadata = { title: "Salesforce settings" };
 function toValues(dto: SfSettingsDto | null): SfFormValues {
   return {
     createSfLead: dto?.createSfLead ?? false,
+    leadMode: dto?.leadMode ?? DEFAULT_SF_LEAD_MODE,
     isoAccountId: dto?.isoAccountId ?? "",
     campaignId: dto?.campaignId ?? "",
     ownerMode: dto?.ownerMode ?? "assigned_host",
@@ -77,10 +78,11 @@ export default async function SalesforceSettingsPage({ params }: { params: Promi
         title={
           <span className="flex flex-wrap items-center gap-2">
             Salesforce settings <Badge tone="primary">{et.language.toUpperCase()}</Badge>
-            {settings?.createSfLead ? <Badge tone="success">Lead creation on</Badge> : <Badge>Lead creation off</Badge>}
+            {settings?.createSfLead ? <Badge tone="success">Salesforce on</Badge> : <Badge>Salesforce off</Badge>}
+            {settings?.createSfLead ? <Badge tone="navy">{SF_LEAD_MODE_OPTIONS.find((o) => o.value === settings.leadMode)?.short ?? settings.leadMode}</Badge> : null}
           </span>
         }
-        description={`${et.name}. Leads are created through n8n with an idempotency key per booking.`}
+        description={`${et.name}. Bookings update or create Salesforce Leads through n8n, with an idempotency key per booking.`}
         actions={
           <Link href={`/admin/salesforce/jobs?eventType=${id}`} className="text-sm font-semibold text-primary hover:underline">
             Lead jobs ({counts.total}

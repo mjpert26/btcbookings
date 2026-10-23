@@ -6,6 +6,7 @@ import { env } from "@/server/env";
 import { encryptSecret } from "@/server/crypto/aes";
 import { randomToken, sha256Hex } from "@/server/crypto/random";
 import type { ResolvedEventType } from "@/server/scheduling";
+import { enqueueSfLeadOnReschedule } from "@/server/salesforce/jobs";
 
 /**
  * Outbox writes for booking changes. Every function here must run inside the transaction
@@ -20,7 +21,7 @@ import type { ResolvedEventType } from "@/server/scheduling";
  *                       <bookingId>:host_notice:<event>:<userId>
  *   sms_send            <bookingId>:sms:invitee:<offsetMin> | <bookingId>:sms:<userId>:<offsetMin>
  *   slack_dm_send       <bookingId>:slack_dm:<userId>:<offsetMin>
- *   sf_lead_create      <bookingId>
+ *   sf_lead_create      <bookingId> (a new booking, or the new booking of a reschedule)
  *
  * Every reminder job carries payload.bookingId and booking_id, so the
  * jobs_skip_imported_bookings trigger drops them for imported bookings.
@@ -284,7 +285,11 @@ export async function enqueueBookingCreated(
   await enqueueSfLeadIfEnabled(db, bookingId, input.resolved);
 }
 
-/** Jobs for a reschedule: old events removed, new booking created, no new Salesforce lead. */
+/**
+ * Jobs for a reschedule: old events removed, new booking created. Salesforce: in lead modes
+ * other than 'create', one sf_lead_create job for the new booking (see
+ * enqueueSfLeadOnReschedule); in 'create' mode no Salesforce call, as before.
+ */
 export async function enqueueBookingRescheduled(
   db: Db,
   input: {
@@ -293,6 +298,8 @@ export async function enqueueBookingRescheduled(
     oldHosts: { userId: string; graphEventId: string | null }[];
     newStartMs: number;
     hostUserIds: string[];
+    /** Effective settings of the event type. Without them no Salesforce job is enqueued. */
+    resolved?: Pick<ResolvedEventType, "sfSettings">;
     /** Defaults to the new booking's event type settings. */
     reminders?: ReminderSettings;
     now?: number;
@@ -314,6 +321,11 @@ export async function enqueueBookingRescheduled(
     now: input.now,
   });
   await enqueueHostNotices(db, input.newBookingId, input.hostUserIds, "rescheduled");
+  await enqueueSfLeadOnReschedule(db, {
+    oldBookingId: input.oldBookingId,
+    newBookingId: input.newBookingId,
+    settings: input.resolved?.sfSettings,
+  });
 }
 
 /** Jobs for an invitee cancellation. The Salesforce lead is left untouched. */

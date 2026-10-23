@@ -5,7 +5,9 @@ src/server/import/calendly/map.ts). See docs/calendly-import.md for how to pull 
 usage: python3 -I scripts/calendly-snapshot.py <inventory_dir> <out.json>
           --window-from ISO --window-to ISO [--pulled-at ISO]
           [--events events_future.json] [--history events_past.json] [--invitees invitees.json]
-          [--members members.json] [--allow-partial] [--placeholder]
+          [--members members.json] [--emails emails.json] [--allow-partial] [--placeholder]
+       python3 -I scripts/calendly-snapshot.py <inventory_dir> <out.json> --pages-only
+          [--history events_past.json] [--members members.json] [--emails emails.json] [--pulled-at ISO]
 
 <inventory_dir>  members.json, event_types.json (with round_robin_hosts) and availability/<user-id>.json
 --events         meetings whose start is in [window-from, window-to), active AND canceled
@@ -15,6 +17,9 @@ usage: python3 -I scripts/calendly-snapshot.py <inventory_dir> <out.json>
                  no invitees, so the importer does not treat them as cancelled)
 --placeholder    fills missing or redacted emails with made-up addresses and invents invitees;
                  the importer refuses to apply such a snapshot (dry runs only)
+--emails         {user_uri: email} used for members whose email is missing or redacted
+--pages-only     people, hours, teams and booking pages only: no meetings, and an empty events
+                 window at pulled-at, so the importer never treats a booking as missing
 """
 import json, sys, re, collections, os
 from datetime import datetime, timezone
@@ -25,20 +30,26 @@ def opt(name, default=None):
     return args[args.index(name) + 1] if name in args else default
 placeholder = "--placeholder" in args
 allow_partial = "--allow-partial" in args
-window = {"from": opt("--window-from"), "to": opt("--window-to")}
-if not (window["from"] and window["to"]):
-    sys.exit("--window-from and --window-to are required (the start-time range the meetings were pulled for)")
-if not placeholder and not opt("--invitees"):
-    sys.exit("--invitees is required for a real snapshot")
+pages_only = "--pages-only" in args
+pulled_at = opt("--pulled-at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+if pages_only:
+    window = {"from": pulled_at, "to": pulled_at}
+else:
+    window = {"from": opt("--window-from"), "to": opt("--window-to")}
+    if not (window["from"] and window["to"]):
+        sys.exit("--window-from and --window-to are required (the start-time range the meetings were pulled for)")
+    if not placeholder and not opt("--invitees"):
+        sys.exit("--invitees is required for a real snapshot")
 
 def ts(v):
     return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 members = json.load(open(opt("--members", f"{src}/members.json")))
 ets = json.load(open(f"{src}/event_types.json"))
-events = json.load(open(opt("--events", f"{src}/events_future.json")))
+events = [] if pages_only else json.load(open(opt("--events", f"{src}/events_future.json")))
 history = json.load(open(opt("--history"))) if opt("--history") else []
 invitees = json.load(open(opt("--invitees"))) if opt("--invitees") else {}
+email_overrides = json.load(open(opt("--emails"))) if opt("--emails") else {}
 
 def redacted(v):
     return not v or "redacted" in str(v)
@@ -47,6 +58,8 @@ def email_for(m):
     e = m.get("email") or ""
     if "@" in e and not redacted(e):
         return e
+    if email_overrides.get(m["uri"]):
+        return email_overrides[m["uri"]]
     if not placeholder:
         return None
     slug = re.sub(r"-?bigthinkcapital$", "", m.get("slug") or "user")
@@ -152,7 +165,6 @@ if without_invitee and not placeholder and not allow_partial:
     sys.exit(f"{len(without_invitee)} active meetings have no usable invitee (first: {without_invitee[0]}); "
              "fetch their invitees, or pass --allow-partial to keep them without one")
 
-pulled_at = opt("--pulled-at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 snap = {"source": "calendly", "pulledAt": pulled_at, "eventsWindow": window, "includesCanceled": True,
         "members": snap_members, "eventTypes": snap_types, "events": snap_events}
 if placeholder:

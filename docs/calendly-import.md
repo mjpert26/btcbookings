@@ -39,10 +39,25 @@ The builder refuses to run when:
 
 `--placeholder` fills in made-up emails for local testing. The app only dry-runs such a snapshot. The snapshot contains invitee contact details: keep it out of the repository and delete it after use.
 
+### People and pages only
+
+When meetings cannot be copied yet (for example, while the MCP gateway redacts invitee emails), build a snapshot without meetings:
+
+```bash
+python3 -I scripts/calendly-snapshot.py <inventory_dir> snapshot.json --pages-only \
+  --history <inventory_dir>/events_past.json --emails emails.json
+```
+
+- `--pages-only` copies people, working hours, teams and booking pages. The events window is empty, so no imported booking is ever treated as missing. Bookings can be imported later with a full snapshot.
+- `--emails` is a `{calendly_user_uri: email}` map used for members whose email is redacted. Calendly booking links follow the email local part (`first-last-bigthinkcapital` for `first.last@bigthinkcapital.com`), so the map can be derived from slugs. Review the exceptions by hand.
+- A derived email that turns out to be wrong is corrected at sign-in: when no account matches the Microsoft email or user principal name, a single unlinked imported account with the same display name is linked instead (`user.linked` audit entry with `linkedBy: "name"`).
+
 ## 3. Dry run, then apply
 
 1. On **Admin > Import**, upload the snapshot with **Apply** unchecked. The report shows counts, timing and warnings. Read the warnings, in particular team pages without hosts and members outside the allowed sign-in domains.
 2. Upload again with **Apply** checked. One transaction applies everything, or nothing if anything fails.
+
+Admins can also run both steps through the REST API with an API key: `POST /api/v1/import/calendly` with the snapshot as the JSON body (up to 4 MB) is a dry run, and `POST /api/v1/import/calendly?apply=true` applies it. A refused run returns 409.
 
 What is created:
 

@@ -14,6 +14,8 @@
  * | booking_reassign          | booking              | queue sync (removal_policy=reassign)|
  * | sms_send                  | sms                  | booking (reminders, if enabled)     |
  * | slack_dm_send             | slack                | booking (agent reminders, if enabled)|
+ * | webhook_dispatch          | webhooks             | bookings triggers (booking events)  |
+ * | webhook_deliver           | webhooks             | webhook_dispatch, admin test        |
  */
 export type JobPayloads = {
   graph_event_upsert: { bookingId: string };
@@ -42,6 +44,10 @@ export type JobPayloads = {
   sms_send: { template: "booking_reminder"; bookingId: string; recipient: "invitee" | { userId: string }; offsetMin: number };
   /** Slack direct message to a host. */
   slack_dm_send: { template: "booking_reminder"; bookingId: string; userId: string; offsetMin: number };
+  /** One booking event; inserted by the app.bookings and app.booking_hosts triggers. */
+  webhook_dispatch: { bookingId: string; event: string; eventId: string; occurredAt: string };
+  /** One delivery to one endpoint (app.webhook_deliveries). bookingId is absent for test deliveries. */
+  webhook_deliver: { deliveryId: string; bookingId?: string };
 };
 
 /** Job kinds that carry booking reminders (all channels). */

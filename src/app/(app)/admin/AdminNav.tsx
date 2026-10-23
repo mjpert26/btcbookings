@@ -10,6 +10,7 @@ const ITEMS = [
   { href: "/admin/salesforce/lead-routing", label: "Lead routing (ISO)" },
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
   { href: "/admin/integrations", label: "Integrations" },
+  { href: "/admin/webhooks", label: "Webhooks" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/audit", label: "Audit log" },
   { href: "/admin/errors", label: "Errors" },

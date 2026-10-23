@@ -8,6 +8,7 @@ import { bookingHandlers } from "@/server/booking/jobs";
 import { syncHandlers } from "@/server/sync/jobs";
 import { smsHandlers } from "@/server/sms/jobs";
 import { slackDmHandlers } from "@/server/slack/dm-jobs";
+import { webhookHandlers } from "@/server/webhooks/jobs";
 
 export const jobHandlers: Record<string, JobHandler> = {
   ...graphHandlers,
@@ -18,4 +19,5 @@ export const jobHandlers: Record<string, JobHandler> = {
   ...syncHandlers,
   ...smsHandlers,
   ...slackDmHandlers,
+  ...webhookHandlers,
 };

@@ -16,6 +16,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Deploying to Vercel](#deploying-to-vercel)
 - [Cron jobs](#cron-jobs)
 - [REST API and MCP server](#rest-api-and-mcp-server)
+- [Outbound webhooks](#outbound-webhooks)
 - [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
 - [Error log](#error-log)
@@ -139,7 +140,7 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/graph-delta` | every 15 minutes | Delta reconciliation for every healthy calendar connection |
 | `/api/cron/reminders` | every 5 minutes | Safety net for reminders (email, SMS and Slack direct messages) |
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
-| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, codes and tokens, nonces, rate-limit windows, old job rows, old error log entries and API request log entries older than 30 days |
+| `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, codes and tokens, nonces, rate-limit windows, old job rows, old error log entries, and API request log entries and finished webhook deliveries older than 30 days |
 
 ## REST API and MCP server
 
@@ -150,6 +151,10 @@ AI assistants connect to the MCP server at `https://mcp.bigthinkcapital.com/mcp`
 - **Admin:** manages everything.
 
 Every change is audited with its channel. Each authenticated request is recorded in `app.api_request_log` (caller, key or app, route, JSON-RPC methods, status and duration; never bodies) for 30 days. Users manage their API keys and connected apps, and see their recent requests, under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients, and see all recent requests, under **Admin > Integrations**. For setup (including the mcp.bigthinkcapital.com domain), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
+
+## Outbound webhooks
+
+Admins send signed booking events (`booking.created`, `booking.rescheduled`, `booking.cancelled`, `booking.reassigned`) to HTTPS endpoints from **Admin > Webhooks** (`/admin/webhooks`), optionally limited to one partner's pages. Deliveries go through the jobs outbox with retries, private addresses are refused, and imported Calendly bookings never produce events. No environment variables are needed. Receiver guide and signature check: [`docs/webhooks.md`](docs/webhooks.md).
 
 ## Importing from Calendly
 
@@ -215,6 +220,7 @@ src/server/sync         Salesforce Queue snapshot diffing and safety rail
 src/server/slack        Slack channel sync and agent reminder direct messages
 src/server/sms          SendBlue client, SMS reminders, opt-outs
 src/server/teams        partner page branding and logos
+src/server/webhooks     outbound booking webhooks (dispatch, signed delivery, admin)
 src/server/salesforce   Lead payload mapping and outbox handler
 src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts

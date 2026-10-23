@@ -1,0 +1,193 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
+import { futureSlot, invitee, makeEvent, makeHost } from "../helpers/booking-flow-fixtures";
+import { withUser, type Sql } from "@/server/db/client";
+import type { SessionUser } from "@/server/auth/session";
+import { createBooking } from "@/server/booking/create";
+import { cancelByInvitee, rescheduleByInvitee } from "@/server/booking/manage";
+import { cancelBookingAsHost } from "@/server/booking/host-actions";
+import { encryptSecret } from "@/server/crypto/aes";
+import { PermanentJobError } from "@/server/jobs/types";
+import { handleWebhookDeliver, handleWebhookDispatch } from "@/server/webhooks/jobs";
+import { signatureFor } from "@/server/webhooks/sign";
+import { createWebhook, deleteWebhook, sendTestWebhook, WebhookError } from "@/server/webhooks/admin";
+
+let sql: Sql;
+beforeAll(() => {
+  sql = connectTestDb();
+});
+afterAll(async () => {
+  await sql.end();
+});
+beforeEach(async () => {
+  await truncateAll(sql);
+});
+
+const SECRET = "whsec_integration_test_secret";
+const publicDns = async () => ["93.184.216.34"];
+
+async function endpoint(over: { events?: string[]; teamId?: string | null; url?: string; enabled?: boolean } = {}): Promise<string> {
+  const id = randomUUID();
+  await sql`
+    insert into app.webhook_endpoints (id, url, events, team_id, secret_enc, secret_prefix, enabled)
+    values (${id}, ${over.url ?? "https://hooks.example.com/btc"}, ${over.events ?? ["booking.created", "booking.cancelled", "booking.rescheduled", "booking.reassigned"]},
+            ${over.teamId ?? null}, ${encryptSecret(SECRET, id)}, ${SECRET.slice(0, 12)}, ${over.enabled ?? true})
+  `;
+  return id;
+}
+
+async function book() {
+  const host = await makeHost(sql, { name: "Agent A" });
+  const ev = await makeEvent(sql, { userId: host.id });
+  const r = await createBooking({ owner: { kind: "user", slug: host.slug }, eventSlug: ev.slug, language: "en", start: futureSlot(3), durationMin: 30, ...invitee() });
+  return { host, ev, ...r };
+}
+
+const dispatchJobs = () =>
+  sql<{ idempotency_key: string; payload: { bookingId: string; event: string; eventId: string; occurredAt: string } }[]>`
+    select idempotency_key, payload from app.jobs where kind = 'webhook_dispatch' order by created_at, idempotency_key
+  `;
+
+function session(id: string, role: SessionUser["role"]): SessionUser {
+  return { id, email: `${id}@bigthinkcapital.com`, name: "User", slug: id, role, timezone: "America/New_York", languages: ["en"], photoUrl: null, calendarStatus: null };
+}
+
+describe("webhook events", () => {
+  it("adds no work when no endpoint subscribes", async () => {
+    await endpoint({ events: ["booking.cancelled"], enabled: false });
+    await book();
+    expect(await dispatchJobs()).toHaveLength(0);
+  });
+
+  it("enqueues one dispatch per booking event from every path, and none for imported bookings", async () => {
+    await endpoint();
+    const a = await book();
+    await cancelByInvitee(a.token, "Changed plans");
+    const b = await book();
+    await cancelBookingAsHost(b.host.id, b.bookingId, "Out sick");
+    const jobs = await dispatchJobs();
+    expect(jobs.map((j) => j.payload.event).sort()).toEqual(["booking.cancelled", "booking.cancelled", "booking.created", "booking.created"]);
+    expect(new Set(jobs.map((j) => j.payload.eventId)).size).toBe(4);
+
+    // Re-saving the same status adds nothing.
+    await sql`update app.bookings set status = 'cancelled' where id = ${a.bookingId}`;
+    expect(await dispatchJobs()).toHaveLength(4);
+
+    const c = await book();
+    await sql`delete from app.jobs where kind = 'webhook_dispatch'`;
+    await sql`update app.bookings set import_source = 'calendly' where id = ${c.bookingId}`;
+    await sql`update app.bookings set status = 'cancelled' where id = ${c.bookingId}`;
+    expect(await dispatchJobs()).toHaveLength(0);
+  });
+
+  it("reports reschedules as the new booking and reassignments once per previous host", async () => {
+    await endpoint();
+    const a = await book();
+    const moved = await rescheduleByInvitee(a.token, { start: futureSlot(4) });
+    await sql`update app.booking_hosts set reassigned_at = now(), active = false where booking_id = ${moved.bookingId}`;
+    await sql`update app.booking_hosts set reassigned_at = now() where booking_id = ${moved.bookingId}`;
+    const events = (await dispatchJobs()).map((j) => [j.payload.event, j.payload.bookingId === moved.bookingId]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        ["booking.created", false],
+        ["booking.rescheduled", true],
+        ["booking.reassigned", true],
+      ]),
+    );
+    expect(events).toHaveLength(3);
+  });
+
+  it("dispatches to matching endpoints only and delivers a signed payload", async () => {
+    const all = await endpoint({ events: ["booking.created"] });
+    await endpoint({ events: ["booking.cancelled"] });
+    await endpoint({ events: ["booking.created"], teamId: (await sql<{ id: string }[]>`insert into app.teams (name, slug) values ('Other', 'other') returning id`)[0].id });
+    const b = await book();
+    const [job] = await dispatchJobs();
+
+    expect(await handleWebhookDispatch(job, { sql })).toEqual({ result: { deliveries: 1 } });
+    expect(await handleWebhookDispatch(job, { sql })).toEqual({ result: { deliveries: 0 } }); // idempotent
+    const [delivery] = await sql<{ id: string; endpoint_id: string; payload: Record<string, unknown> }[]>`select id, endpoint_id, payload from app.webhook_deliveries`;
+    expect(delivery.endpoint_id).toBe(all);
+    const body = delivery.payload as { type: string; data: { booking: Record<string, unknown> } };
+    expect(body.type).toBe("booking.created");
+    expect(body.data.booking).toMatchObject({ id: b.bookingId, status: "confirmed", createdVia: "public", team: null });
+    expect(JSON.stringify(body)).not.toContain(b.token);
+    expect(await sql`select 1 from app.jobs where kind = 'webhook_deliver'`).toHaveLength(1);
+
+    const calls: { url: string; init: RequestInit }[] = [];
+    const ok = await handleWebhookDeliver(
+      { payload: { deliveryId: delivery.id }, attempts: 1, max_attempts: 8 },
+      { log: () => undefined },
+      { sql, lookup: publicDns, now: () => 1_700_000_000_000, fetch: async (url, init) => (calls.push({ url, init }), new Response(null, { status: 204 })) },
+    );
+    expect(ok).toEqual({ result: { status: 204 } });
+    const headers = calls[0].init.headers as Record<string, string>;
+    expect(calls[0].url).toBe("https://hooks.example.com/btc");
+    expect(headers["BTC-Webhook-Event"]).toBe("booking.created");
+    expect(headers["BTC-Signature"]).toBe(`t=1700000000,v1=${signatureFor(SECRET, 1700000000, calls[0].init.body as string)}`);
+    const [after] = await sql<{ status: string; attempts: number; response_status: number }[]>`select status, attempts, response_status from app.webhook_deliveries`;
+    expect(after).toEqual({ status: "succeeded", attempts: 1, response_status: 204 });
+    const [ep] = await sql<{ last_status: number; consecutive_failures: number }[]>`select last_status, consecutive_failures from app.webhook_endpoints where id = ${all}`;
+    expect(ep).toEqual({ last_status: 204, consecutive_failures: 0 });
+  });
+
+  it("retries server errors, stops on client errors and refuses private destinations", async () => {
+    await endpoint({ events: ["booking.created"] });
+    await book();
+    const [job] = await dispatchJobs();
+    await handleWebhookDispatch(job, { sql });
+    const [{ id }] = await sql<{ id: string }[]>`select id from app.webhook_deliveries`;
+    const deliver = (status: number, lookup = publicDns, attempts = 1) =>
+      handleWebhookDeliver({ payload: { deliveryId: id }, attempts, max_attempts: 8 }, { log: () => undefined }, { sql, lookup, fetch: async () => new Response(null, { status }) });
+
+    await expect(deliver(503)).rejects.toThrow("answered 503");
+    expect((await sql`select status from app.webhook_deliveries`)[0].status).toBe("pending");
+    await expect(deliver(404)).rejects.toBeInstanceOf(PermanentJobError);
+    expect((await sql`select status from app.webhook_deliveries`)[0].status).toBe("failed");
+
+    let fetched = false;
+    await sql`update app.webhook_deliveries set status = 'pending'`;
+    await expect(
+      handleWebhookDeliver(
+        { payload: { deliveryId: id }, attempts: 1, max_attempts: 8 },
+        { log: () => undefined },
+        { sql, lookup: async () => ["10.0.0.7"], fetch: async () => ((fetched = true), new Response(null, { status: 200 })) },
+      ),
+    ).rejects.toBeInstanceOf(PermanentJobError);
+    expect(fetched).toBe(false);
+    const [row] = await sql<{ status: string; error: string }[]>`select status, error from app.webhook_deliveries`;
+    expect(row).toEqual({ status: "failed", error: "URL resolves to a private or reserved address" });
+    const [ep] = await sql<{ consecutive_failures: number }[]>`select consecutive_failures from app.webhook_endpoints`;
+    expect(ep.consecutive_failures).toBe(3);
+  });
+});
+
+describe("webhook administration", () => {
+  it("is admin only, audits changes, shows the secret once and never exposes it", async () => {
+    const admin = await makeUser(sql, { role: "admin" });
+    const agent = await makeUser(sql);
+    await expect(createWebhook(session(agent.id, "user"), { url: "https://hooks.example.com/a", events: ["booking.created"] })).rejects.toBeInstanceOf(WebhookError);
+    await expect(createWebhook(session(admin.id, "admin"), { url: "http://hooks.example.com/a", events: ["booking.created"] })).rejects.toThrow("must use https");
+    await expect(createWebhook(session(admin.id, "admin"), { url: "https://127.0.0.1/a", events: ["booking.created"] })).rejects.toThrow("private");
+
+    const { id, secret } = await createWebhook(session(admin.id, "admin"), { url: "https://hooks.example.com/a", events: ["booking.created"], description: "n8n" });
+    expect(secret).toMatch(/^whsec_[A-Za-z0-9_-]{43}$/);
+    const [audit] = await sql<{ after: Record<string, unknown> }[]>`select after from app.audit_log where action = 'webhook.create'`;
+    expect(JSON.stringify(audit.after)).not.toContain(secret);
+
+    await expect(withUser(admin.id, (tx) => tx`select secret_enc from app.webhook_endpoints`)).rejects.toMatchObject({ code: "42501" });
+    expect(await withUser(agent.id, (tx) => tx`select id from app.webhook_endpoints`)).toHaveLength(0);
+    expect(await withUser(admin.id, (tx) => tx`select id from app.webhook_endpoints`)).toHaveLength(1);
+
+    await sendTestWebhook(session(admin.id, "admin"), id);
+    const [test] = await sql<{ event: string; booking_id: string | null }[]>`select event, booking_id from app.webhook_deliveries`;
+    expect(test).toEqual({ event: "webhook.test", booking_id: null });
+    expect(await sql`select 1 from app.jobs where kind = 'webhook_deliver'`).toHaveLength(1);
+    expect(await withUser(agent.id, (tx) => tx`select id from app.webhook_deliveries`)).toHaveLength(0);
+
+    await deleteWebhook(session(admin.id, "admin"), id);
+    expect(await sql`select 1 from app.webhook_endpoints`).toHaveLength(0);
+    expect((await sql<{ action: string }[]>`select action from app.audit_log order by created_at`).map((r) => r.action)).toEqual(["webhook.create", "webhook.test", "webhook.delete"]);
+  });
+});

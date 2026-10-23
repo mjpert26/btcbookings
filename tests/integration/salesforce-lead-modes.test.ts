@@ -82,8 +82,8 @@ async function book(p: Awaited<ReturnType<typeof page>>, start = futureSlot(2, 1
 }
 
 async function sfJobs() {
-  return sql<{ id: string; booking_id: string; payload: Record<string, unknown>; status: string; idempotency_key: string; result: Record<string, unknown> | null; last_error: string | null; run_at: Date }[]>`
-    select id, booking_id, payload, status, idempotency_key, result, last_error, run_at
+  return sql<{ id: string; booking_id: string; payload: Record<string, unknown>; status: string; idempotency_key: string; result: Record<string, unknown> | null; last_error: string | null; run_at: Date; attempts: number; max_attempts: number }[]>`
+    select id, booking_id, payload, status, idempotency_key, result, last_error, run_at, attempts, max_attempts
     from app.jobs where kind = 'sf_lead_create' order by created_at, id`;
 }
 
@@ -398,8 +398,20 @@ describe("handler", () => {
     expect((await run(http)).retried).toBe(1);
     expect(http.calls).toHaveLength(0);
     const waiting = (await sfJobs()).find((j) => j.id === j2.id)!;
-    expect(waiting).toMatchObject({ status: "failed", last_error: "Waiting for the Salesforce job of the original booking" });
+    // Waiting does not use up an attempt.
+    expect(waiting).toMatchObject({ status: "pending", attempts: 0, last_error: "Waiting for the Salesforce job of the original booking" });
     expect(waiting.run_at.getTime() - before).toBeGreaterThanOrEqual(55_000);
+    expect(await sql`select 1 from app.job_attempts where job_id = ${j2.id}`).toHaveLength(0);
+
+    // However long the original job runs, the waiting job is never marked failed or dead.
+    await sql`update app.jobs set max_attempts = 1 where id = ${j2.id}`;
+    for (let i = 0; i < 3; i++) {
+      await sql`update app.jobs set run_at = now() - interval '1 second' where id = ${j2.id}`;
+      expect((await run(http)).retried).toBe(1);
+    }
+    expect((await sfJobs()).find((j) => j.id === j2.id)).toMatchObject({ status: "pending", attempts: 0, max_attempts: 1 });
+    expect(await booking(r2.bookingId)).toMatchObject({ sf_lead_status: "pending" });
+    await sql`update app.jobs set max_attempts = 8 where id = ${j2.id}`;
 
     // The original job finishes with a Lead; the update then goes out.
     await sql`update app.jobs set status = 'succeeded', locked_until = null where id = ${j1.id}`;
@@ -408,6 +420,122 @@ describe("handler", () => {
     expect((await run(http)).succeeded).toBe(1);
     expect(http.calls[0].body).toMatchObject({ bookingId: r2.bookingId, isReschedule: true });
     expect(await booking(r2.bookingId)).toMatchObject({ sf_lead_id: LEAD, sf_lead_status: "updated" });
+  });
+
+  it("supersedes a retried original job after a reschedule and lets the new booking take over its intent", async () => {
+    const p = await page("match_or_create");
+    const r1 = await book(p);
+    const [j1] = await sfJobs();
+    // The original job is running when the invitee reschedules, so it is not handed over.
+    await sql`update app.jobs set status = 'running', attempts = 1, locked_until = now() + interval '5 minutes' where id = ${j1.id}`;
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+    const j2 = (await sfJobs()).find((j) => j.booking_id === r2.bookingId)!;
+    expect(j2.payload).toEqual({ bookingId: r2.bookingId, isReschedule: true });
+
+    // The in-flight attempt fails with a transient n8n error and is scheduled for a retry
+    // that is due before the new booking's job.
+    await sql`update app.jobs set status = 'failed', locked_until = null, run_at = now() - interval '2 seconds' where id = ${j1.id}`;
+    await sql`update app.jobs set run_at = now() - interval '1 second' where id = ${j2.id}`;
+    const http = mockFetch([{ status: 200, body: { status: "created", leadId: LEAD } }]);
+    // Both jobs can be claimed in one batch; the new one then waits for the original once.
+    expect((await run(http)).dead).toBe(0);
+    await sql`update app.jobs set run_at = now() - interval '1 second' where id = ${j2.id} and status = 'pending'`;
+    expect((await run(http)).dead).toBe(0);
+
+    const after = await sfJobs();
+    expect(after.find((j) => j.id === j1.id)).toMatchObject({ status: "succeeded", result: { skipped: "superseded_by_reschedule" } });
+    // One call, for the new booking, sent as a first booking (match or create).
+    expect(http.calls.map((c) => [c.body.bookingId, c.body.isReschedule])).toEqual([[r2.bookingId, false]]);
+    const done = after.find((j) => j.id === j2.id)!;
+    expect(done.payload).toEqual({ bookingId: r2.bookingId });
+    expect(done.result).toMatchObject({ status: "created", tookOverOriginal: true });
+    expect(await booking(r2.bookingId)).toMatchObject({ status: "confirmed", sf_lead_id: LEAD, sf_lead_status: "created" });
+    expect(await booking(r1.bookingId)).toMatchObject({ status: "rescheduled", sf_lead_id: null, sf_lead_status: "skipped" });
+  });
+
+  it("supersedes an original job that waits for a later retry instead of waiting for it", async () => {
+    const p = await page("match_or_create");
+    const r1 = await book(p);
+    const [j1] = await sfJobs();
+    await sql`update app.jobs set status = 'running', attempts = 1, locked_until = now() + interval '5 minutes' where id = ${j1.id}`;
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+    await sql`update app.jobs set status = 'failed', locked_until = null, run_at = now() + interval '1 hour' where id = ${j1.id}`;
+    const http = mockFetch([{ status: 200, body: { status: "created", leadId: LEAD } }]);
+    expect(await run(http)).toMatchObject({ succeeded: 1, retried: 0 });
+    expect(http.calls.map((c) => [c.body.bookingId, c.body.isReschedule])).toEqual([[r2.bookingId, false]]);
+    expect((await sfJobs()).find((j) => j.id === j1.id)).toMatchObject({
+      status: "succeeded",
+      result: { skipped: "superseded_by_reschedule", bookingId: r2.bookingId },
+    });
+  });
+
+  it("takes over a dead original job on reschedule and refuses to retry the original", async () => {
+    const admin = await makeUser(sql, { role: "admin" });
+    const p = await page("match_or_create");
+    const r1 = await book(p);
+    expect((await run(mockFetch([{ status: 400, body: "bad" }]))).dead).toBe(1);
+    expect(await booking(r1.bookingId)).toMatchObject({ sf_lead_status: "failed" });
+    const [j1] = await sfJobs();
+
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+    const j2 = (await sfJobs()).find((j) => j.booking_id === r2.bookingId)!;
+    // The original booking never got a Lead, so the new job is sent as a first booking.
+    expect(j2.payload).toEqual({ bookingId: r2.bookingId });
+    const http = mockFetch([{ status: 200, body: { status: "created", leadId: LEAD } }]);
+    await run(http);
+    expect(http.calls.map((c) => [c.body.bookingId, c.body.isReschedule])).toEqual([[r2.bookingId, false]]);
+    expect(await booking(r2.bookingId)).toMatchObject({ sf_lead_id: LEAD, sf_lead_status: "created" });
+
+    // The new booking owns the Salesforce work now; retrying the original is refused.
+    await expect(retrySfLeadJob(admin, j1.id)).rejects.toMatchObject({ code: "BTC01" });
+    expect((await sfJobs()).find((j) => j.id === j1.id)).toMatchObject({ status: "dead" });
+    expect(await booking(r2.bookingId)).toMatchObject({ status: "confirmed", sf_lead_id: LEAD, sf_lead_status: "created" });
+  });
+
+  it("decides again when the job runs if the original job died after the reschedule", async () => {
+    const p = await page("match_or_create");
+    const r1 = await book(p);
+    const [j1] = await sfJobs();
+    await sql`update app.jobs set status = 'running', attempts = 1, locked_until = now() + interval '5 minutes' where id = ${j1.id}`;
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+    // Its last attempt failed: the job is dead and the original booking has no Lead.
+    await sql`update app.jobs set status = 'dead', locked_until = null where id = ${j1.id}`;
+    await sql`update app.bookings set sf_lead_status = 'failed' where id = ${r1.bookingId}`;
+    const http = mockFetch([{ status: 200, body: { status: "created", leadId: LEAD } }]);
+    await run(http);
+    expect(http.calls.map((c) => [c.body.bookingId, c.body.isReschedule])).toEqual([[r2.bookingId, false]]);
+    expect(await booking(r2.bookingId)).toMatchObject({ sf_lead_id: LEAD, sf_lead_status: "created" });
+    expect(await booking(r1.bookingId)).toMatchObject({ sf_lead_status: "failed" });
+  });
+
+  it("keeps a later booking's own outcome when the original job finishes late", async () => {
+    const p = await page("match_or_create");
+    const r1 = await book(p);
+    let r2: { bookingId: string } | null = null;
+    // While the original attempt is waiting for n8n, the invitee reschedules and the new
+    // booking's job records its own result.
+    const fn = (async () => {
+      r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+      await sql`update app.jobs set status = 'succeeded' where booking_id = ${r2.bookingId} and kind = 'sf_lead_create'`;
+      await sql`update app.bookings set sf_lead_id = ${LEAD2}, sf_lead_status = 'updated' where id = ${r2.bookingId}`;
+      return new Response(JSON.stringify({ status: "error", error: "INVALID_FIELD", retryable: false }), { status: 200 });
+    }) as typeof fetch;
+    expect((await runJobs(createSalesforceHandlers({ fetch: fn }), { sql })).dead).toBe(1);
+    expect(await booking(r1.bookingId)).toMatchObject({ sf_lead_status: "failed" });
+    expect(await booking(r2!.bookingId)).toMatchObject({ sf_lead_id: LEAD2, sf_lead_status: "updated" });
+  });
+
+  it("still sends the original job in create mode after a reschedule and records the outcome on both bookings", async () => {
+    const p = await page("create");
+    const r1 = await book(p);
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(3, 16) });
+    expect((await sfJobs()).map((j) => j.booking_id)).toEqual([r1.bookingId]);
+    const http = mockFetch([{ status: 200, body: { status: "created", leadId: LEAD } }]);
+    expect((await run(http)).succeeded).toBe(1);
+    // The rescheduled booking's host at the time is the Lead owner.
+    expect(http.calls[0].body).toMatchObject({ bookingId: r1.bookingId, owner: { mode: "assigned_host", ownerEmail: p.host.email } });
+    expect(await booking(r1.bookingId)).toMatchObject({ sf_lead_id: LEAD, sf_lead_status: "created" });
+    expect(await booking(r2.bookingId)).toMatchObject({ sf_lead_id: LEAD, sf_lead_status: "created" });
   });
 
   it("re-queues a failed reschedule job and marks its booking pending again", async () => {

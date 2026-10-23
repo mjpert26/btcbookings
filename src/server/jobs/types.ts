@@ -42,6 +42,18 @@ export class RetryAfterError extends Error {
   }
 }
 
+/**
+ * Throw to run the job again later without using up an attempt: the job waits on other
+ * work (for example an earlier job of the same booking chain) rather than failing. The
+ * attempt is not counted and not recorded in job_attempts.
+ */
+export class DeferJobError extends Error {
+  constructor(message: string, readonly delaySeconds: number) {
+    super(message);
+    this.name = "DeferJobError";
+  }
+}
+
 export type EnqueueInput = {
   kind: string;
   payload: Record<string, unknown>;

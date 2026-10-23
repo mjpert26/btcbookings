@@ -119,8 +119,10 @@ export async function reassignBooking(
       return { result: { removed: from.user_id } };
     }
 
-    // Round-robin. Deactivate first so the old hold does not count for anyone.
-    await tx`update app.booking_hosts set active = false, reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Round-robin. Deactivate first so the old hold does not count for anyone. reassigned_at
+    // is set only once a replacement host is in place: setting it fires the booking.reassigned
+    // webhook trigger, which must not run for a reassignment that ends flagged.
+    await tx`update app.booking_hosts set active = false where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     const confirmed = await confirmSlot(tx, loaded, {
       startMs,
       durationMin,
@@ -146,6 +148,7 @@ export async function reassignBooking(
         throw err;
       }
       const to = chosen[0];
+      await tx`update app.booking_hosts set reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
       await recordRoundRobin(tx, to.teamMemberId);
       await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id });
       await enqueueGraphUpsert(tx, booking.id, `reassign:${to.userId}`);
@@ -175,9 +178,10 @@ export async function reassignBooking(
       });
       return { result: { reassignedTo: to.userId } };
     }
-    // Nobody free: restore the original host and flag for a human. Clearing reassigned_at
-    // keeps the booking visible to that host (app.can_read_booking).
-    await tx`update app.booking_hosts set active = true, reassigned_at = null where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Nobody free: restore the original host and flag for a human. reassigned_at was never
+    // set, so the booking stays visible to that host (app.can_read_booking) and no
+    // booking.reassigned webhook is sent.
+    await tx`update app.booking_hosts set active = true where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     return flag("no eligible host is free");
   }) as Promise<JobResult>;
 }

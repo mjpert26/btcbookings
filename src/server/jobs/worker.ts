@@ -3,6 +3,7 @@ import { service, type Sql } from "@/server/db/client";
 import { backoffSeconds } from "@/server/jobs/queue";
 import { logError } from "@/server/errors/log";
 import {
+  DeferJobError,
   PermanentJobError,
   RetryAfterError,
   type AttemptLog,
@@ -85,6 +86,15 @@ export async function executeJob(
     return "succeeded";
   } catch (err) {
     const message = (err as Error).message?.slice(0, 1000) ?? String(err);
+    if (err instanceof DeferJobError) {
+      // Not a failure: give the attempt back and run again after the delay.
+      await sql`
+        update app.jobs set status = 'pending', attempts = greatest(attempts - 1, 0), locked_until = null,
+               last_error = ${message}, run_at = now() + make_interval(secs => ${Math.max(1, Math.ceil(err.delaySeconds))})
+        where id = ${job.id}
+      `;
+      return "retried";
+    }
     await recordAttempt(message);
     const permanent = err instanceof PermanentJobError;
     if (permanent || job.attempts >= job.max_attempts) {

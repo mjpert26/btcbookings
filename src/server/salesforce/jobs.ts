@@ -4,7 +4,14 @@ import { service, type Db, type Sql } from "@/server/db/client";
 import { env } from "@/server/env";
 import { signRequest } from "@/server/crypto/hmac";
 import { enqueue } from "@/server/jobs/queue";
-import { PermanentJobError, RetryAfterError, type JobContext, type JobHandler, type JobRow } from "@/server/jobs/types";
+import {
+  DeferJobError,
+  PermanentJobError,
+  RetryAfterError,
+  type JobContext,
+  type JobHandler,
+  type JobRow,
+} from "@/server/jobs/types";
 import { resolvePageSettings } from "@/server/teams/page-settings";
 import {
   buildLeadPayload,
@@ -24,6 +31,15 @@ import {
  *
  * Payload: { bookingId, isReschedule? }. isReschedule marks the job of a rescheduled
  * booking; n8n then only updates an existing open Lead.
+ *
+ * Reschedule chains: the newest booking's job owns the Salesforce work for the invitee.
+ *   - A job of an earlier booking that runs after the reschedule (a retry, or a job that
+ *     was already running) ends with result.skipped = 'superseded_by_reschedule'.
+ *   - Before it calls n8n, the newest booking's job supersedes earlier jobs still waiting
+ *     to run, and waits (without using an attempt) while one is running.
+ *   - When an earlier booking's first-booking job never produced a Lead (superseded, or
+ *     dead after failing), an isReschedule job takes over its intent and is sent as a
+ *     first booking, so the invitee is still matched or created once.
  *
  * Outcomes (bookings.sf_lead_status):
  *   created    n8n returned created or existing; sf_lead_id is stored.
@@ -92,8 +108,10 @@ class RetryableLeadError extends Error {
 }
 
 /**
- * Records the lead outcome on the booking and on every booking rescheduled from it, so a
- * reschedule that happened while the job was pending does not stay "pending" forever.
+ * Records the lead outcome on the booking and on the bookings rescheduled from it that have
+ * no sf_lead_create job of their own (for example a reschedule in 'create' mode), so those
+ * do not stay "pending" forever. A later booking with its own job keeps its own outcome,
+ * and so do the bookings after it.
  */
 async function setLeadStatus(db: Db, bookingId: string, status: string, leadId?: string | null): Promise<void> {
   await db`
@@ -101,6 +119,7 @@ async function setLeadStatus(db: Db, bookingId: string, status: string, leadId?:
       select ${bookingId}::uuid
       union
       select b.id from app.bookings b join chain c on b.rescheduled_from_id = c.id
+      where not exists (select 1 from app.jobs j where j.kind = ${SF_LEAD_JOB_KIND} and j.booking_id = b.id)
     )
     update app.bookings set sf_lead_status = ${status}, sf_lead_id = coalesce(${leadId ?? null}, sf_lead_id)
     where id in (select id from chain)
@@ -123,12 +142,19 @@ async function loadBooking(db: Db, bookingId: string): Promise<BookingRow | null
   return b ?? null;
 }
 
+/**
+ * The booking's primary host. A rescheduled booking has no active host any more; its hosts
+ * at the time of the reschedule (not reassigned away) are used instead.
+ */
 async function loadPrimaryHost(db: Db, bookingId: string): Promise<{ email: string; name: string } | null> {
   const [h] = await db<{ email: string; name: string }[]>`
     select u.email::text as email, u.name
-    from app.booking_hosts bh join app.users u on u.id = bh.user_id
-    where bh.booking_id = ${bookingId} and bh.active
-    order by (bh.role = 'primary') desc, u.email
+    from app.booking_hosts bh
+    join app.users u on u.id = bh.user_id
+    join app.bookings b on b.id = bh.booking_id
+    where bh.booking_id = ${bookingId}
+      and (bh.active or (b.status = 'rescheduled' and bh.reassigned_at is null))
+    order by bh.active desc, (bh.role = 'primary') desc, u.email
     limit 1
   `;
   return h ?? null;
@@ -149,13 +175,21 @@ async function loadAnswers(db: Db, bookingId: string): Promise<{ answers: Record
   };
 }
 
-/**
- * True when an earlier booking in this booking's reschedule chain has a lead job that has
- * not finished. A job waiting for a retry only counts while its booking has no Lead yet;
- * otherwise it ends without calling n8n.
- */
-async function predecessorJobInFlight(db: Db, bookingId: string): Promise<boolean> {
-  const rows = await db`
+/** An earlier booking of a reschedule chain and its sf_lead_create job, if any. */
+export type ChainEntry = {
+  booking_id: string;
+  depth: number;
+  sf_lead_id: string | null;
+  sf_lead_status: string | null;
+  job_id: string | null;
+  job_status: string | null;
+  job_payload: { isReschedule?: boolean } | null;
+  job_result: Record<string, unknown> | null;
+};
+
+/** The bookings this booking was rescheduled from, nearest first, with their lead jobs. */
+async function predecessorChain(db: Db, bookingId: string): Promise<ChainEntry[]> {
+  return db<ChainEntry[]>`
     with recursive chain(id, depth) as (
       select rescheduled_from_id, 1 from app.bookings where id = ${bookingId} and rescheduled_from_id is not null
       union all
@@ -163,10 +197,80 @@ async function predecessorJobInFlight(db: Db, bookingId: string): Promise<boolea
       from app.bookings b join chain c on b.id = c.id
       where b.rescheduled_from_id is not null and c.depth < 100
     )
-    select 1
-    from app.jobs j join app.bookings b on b.id = j.booking_id
-    where j.kind = ${SF_LEAD_JOB_KIND} and j.booking_id in (select id from chain)
-      and (j.status = 'running' or (j.status in ('pending', 'failed') and b.sf_lead_id is null))
+    select c.id as booking_id, c.depth, b.sf_lead_id, b.sf_lead_status,
+           j.id as job_id, j.status::text as job_status, j.payload as job_payload, j.result as job_result
+    from chain c
+    join app.bookings b on b.id = c.id
+    left join lateral (
+      select x.id, x.status, x.payload, x.result from app.jobs x
+      where x.kind = ${SF_LEAD_JOB_KIND} and x.booking_id = c.id
+      order by x.created_at desc
+      limit 1
+    ) j on true
+    order by c.depth
+  `;
+}
+
+/**
+ * True when an earlier booking's first-booking lead job never produced a Lead, so the
+ * caller's isReschedule job should take over and send the booking as a first booking.
+ * Walks back from the nearest earlier booking: a superseded reschedule job passes the
+ * decision to the booking before it; a superseded first-booking job, or a dead one that
+ * did not end as a duplicate, means the intent is still open. A Lead, a booking without a
+ * lead job, or a job with a final outcome means the reschedule only updates.
+ */
+export function chainCreateIntentOpen(chain: ChainEntry[]): boolean {
+  for (const p of chain) {
+    if (p.sf_lead_id || !p.job_id) return false;
+    const superseded = p.job_status === "succeeded" && p.job_result?.skipped === "superseded_by_reschedule";
+    if (p.job_payload?.isReschedule === true) {
+      if (superseded) continue;
+      return false;
+    }
+    if (superseded) return true;
+    return p.job_status === "dead" && p.sf_lead_status !== "duplicate";
+  }
+  return false;
+}
+
+/**
+ * Marks waiting lead jobs (pending, or failed and waiting to retry) of the given earlier
+ * bookings as superseded by `newBookingId`, and those bookings' lead status 'skipped' when
+ * they have no Lead. The conditional update is safe against a worker claiming a job at the
+ * same moment: once a job is running it no longer matches. Returns the superseded jobs.
+ */
+async function supersedeWaitingJobs(
+  db: Db,
+  bookingIds: string[],
+  newBookingId: string,
+): Promise<{ booking_id: string; payload: { isReschedule?: boolean } }[]> {
+  if (!bookingIds.length) return [];
+  const rows = await db<{ booking_id: string; payload: { isReschedule?: boolean } }[]>`
+    update app.jobs set status = 'succeeded', locked_until = null,
+           result = ${db.json({ skipped: "superseded_by_reschedule", bookingId: newBookingId })}
+    where kind = ${SF_LEAD_JOB_KIND} and booking_id = any(${bookingIds}::uuid[]) and status in ('pending', 'failed')
+    returning booking_id, payload
+  `;
+  if (rows.length) {
+    await db`
+      update app.bookings set sf_lead_status = 'skipped'
+      where id = any(${rows.map((r) => r.booking_id)}::uuid[]) and sf_lead_id is null
+    `;
+  }
+  return rows;
+}
+
+/** True when a booking rescheduled from this one (directly or later) has its own lead job. */
+async function laterBookingOwnsLead(db: Db, bookingId: string): Promise<boolean> {
+  const rows = await db`
+    with recursive later(id, depth) as (
+      select id, 1 from app.bookings where rescheduled_from_id = ${bookingId}
+      union all
+      select b.id, l.depth + 1 from app.bookings b join later l on b.rescheduled_from_id = l.id
+      where l.depth < 100
+    )
+    select 1 from app.jobs j
+    where j.kind = ${SF_LEAD_JOB_KIND} and j.booking_id in (select id from later)
     limit 1
   `;
   return rows.length > 0;
@@ -204,7 +308,7 @@ export function createSalesforceHandlers(deps: SalesforceJobDeps = {}): Record<s
     const parsed = payloadSchema.safeParse(job.payload);
     if (!parsed.success) throw new PermanentJobError("Invalid sf_lead_create payload");
     const { bookingId } = parsed.data;
-    const isReschedule = parsed.data.isReschedule === true;
+    let isReschedule = parsed.data.isReschedule === true;
 
     const booking = await loadBooking(sql, bookingId);
     if (!booking) throw new PermanentJobError("Booking not found");
@@ -226,6 +330,15 @@ export function createSalesforceHandlers(deps: SalesforceJobDeps = {}): Record<s
       `;
       return { result: { skipped: "already_has_lead", leadId: booking.sf_lead_id } };
     }
+    // The booking was rescheduled and a later booking's job owns the Salesforce work. Only
+    // this booking's own status is touched; the later bookings keep their own outcomes.
+    if (booking.status === "rescheduled" && (await laterBookingOwnsLead(sql, bookingId))) {
+      await sql`
+        update app.bookings set sf_lead_status = 'skipped'
+        where id = ${bookingId} and sf_lead_id is null and coalesce(sf_lead_status, 'pending') = 'pending'
+      `;
+      return { result: { skipped: "superseded_by_reschedule" } };
+    }
     if (booking.status === "cancelled") {
       await setLeadStatus(sql, bookingId, "skipped");
       return { result: { skipped: "booking_cancelled" } };
@@ -236,14 +349,32 @@ export function createSalesforceHandlers(deps: SalesforceJobDeps = {}): Record<s
       await setLeadStatus(sql, bookingId, "skipped");
       return { result: { skipped: "lead_creation_disabled" } };
     }
+    let tookOver = false;
+    if (booking.rescheduled_from_id) {
+      let chain = await predecessorChain(sql, bookingId);
+      // Earlier jobs still waiting to run are superseded now rather than after their backoff.
+      const superseded = await supersedeWaitingJobs(
+        sql,
+        chain.filter((p) => p.job_status === "pending" || p.job_status === "failed").map((p) => p.booking_id),
+        bookingId,
+      );
+      if (superseded.length) chain = await predecessorChain(sql, bookingId);
+      // Wait for a running earlier job, so an update never overtakes the Lead it creates.
+      // The wait does not use up this job's attempts.
+      if (chain.some((p) => p.job_status === "running")) {
+        throw new DeferJobError("Waiting for the Salesforce job of the original booking", SF_LEAD_PREDECESSOR_WAIT_SECONDS);
+      }
+      if (isReschedule && !booking.sf_lead_id && chainCreateIntentOpen(chain)) {
+        // The original booking never got its Lead: send this booking as a first booking.
+        isReschedule = false;
+        tookOver = true;
+        await sql`update app.jobs set payload = payload - 'isReschedule' where id = ${job.id}`;
+      }
+    }
     if (isReschedule && effective.settings.lead_mode === "create") {
       // The settings changed to "always create" after the reschedule; that mode never sends reschedules.
       await setLeadStatus(sql, bookingId, "skipped");
       return { result: { skipped: "reschedule_in_create_mode" } };
-    }
-    // Wait for the original booking's job, so an update never overtakes the Lead it updates.
-    if (booking.rescheduled_from_id && (await predecessorJobInFlight(sql, bookingId))) {
-      return fail(new RetryAfterError("Waiting for the Salesforce job of the original booking", SF_LEAD_PREDECESSOR_WAIT_SECONDS));
     }
 
     const { answers, questions } = await loadAnswers(sql, bookingId);
@@ -335,6 +466,7 @@ export function createSalesforceHandlers(deps: SalesforceJobDeps = {}): Record<s
       leadId: body.leadId ?? null,
       mode: payload.mode,
       ...(isReschedule ? { isReschedule: true } : {}),
+      ...(tookOver ? { tookOverOriginal: true } : {}),
       ...(body.matchedRecordId ? { matchedRecordId: body.matchedRecordId } : {}),
       ...(isSalesforceId(body.matchedConvertedId, [ID_PREFIX.lead]) ? { matchedConvertedId: body.matchedConvertedId } : {}),
       ...(body.reason ? { reason: body.reason } : {}),
@@ -417,9 +549,11 @@ export async function enqueueSfLeadIfEnabled(tx: Db, bookingId: string, eventTyp
  * - The original booking's own lead job has not run yet (pending, or waiting to retry) and
  *   it has no Lead: that job is superseded (marked succeeded with
  *   result.skipped = 'superseded_by_reschedule') and the new booking's job takes over its
- *   intent, so the booking is matched or created once, with the new time.
+ *   intent, so the booking is matched or created once, with the new time. The same holds
+ *   when an earlier first-booking job is dead without a Lead (chainCreateIntentOpen).
  * - Otherwise: one job for the new booking with isReschedule = true, which n8n treats as
- *   update only.
+ *   update only. If the original job is still running, the new job waits for it and then
+ *   decides again when it runs (see the handler).
  *
  * The job is keyed by the new booking's id, so it is enqueued once. Returns the job id, or
  * null when nothing was enqueued.
@@ -441,18 +575,9 @@ export async function enqueueSfLeadOnReschedule(
 
   let isReschedule = true;
   if (!old.sf_lead_id) {
-    // A conditional update is safe against a worker claiming the job at the same moment:
-    // once the job is running it no longer matches.
-    const [superseded] = await tx<{ payload: { isReschedule?: boolean } }[]>`
-      update app.jobs set status = 'succeeded', locked_until = null,
-             result = ${tx.json({ skipped: "superseded_by_reschedule", bookingId: newBookingId })}
-      where kind = ${SF_LEAD_JOB_KIND} and booking_id = ${oldBookingId} and status in ('pending', 'failed')
-      returning payload
-    `;
-    if (superseded) {
-      isReschedule = superseded.payload?.isReschedule === true;
-      await tx`update app.bookings set sf_lead_status = 'skipped' where id = ${oldBookingId} and sf_lead_id is null`;
-    }
+    const [superseded] = await supersedeWaitingJobs(tx, [oldBookingId], newBookingId);
+    if (superseded) isReschedule = superseded.payload?.isReschedule === true;
+    if (isReschedule && chainCreateIntentOpen(await predecessorChain(tx, newBookingId))) isReschedule = false;
   }
 
   const jobId = await enqueue(tx, {

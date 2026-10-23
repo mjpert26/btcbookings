@@ -45,6 +45,15 @@ describe("sanitizeText", () => {
     expect(sanitizeText("client_secret=s3cr3t&grant_type=refresh_token")).toBe("client_secret=[redacted]&grant_type=refresh_token");
     expect(sanitizeText("GET /callback?code=abc123&state=xyz")).toBe("GET /callback?code=[redacted]&state=[redacted]");
   });
+
+  it("redacts secret-named keys with a prefix in any case style", () => {
+    expect(sanitizeText('{"refreshToken":"0.AXoAqwerty","clientSecret":"Zx8Q~abcDEF"}')).toBe('{"refreshToken":"[redacted]","clientSecret":"[redacted]"}');
+    expect(sanitizeText("accessToken=abc idToken: def x_api_key=ghi csrf-token=jkl userPassword=mno")).toBe(
+      "accessToken=[redacted] idToken: [redacted] x_api_key=[redacted] csrf-token=[redacted] userPassword=[redacted]",
+    );
+    // Keys that only contain a secret word in the middle are left alone.
+    expect(sanitizeText("token_count=5 max_tokens=10")).toBe("token_count=5 max_tokens=10");
+  });
 });
 
 describe("sanitizeContext", () => {
@@ -100,6 +109,14 @@ describe("normalizeRoute", () => {
     expect(normalizeRoute("/bookings/0b7e6c1a-2f7d-4d8e-9a51-3c2b1d0e9f8a")).toBe("/bookings/:id");
     expect(normalizeRoute("/api/v1/bookings/42#x")).toBe("/api/v1/bookings/:id");
     expect(normalizeRoute("/u/jane@example.com")).toBe("/u/:id");
+  });
+
+  it("removes long tokens without digits and percent-encoded emails", () => {
+    expect(normalizeRoute("/b/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ")).toBe("/b/:id");
+    expect(normalizeRoute("/b/abcdefghijklmnopqrstuvwxyzABCDEF_-abcdefg/manage")).toBe("/b/:id/manage");
+    expect(normalizeRoute("/api/v1/users/a%40b.co/x")).toBe("/api/v1/users/:id/x");
+    expect(normalizeRoute("/api/v1/users/jane.doe%40bigthinkcapital.com")).toBe("/api/v1/users/:id");
+    expect(normalizeRoute("/bad/%E0%A4%A")).toBe("/bad/%E0%A4%A");
   });
 
   it("keeps route file patterns and readable slugs", () => {

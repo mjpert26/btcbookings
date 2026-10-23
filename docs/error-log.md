@@ -31,6 +31,8 @@ try {
 
 `logError()` never throws. It writes with the service connection outside the caller's transaction, so an entry survives a rollback. Pass only small, non-personal context such as ids, kinds and counts.
 
+A write is bounded: it runs in its own short transaction with a 2 s lock timeout and a 3 s statement timeout, and the call gives up after 5 s in total (`LOG_WRITE_LIMITS`). In a route handler, use `logErrorAfterResponse()` instead, which schedules the write with `after()` so that the error response is sent first; the REST API (`apiRoute`) and MCP tool errors do this. Outside a request it writes before returning.
+
 ## Grouping
 
 Each entry has a fingerprint: a SHA-256 of the source, route, error name and the message with UUIDs, long identifiers, hex strings and numbers replaced. A repeat of an unresolved error increments `occurrences` and moves `last_seen_at`; the latest message, stack and context replace the stored ones. A unique index allows one unresolved entry per fingerprint, so an error that happens again after it was resolved opens a new entry.
@@ -39,9 +41,9 @@ Each entry has a fingerprint: a SHA-256 of the source, route, error name and the
 
 Before anything is stored (`src/server/errors/sanitize.ts`):
 
-- Bearer and Basic credentials, `btc_pat_`, `btc_at_` and `btc_rt_` tokens, Slack tokens, JWT-like strings, cookie headers, secret-named `key=value` pairs and sensitive URL query parameters are replaced with `[redacted]` or `[jwt]`.
+- Bearer and Basic credentials, `btc_pat_`, `btc_at_` and `btc_rt_` tokens, Slack tokens, JWT-like strings, cookie headers, secret-named `key=value` and `"key": "value"` pairs (including prefixed keys such as `refreshToken`, `clientSecret` or `x_api_key`) and sensitive URL query parameters are replaced with `[redacted]` or `[jwt]`.
 - Email addresses, phone numbers and digit runs of seven or more are replaced with `[email]`, `[phone]` and `[number]`.
-- Request errors store the route file pattern (for example `/(public)/b/[token]/manage/page`), never the request path, query string or headers. Other routes have their query string removed and identifier-like segments replaced with `:id`.
+- Request errors store the route file pattern (for example `/(public)/b/[token]/manage/page`), never the request path, query string or headers. Other routes have their query string removed and identifier-like segments replaced with `:id`: UUIDs, numbers, any segment of 32 or more letters, digits, `_` or `-` (such as a manage token), long segments that contain a digit, and segments that contain `@` once percent-decoded.
 - Context keys that name secrets or personal data (token, password, cookie, authorization, email, phone, body, payload, headers and similar) are dropped. Context is limited to 4 levels, 30 keys, 20 array items and about 4 KB.
 - Messages are truncated to 2,000 characters and stacks to 8,000.
 

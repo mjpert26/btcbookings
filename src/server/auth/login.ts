@@ -10,6 +10,12 @@ import type { IdentityClaims, TokenSet } from "@/server/auth/entra";
 
 export class LoginRejected extends Error {}
 
+/**
+ * The sign-in matched a dormant imported account by display name only. A link request was
+ * recorded, and an admin must confirm it on Admin > Users before this person can sign in.
+ */
+export class LoginPendingLink extends LoginRejected {}
+
 async function uniqueSlug(tx: Tx, base: string): Promise<string> {
   let candidate = isReservedSlug(base) ? `${base}-btc` : base;
   for (let i = 2; i < 200; i++) {
@@ -35,33 +41,41 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
     throw new LoginRejected("Microsoft did not return a refresh token. Make sure offline_access is granted.");
   }
 
-  return serviceTx(async (tx) => {
+  const outcome = await serviceTx(async (tx): Promise<{ userId: string } | { pendingLink: true }> => {
     // Pre-provisioned accounts (for example from the Calendly import) are linked by email. The
     // user principal name is also tried, but only for rows not yet linked to any Microsoft
-    // account, and a mail address match always wins.
+    // account, and a mail address match always wins. The row is locked so that two sign-ins
+    // at the same moment cannot both link it.
     const upn = claims.preferredUsername.toLowerCase();
     const alias = upn.includes("@") && upn !== email ? upn : null;
     type Row = { id: string; email: string; role: "user" | "admin" | "manager"; entra_oid: string | null; is_active: boolean };
-    let [existing] = await tx<Row[]>`
+    const [existing] = await tx<Row[]>`
       select id, email::text as email, role, entra_oid, is_active from app.users
       where entra_oid = ${claims.oid} or email = ${email}::citext
          or (${alias}::citext is not null and email = ${alias}::citext and entra_oid is null)
       order by (entra_oid = ${claims.oid}) is true desc, (email = ${email}::citext) desc
       limit 1
+      for update
     `;
-    let linkedBy: "email" | "name" = "email";
     if (!existing && claims.name.trim()) {
       // Imported Calendly accounts may carry a derived email that differs from the real one.
-      // Link by display name, but only when exactly one unlinked imported account has it.
-      const byName = await tx<Row[]>`
-        select id, email::text as email, role, entra_oid, is_active from app.users
-        where entra_oid is null and import_source = 'calendly' and last_login_at is null
-          and lower(btrim(name)) = lower(btrim(${claims.name}))
+      // A display name alone never links an account: two employees can share a name, and the
+      // imported address may be the other person's real mailbox. When exactly one dormant,
+      // active imported account has this name, the sign-in is held and an admin confirms the
+      // link. After the admin rejects it, this Microsoft account gets a new account instead.
+      const byName = await tx<{ id: string }[]>`
+        select u.id from app.users u
+        where u.entra_oid is null and u.import_source = 'calendly' and u.last_login_at is null and u.is_active
+          and lower(btrim(u.name)) = lower(btrim(${claims.name}))
+          and not exists (
+            select 1 from app.account_link_requests r
+            where r.user_id = u.id and r.entra_oid = ${claims.oid} and r.status = 'rejected'
+          )
         limit 2
       `;
       if (byName.length === 1) {
-        existing = byName[0];
-        linkedBy = "name";
+        await recordLinkRequest(tx, byName[0].id, claims, email);
+        return { pendingLink: true };
       }
     }
     if (existing && !existing.is_active) {
@@ -77,12 +91,16 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
     let userId: string;
     if (existing) {
       userId = existing.id;
-      await tx`
+      const updated = await tx`
         update app.users
         set entra_oid = ${claims.oid}, email = ${email}, name = ${claims.name}, last_login_at = now(),
             role = case when ${shouldBeAdmin} then 'admin'::app.user_role else role end
-        where id = ${userId}
+        where id = ${userId} and (entra_oid is null or entra_oid = ${claims.oid})
+        returning id
       `;
+      if (!updated.length) {
+        throw new LoginRejected("This account is linked to a different Microsoft account. Contact an admin.");
+      }
       if (!existing.entra_oid) {
         await writeAudit(tx, {
           actorUserId: null,
@@ -90,7 +108,7 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
           entityType: "user",
           entityId: userId,
           before: { email: existing.email },
-          after: { email, entra_oid: claims.oid, linkedBy },
+          after: { email, entra_oid: claims.oid },
         });
       }
       if (shouldBeAdmin && existing.role !== "admin") {
@@ -148,8 +166,42 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
       payload: { userId },
       idempotencyKey: `ensure:${userId}:login:${new Date().toISOString().slice(0, 10)}`,
     });
-    return userId;
+    return { userId };
   });
+  // Thrown after the transaction so that the link request is committed.
+  if ("pendingLink" in outcome) {
+    throw new LoginPendingLink("An admin needs to confirm this account before it can sign in.");
+  }
+  return outcome.userId;
+}
+
+/**
+ * Records, or refreshes, a pending link request for a sign-in that matched an imported
+ * account by display name only. The first request for each pair is audited. A request that
+ * was already decided is left unchanged.
+ */
+async function recordLinkRequest(tx: Tx, importedUserId: string, claims: IdentityClaims, email: string): Promise<void> {
+  const name = claims.name.trim().slice(0, 300);
+  const [row] = await tx<{ id: string; inserted: boolean }[]>`
+    insert into app.account_link_requests (user_id, entra_oid, email, name)
+    values (${importedUserId}, ${claims.oid}, ${email}, ${name})
+    on conflict (user_id, entra_oid) do update set
+      email = excluded.email,
+      name = excluded.name,
+      attempts = least(app.account_link_requests.attempts::bigint + 1, 2147483647)::int,
+      last_requested_at = now()
+    where app.account_link_requests.status = 'pending'
+    returning id, (xmax = 0) as inserted
+  `;
+  if (row?.inserted) {
+    await writeAudit(tx, {
+      actorUserId: null,
+      action: "user.link_requested",
+      entityType: "user",
+      entityId: importedUserId,
+      after: { requestId: row.id, email },
+    });
+  }
 }
 
 /**

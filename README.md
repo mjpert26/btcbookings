@@ -170,7 +170,7 @@ Admins send signed booking events (`booking.created`, `booking.rescheduled`, `bo
 
 - **Nothing changes in Calendly and nobody is notified.** Imported bookings never create outbox jobs (`jobs_skip_imported_bookings` trigger), and hosts cannot cancel them in the app.
 - **Imported pages start inactive.** An admin takes them live per rep, per team or all at once on the same page. Until then, only admins can activate them (`event_types_guard_imported` trigger).
-- **What is copied.** Members get their default Calendly schedule as working hours and are linked to their Microsoft account at first sign-in. Calendly team profiles become teams. Upcoming meetings hold the host's time, including buffers.
+- **What is copied.** Members get their default Calendly schedule as working hours and are linked to their Microsoft account at first sign-in by email or user principal name. A sign-in that matches an imported account only by display name is held until an admin confirms it under **Admin > Users** (see [`docs/calendly-import.md`](docs/calendly-import.md)). Calendly team profiles become teams. Upcoming meetings hold the host's time, including buffers.
 - **Re-runs are safe.** They apply Calendly cancellations, moves and reassignments. Older or apparently incomplete snapshots are refused.
 
 ## Adding an admin

@@ -6,7 +6,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAdmin } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { withAuditContext, writeAudit } from "@/server/audit";
+import { decideLinkRequest, linkDecisionSchema } from "@/server/auth/link-requests";
 import type { ActionState } from "@/lib/form-state";
 import { fail, ok, requestIpHash, str } from "@/server/ui/form";
 import { ROLE_LABEL, ROLES } from "@/lib/permissions";
@@ -48,6 +49,21 @@ export async function setRoleAction(_prev: ActionState, fd: FormData): Promise<A
     return { message: role === "admin" ? `${target.name} is now an admin.` : `${target.name} is now a ${ROLE_LABEL[role].toLowerCase()}.` };
   });
   if ("error" in res) return fail(res.error ?? "Could not change the role.");
+  revalidatePath("/admin/users");
+  return ok(res.message);
+}
+
+/**
+ * Approves or rejects a held sign-in that matched an imported Calendly account by display
+ * name only. Audited by decideLinkRequest() in the same transaction.
+ */
+export async function decideLinkRequestAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireAdmin();
+  const parsed = linkDecisionSchema.safeParse({ requestId: str(fd, "requestId"), decision: str(fd, "decision") });
+  if (!parsed.success) return fail("Invalid request.");
+  const ipHash = await requestIpHash();
+  const res = await withAuditContext({ ipHash }, () => withUser(user.id, (tx) => decideLinkRequest(tx, user.id, parsed.data)));
+  if (!res.ok) return fail(res.error);
   revalidatePath("/admin/users");
   return ok(res.message);
 }

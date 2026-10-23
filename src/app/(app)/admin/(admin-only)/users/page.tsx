@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatRelative } from "@/lib/format";
-import { setRoleAction } from "../../_actions/users";
+import { decideLinkRequestAction, setRoleAction } from "../../_actions/users";
+import { listPendingLinkRequests } from "@/server/auth/link-requests";
 import { ROLE_LABEL } from "@/lib/permissions";
 
 export const metadata: Metadata = { title: "Users" };
@@ -19,7 +20,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
   const q = ((await searchParams).q ?? "").trim().slice(0, 100);
   const like = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
 
-  const { users, adminCount } = await withUser(user.id, async (tx) => {
+  const { users, adminCount, linkRequests } = await withUser(user.id, async (tx) => {
     const users = await tx<{ id: string; name: string; email: string; role: string; is_active: boolean; last_login_at: Date | null; calendar: string | null; seeded: boolean }[]>`
       select u.id, u.name, u.email, u.role, u.is_active, u.last_login_at, cc.status as calendar,
              exists (select 1 from app.admin_seeds s where s.email = u.email) as seeded
@@ -29,12 +30,67 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
       limit 500
     `;
     const [{ n }] = await tx<{ n: number }[]>`select count(*)::int as n from app.users where role = 'admin' and is_active`;
-    return { users, adminCount: n };
+    const linkRequests = await listPendingLinkRequests(tx);
+    return { users, adminCount: n, linkRequests };
   });
 
   return (
     <>
       <PageHeader title="Users" description="Everyone who has signed in or was added. Agents see their own bookings, managers read everything, admins manage everything. Role changes are audited; at least one admin must remain." />
+      {linkRequests.length ? (
+        <Card className="mb-6">
+          <h2 className="text-base font-semibold text-navy">Sign-ins waiting for confirmation</h2>
+          <p className="mt-1 text-sm text-muted">
+            These people signed in with a Microsoft account whose name matches an account imported from Calendly, but whose email does not. Confirm only when the imported account belongs to the person who signed in. Rejecting gives them a new, empty account at their next sign-in.
+          </p>
+          <Table caption={`Pending confirmations (${linkRequests.length})`}>
+            <THead>
+              <TR>
+                <TH>Signed in as</TH>
+                <TH>Imported account</TH>
+                <TH>Last attempt</TH>
+                <TH>
+                  <span className="sr-only">Actions</span>
+                </TH>
+              </TR>
+            </THead>
+            <TBody>
+              {linkRequests.map((r) => (
+                <TR key={r.id}>
+                  <TD>
+                    <div className="font-medium text-navy">{r.name}</div>
+                    <div className="text-xs text-muted">{r.email}</div>
+                  </TD>
+                  <TD>
+                    <div className="font-medium text-navy">{r.imported_name}</div>
+                    <div className="text-xs text-muted">{r.imported_email}</div>
+                    <span className="mt-1 flex flex-wrap gap-1">
+                      {r.imported_role !== "user" ? <Badge tone="navy">{ROLE_LABEL[r.imported_role as keyof typeof ROLE_LABEL] ?? r.imported_role}</Badge> : null}
+                      {r.team_admin_of > 0 ? <Badge tone="primary">Team admin of {r.team_admin_of}</Badge> : null}
+                    </span>
+                  </TD>
+                  <TD>
+                    {formatRelative(r.last_requested_at)}
+                    {r.attempts > 1 ? <span className="text-xs text-muted"> ({r.attempts} attempts)</span> : null}
+                  </TD>
+                  <TD>
+                    <span className="flex flex-wrap gap-1">
+                      <ActionButton action={decideLinkRequestAction} hidden={{ requestId: r.id, decision: "approve" }} size="sm" variant="subtle" pendingLabel="Saving…">
+                        Confirm and link
+                        <span className="sr-only"> {r.email}</span>
+                      </ActionButton>
+                      <ActionButton action={decideLinkRequestAction} hidden={{ requestId: r.id, decision: "reject" }} size="sm" variant="secondary" pendingLabel="Saving…">
+                        Not the same person
+                        <span className="sr-only"> {r.email}</span>
+                      </ActionButton>
+                    </span>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        </Card>
+      ) : null}
       <form method="get" className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end" aria-label="Search users">
         <Input label="Search" name="q" defaultValue={q} placeholder="Name or email" wrapperClassName="sm:w-80" />
         <Button type="submit" variant="secondary">

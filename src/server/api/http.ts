@@ -6,7 +6,7 @@ import { loadActiveUser } from "@/server/auth/session";
 import { service } from "@/server/db/client";
 import { rateLimit } from "@/server/http/rate-limit";
 import { ApiError, type Caller } from "@/server/api/context";
-import { logError } from "@/server/errors/log";
+import { logErrorAfterResponse } from "@/server/errors/log";
 import { logRequest } from "@/server/api/request-log";
 
 /**
@@ -101,7 +101,9 @@ export function apiRoute<C = unknown>(handler: Handler<C>, opts: { successStatus
       } catch (err) {
         if (err instanceof ApiError) return apiErrorResponse(err);
         if (err instanceof ZodError) return apiErrorResponse(new ApiError(400, "invalid_request", "The request is invalid."));
-        await logError(err, { source: "api", route, method: req.method });
+        // Written after the response is sent: when the database caused the error, the log write
+        // must not delay the 500 as well.
+        await logErrorAfterResponse(err, { source: "api", route, method: req.method });
         return apiErrorResponse(new ApiError(500, "internal_error", "Something went wrong. The error has been logged."));
       }
     })();

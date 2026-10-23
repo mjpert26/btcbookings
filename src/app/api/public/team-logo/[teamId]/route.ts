@@ -1,4 +1,4 @@
-import { loadTeamLogo } from "@/server/teams/branding";
+import { loadTeamLogo, loadTeamLogoMeta, teamLogoPath } from "@/server/teams/branding";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +21,14 @@ function notFound(): Response {
   return new Response("Not found", { status: 404, headers: { ...BASE_HEADERS, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=60" } });
 }
 
+/** Sends the client to the canonical URL of the current logo. Cached briefly, since the logo can change. */
+function toCanonical(teamId: string, sha256: string): Response {
+  return new Response(null, {
+    status: 307,
+    headers: { ...BASE_HEADERS, Location: teamLogoPath(teamId, sha256), "Cache-Control": "public, max-age=300" },
+  });
+}
+
 /** Whether an If-None-Match header matches the ETag (weak comparison, as RFC 9110 requires for GET). */
 function matches(ifNoneMatch: string | null, etag: string): boolean {
   if (!ifNoneMatch) return false;
@@ -29,25 +37,37 @@ function matches(ifNoneMatch: string | null, etag: string): boolean {
 }
 
 /**
- * GET /api/public/team-logo/[teamId]: a partner's uploaded logo. Links carry ?v=<hash prefix>;
- * when it matches the stored logo the response may be cached for a year, otherwise briefly.
+ * GET /api/public/team-logo/[teamId]: a partner's uploaded logo.
+ *
+ * The image is served only at its canonical URL, `?v=<first 16 hex characters of its hash>`
+ * with no other query parameters (see teamLogoPath), and may be cached there for a year. Any
+ * other URL, including an old version or a random value, is redirected there, so varying the
+ * query string cannot bypass the CDN cache to make the route read the image again. Redirects
+ * and 304 responses read only the logo metadata, never the bytes.
  */
 export async function GET(req: Request, ctx: RouteContext<"/api/public/team-logo/[teamId]">) {
   const { teamId } = await ctx.params;
   if (!UUID_RE.test(teamId)) return notFound();
-  const logo = await loadTeamLogo(teamId);
-  if (!logo) return notFound();
+  const meta = await loadTeamLogoMeta(teamId);
+  if (!meta) return notFound();
 
-  const etag = `"${logo.sha256}"`;
-  const version = new URL(req.url).searchParams.get("v");
-  const pinned = version !== null && version.length >= 8 && logo.sha256.startsWith(version);
+  const params = new URL(req.url).searchParams;
+  const canonical = [...params.keys()].length === 1 && params.get("v") === meta.sha256.slice(0, 16);
+  if (!canonical) return toCanonical(teamId, meta.sha256);
+
+  const etag = `"${meta.sha256}"`;
   const headers = {
     ...BASE_HEADERS,
     ETag: etag,
-    "Last-Modified": logo.updatedAt.toUTCString(),
-    "Cache-Control": pinned ? "public, max-age=31536000, immutable" : "public, max-age=300, stale-while-revalidate=86400",
+    "Last-Modified": meta.updatedAt.toUTCString(),
+    "Cache-Control": "public, max-age=31536000, immutable",
   };
   if (matches(req.headers.get("if-none-match"), etag)) return new Response(null, { status: 304, headers });
+
+  const logo = await loadTeamLogo(teamId);
+  if (!logo) return notFound();
+  // The logo was replaced between the two reads.
+  if (logo.sha256 !== meta.sha256) return toCanonical(teamId, logo.sha256);
   return new Response(new Uint8Array(logo.bytes), {
     status: 200,
     headers: {

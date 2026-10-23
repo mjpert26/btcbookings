@@ -21,6 +21,10 @@ const ERRORS: Record<string, { title: string; body: string }> = {
     title: "This account cannot sign in",
     body: "Only active Big Think Capital Microsoft 365 accounts can use BTC Scheduling. Contact an administrator if you think this is a mistake.",
   },
+  link_pending: {
+    title: "An administrator needs to confirm your account",
+    body: "Your name matches an account that was moved over from Calendly. An administrator must confirm it is yours before you can sign in. Please ask an administrator, then sign in again.",
+  },
   state_expired: {
     title: "Your sign-in link expired",
     body: "The sign-in took too long or was opened in another tab. Please start again.",

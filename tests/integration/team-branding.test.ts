@@ -4,7 +4,7 @@ import { ZodError } from "zod";
 import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
 import { makeBooking, makeIndividualEventType, makeTeamEventType } from "../helpers/booking-fixtures";
 import { pngBytes, svgBytes, webpBytes } from "../helpers/images";
-import { withUser, type Sql } from "@/server/db/client";
+import { setServiceClient, withUser, type Sql } from "@/server/db/client";
 import { withAuditContext } from "@/server/audit";
 import { sha256Hex } from "@/server/crypto/random";
 import {
@@ -157,22 +157,27 @@ describe("logos", () => {
     expect(audit.action).toBe("team.logo_upload");
     expect(audit.after).toMatchObject({ content_type: "image/png", sha256: up.sha256, byte_size: png.byteLength });
 
-    const res = await logoRequest(f.teamA);
+    const v = up.sha256.slice(0, 16);
+    const res = await logoRequest(f.teamA, { v });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
     expect(res.headers.get("content-security-policy")).toContain("sandbox");
     expect(res.headers.get("etag")).toBe(`"${up.sha256}"`);
-    expect(res.headers.get("cache-control")).toContain("max-age=300");
+    expect(res.headers.get("cache-control")).toContain("immutable");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(png);
 
-    const pinned = await logoRequest(f.teamA, { v: up.sha256.slice(0, 16) });
-    expect(pinned.headers.get("cache-control")).toContain("immutable");
-    const stale = await logoRequest(f.teamA, { v: "0000000000000000" });
-    expect(stale.headers.get("cache-control")).not.toContain("immutable");
+    // Every other URL is redirected to the canonical one.
+    for (const other of [undefined, "0000000000000000", v.slice(0, 8)]) {
+      const redirected = await logoRequest(f.teamA, { v: other });
+      expect(redirected.status).toBe(307);
+      expect(redirected.headers.get("location")).toBe(`/api/public/team-logo/${f.teamA}?v=${v}`);
+      expect(redirected.headers.get("cache-control")).toBe("public, max-age=300");
+      expect(redirected.headers.get("x-content-type-options")).toBe("nosniff");
+    }
 
-    const notModified = await logoRequest(f.teamA, { ifNoneMatch: `"${up.sha256}"` });
+    const notModified = await logoRequest(f.teamA, { v, ifNoneMatch: `"${up.sha256}"` });
     expect(notModified.status).toBe(304);
     expect(await notModified.text()).toBe("");
 
@@ -180,11 +185,40 @@ describe("logos", () => {
     expect((await logoRequest("not-a-uuid")).status).toBe(404);
   });
 
+  it("reads the logo bytes only for a 200, never for a redirect or a 304", async () => {
+    const f = await setup();
+    const up = await uploadTeamLogo(f.teamAdminA, f.teamA, pngBytes(300, 100), "image/png");
+    const v = up.sha256.slice(0, 16);
+    const queries: string[] = [];
+    const spy = new Proxy(sql, {
+      apply(target, thisArg, args: [TemplateStringsArray, ...unknown[]]) {
+        queries.push(Array.from(args[0]).join("?"));
+        return Reflect.apply(target as never, thisArg, args);
+      },
+    });
+    setServiceClient(spy);
+    try {
+      const statuses: number[] = [];
+      statuses.push((await logoRequest(f.teamA, { v, ifNoneMatch: `"${up.sha256}"` })).status);
+      statuses.push((await logoRequest(f.teamA, { v: "random-value-1" })).status);
+      statuses.push((await logoRequest(f.teamA, { v: "0000000000000000", ifNoneMatch: `"${up.sha256}"` })).status);
+      expect(statuses).toEqual([304, 307, 307]);
+      expect(queries.length).toBe(3);
+      expect(queries.some((q) => /\bbytes\b/.test(q))).toBe(false);
+      expect((await logoRequest(f.teamA, { v })).status).toBe(200);
+      expect(queries.filter((q) => /\bbytes\b/.test(q))).toHaveLength(1);
+    } finally {
+      setServiceClient(sql);
+    }
+  });
+
   it("replaces and removes logos with audit entries", async () => {
     const f = await setup();
     await uploadTeamLogo(f.admin, f.teamA, pngBytes(), "image/png");
     const second = await uploadTeamLogo(f.teamAdminA, f.teamA, webpBytes(400, 100), "image/webp");
-    const res = await logoRequest(f.teamA);
+    const stale = await logoRequest(f.teamA);
+    expect(stale.headers.get("location")).toBe(`/api/public/team-logo/${f.teamA}?v=${second.sha256.slice(0, 16)}`);
+    const res = await logoRequest(f.teamA, { v: second.sha256.slice(0, 16) });
     expect(res.headers.get("content-type")).toBe("image/webp");
     expect(res.headers.get("etag")).toBe(`"${second.sha256}"`);
     expect((await removeTeamLogo(f.teamAdminA, f.teamA)).removed).toBe(true);

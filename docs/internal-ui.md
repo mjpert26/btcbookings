@@ -14,7 +14,7 @@ English-only pages under `src/app/(app)` plus the sign-in page. Server component
 | `/availability` | user | Weekly hours, date overrides, booking preferences |
 | `/teams`, `/teams/[id]` | user; roster for team admins | Members (add, pause, unpause, remove manual members), settings, team admins (admins), distribution, membership log |
 | `/admin/audit` | admin, manager (read-only) | Audit log with filters, keyset pagination and field-level diffs (see `docs/audit-log.md`) |
-| `/admin/**` (other pages) | admin | Overview, sync status (`/admin/sync`, see `docs/queue-slack-sync.md`), new team, queue sync (with per-team sync status and bookings to review), Slack channels and user group, Salesforce settings and jobs, users, integrations, webhooks (`/admin/webhooks`, see `docs/webhooks.md`), import, errors (`/admin/errors`, see `docs/error-log.md`) |
+| `/admin/**` (other pages) | admin | Overview, sync status (`/admin/sync`, see `docs/queue-slack-sync.md`), new team, queue sync (with per-team sync status and bookings to review), Slack channels and user group, Salesforce settings and jobs, users (with sign-ins waiting for confirmation, see `docs/calendly-import.md`), integrations, webhooks (`/admin/webhooks`, see `docs/webhooks.md`), import, errors (`/admin/errors`, see `docs/error-log.md`) |
 
 Authorization is checked on the server in every page and action (`requireUser` / `requireAdmin` / `requireCapability`, then RLS through `withUser`). Hidden UI is never the control. `src/app/(app)/admin/layout.tsx` requires `audit.read`; every admin page other than the audit log lives in the `(admin-only)` route group, whose layout requires a global admin. The admin navigation shows managers only the audit log.
 

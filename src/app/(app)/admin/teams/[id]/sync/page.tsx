@@ -15,6 +15,8 @@ import { MASS_REMOVAL_ALERT } from "@/server/sync/apply";
 import { formatDateTime, formatRelative } from "@/lib/format";
 import { linkQueueAction, requestSyncNowAction, resolveAlertAction, setSyncSettingsAction, unlinkQueueAction } from "../../../_actions/sync";
 import { AddQueueForm, SyncSettingsForm } from "./SyncForms";
+import { loadReviewBookings, loadSyncStatus } from "@/server/sync/status";
+import { ErrorList, RunSummary, SlackJobsSummary } from "../../../sync/StatusParts";
 
 export const metadata: Metadata = { title: "Queue sync" };
 
@@ -44,10 +46,12 @@ export default async function TeamSyncPage({ params, searchParams }: { params: P
       select count(*) filter (where source = 'queue')::int as queue, count(*) filter (where source = 'manual')::int as manual
       from app.team_members where team_id = ${id}
     `;
-    return { team, queues, alerts, counts };
+    const status = (await loadSyncStatus(tx, { teamId: id })).teams[0] ?? null;
+    const review = await loadReviewBookings(tx, id);
+    return { team, queues, alerts, counts, status, review };
   });
   if (!data) notFound();
-  const { team, queues, alerts, counts } = data;
+  const { team, queues, alerts, counts, status, review } = data;
   const open = alerts.filter((a) => !a.resolved_at);
 
   return (
@@ -127,6 +131,70 @@ export default async function TeamSyncPage({ params, searchParams }: { params: P
           </Card>
         </div>
       </div>
+
+      {status ? (
+        <Card className="mt-6" aria-labelledby="status-h">
+          <CardHeader id="status-h" title="Sync status" description="Last queue run, roster changes and the Slack work they queued." />
+          <CardBody className="grid gap-6 md:grid-cols-4">
+            <section aria-labelledby="st-last">
+              <h3 id="st-last" className="mb-2 text-sm font-semibold text-navy">Last run</h3>
+              <RunSummary run={status.lastRun} />
+            </section>
+            <section aria-labelledby="st-change">
+              <h3 id="st-change" className="mb-2 text-sm font-semibold text-navy">Last roster change</h3>
+              <RunSummary run={status.lastChangeRun} empty="None yet" />
+            </section>
+            <section aria-labelledby="st-slack">
+              <h3 id="st-slack" className="mb-2 text-sm font-semibold text-navy">Slack jobs</h3>
+              <SlackJobsSummary status={status} />
+            </section>
+            <section aria-labelledby="st-errors">
+              <h3 id="st-errors" className="mb-2 text-sm font-semibold text-navy">Errors</h3>
+              <ErrorList errors={status.errors} />
+            </section>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      <Card className="mt-6" aria-labelledby="review-h">
+        <CardHeader
+          id="review-h"
+          title="Upcoming bookings to review"
+          description={`Bookings on this team's pages whose host is paused. With removal policy ${team.removal_policy.replace(/_/g, " ")}, ${team.removal_policy === "reassign" ? "these are bookings a reassignment could not move, flagged bookings and bookings imported from Calendly" : "bookings stay with the removed host until someone moves or cancels them"}.`}
+        />
+        {review.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-muted">No upcoming bookings are hosted by paused members.</p>
+        ) : (
+          <Table caption="Upcoming bookings hosted by paused members">
+            <THead>
+              <TR>
+                <TH>When</TH>
+                <TH>Booking page</TH>
+                <TH>Host</TH>
+                <TH>Status</TH>
+              </TR>
+            </THead>
+            <TBody>
+              {review.map((b) => (
+                <TR key={`${b.bookingId}-${b.hostName}`}>
+                  <TD className="whitespace-nowrap">{formatDateTime(b.startAt, user.timezone)}</TD>
+                  <TD>{b.eventTypeName}</TD>
+                  <TD>
+                    {b.hostName}
+                    <span className="ml-2 text-xs text-muted">{b.pausedReason === "removed_from_queue" ? "removed from queue" : "paused"}</span>
+                  </TD>
+                  <TD>
+                    <span className="flex flex-wrap gap-1">
+                      <StatusBadge status={b.status} />
+                      {b.imported ? <Badge tone="neutral">Imported from Calendly</Badge> : null}
+                    </span>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        )}
+      </Card>
 
       <Card className="mt-6" aria-labelledby="alerts-h">
         <CardHeader id="alerts-h" title="Alerts" />

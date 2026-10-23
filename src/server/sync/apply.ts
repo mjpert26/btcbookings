@@ -1,8 +1,11 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { service, type Tx } from "@/server/db/client";
+import { writeAudit } from "@/server/audit";
 import { enqueue } from "@/server/jobs/queue";
 import type { JobPayloads } from "@/server/jobs/kinds";
+import { enqueueMemberSlackJobs } from "@/server/slack/enqueue";
+import { recordRun } from "@/server/sync/runs";
 import {
   activeMembersOf,
   diffPushChange,
@@ -23,7 +26,19 @@ import {
  *
  * Every team is processed in its own transaction that starts by locking the team row, so a
  * push and a poll for the same team never interleave. A failure on one team marks that team
- * `sync_health = 'error'` and does not stop the others.
+ * `sync_health = 'error'` and does not stop the others. Only teams with a linked queue are
+ * ever processed.
+ *
+ * In the same transaction as each membership change (BTCSCHED-49, 50):
+ * - the member's status changes, which takes them out of (or puts them into) the host pool
+ *   of every booking page of the team, including pages with a per-page host list, because
+ *   the booking engine only offers members whose status is 'active';
+ * - a membership event and an audit entry (via 'sync') are written;
+ * - Slack jobs are enqueued for the team's linked channels and user group, if any;
+ * - for a removal, the member's upcoming bookings on the team follow removal_policy:
+ *   'reassign' enqueues booking_reassign, 'keep_bookings' keeps them and raises a
+ *   removed_member_bookings alert listing them for review. Bookings imported from Calendly
+ *   are never reassigned (they produce no outbound work) and are always listed for review.
  */
 
 export type SyncSource = "poll" | "push";
@@ -37,6 +52,8 @@ export type TeamSyncSummary = {
   counts?: DiffCounts;
   events: number;
   reassignJobs: number;
+  /** Upcoming bookings of removed members kept and listed for review. */
+  reviewBookings: number;
   alertId?: string;
   error?: string;
 };
@@ -55,6 +72,11 @@ type ApplyContext = { source: SyncSource; detail: Record<string, unknown> };
 
 export const MASS_REMOVAL_ALERT = "mass_removal_blocked";
 export const STALE_ALERT = "sync_stale";
+/** Raised when a removed member still hosts upcoming bookings that were kept (not reassigned). */
+export const REVIEW_BOOKINGS_ALERT = "removed_member_bookings";
+
+type Applied = { events: number; reassignJobs: number; reviewBookings: number };
+const NOTHING_APPLIED: Applied = { events: 0, reassignJobs: 0, reviewBookings: 0 };
 
 // ---------------------------------------------------------------------------
 // Snapshot (poller)
@@ -91,7 +113,7 @@ export async function applySnapshot(input: SnapshotInput): Promise<SnapshotResul
         await sql.begin((tx) => applySnapshotToTeam(tx, teamId, snapshots, input)) as TeamSyncSummary,
       );
     } catch (err) {
-      teams.push(await recordTeamError(teamId, err));
+      teams.push(await recordTeamError(teamId, err, "poll", input.snapshotId));
     }
   }
   return { teams, rejectedQueueIds: [...rejected] };
@@ -104,8 +126,9 @@ async function applySnapshotToTeam(
   input: SnapshotInput,
 ): Promise<TeamSyncSummary> {
   const team = await lockTeam(tx, teamId);
-  const base = { teamId, events: 0, reassignJobs: 0 };
+  const base = { teamId, ...NOTHING_APPLIED };
   if (!team) return { ...base, status: "skipped", reason: "team_not_found" };
+  const run = { teamId, source: "poll" as const, snapshotId: input.snapshotId };
 
   const queues = await tx<{ queue_id: string; last_member_count: number | null }[]>`
     select queue_id, last_member_count from app.team_sf_queues where team_id = ${teamId} order by queue_id
@@ -131,7 +154,10 @@ async function applySnapshotToTeam(
     appUsers,
   });
 
-  if (result.status === "skipped") return { ...base, status: "skipped", reason: result.reason };
+  if (result.status === "skipped") {
+    await recordRun(tx, { ...run, status: "skipped", reason: result.reason });
+    return { ...base, status: "skipped", reason: result.reason };
+  }
 
   const queueIds = queues.map((q) => q.queue_id);
   if (result.status === "blocked") {
@@ -150,6 +176,8 @@ async function applySnapshotToTeam(
         ? `Sync blocked: a linked queue returned no members (${result.counts.removals} removals pending).`
         : `Sync blocked: ${result.counts.removals} of ${result.counts.currentActiveQueueMembers} queue members would be removed (threshold ${result.thresholdPct}%).`;
     await tx`update app.teams set sync_health = 'blocked', sync_error = ${message} where id = ${teamId}`;
+    // The message stays on teams.sync_error; the run row keeps the reason so repeats collapse.
+    await recordRun(tx, { ...run, status: "blocked", reason: result.reason });
     return { ...base, status: "blocked", reason: result.reason, counts: result.counts, alertId };
   }
 
@@ -187,7 +215,16 @@ async function applySnapshotToTeam(
     set resolved_at = now(), detail = detail || ${tx.json({ autoResolved: true })}
     where team_id = ${teamId} and resolved_at is null and kind in (${STALE_ALERT}, ${MASS_REMOVAL_ALERT})
   `;
-  return { ...base, status: "applied", counts: result.counts, events: applied.events, reassignJobs: applied.reassignJobs };
+  await recordRun(tx, {
+    ...run,
+    status: "applied",
+    added: result.counts.additions,
+    removed: result.counts.removals,
+    reinstated: result.counts.reinstatements,
+    promoted: result.counts.promotions,
+    ...applied,
+  });
+  return { ...base, status: "applied", counts: result.counts, ...applied };
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +256,7 @@ export async function applyPushChange(input: PushInput): Promise<PushResult> {
     try {
       teams.push(await sql.begin((tx) => applyPushToTeam(tx, teamId, queueId, input)) as TeamSyncSummary);
     } catch (err) {
-      teams.push(await recordTeamError(teamId, err));
+      teams.push(await recordTeamError(teamId, err, "push", input.eventId));
     }
   }
   return { linked: links.length > 0, teams };
@@ -227,9 +264,13 @@ export async function applyPushChange(input: PushInput): Promise<PushResult> {
 
 async function applyPushToTeam(tx: Tx, teamId: string, queueId: string, input: PushInput): Promise<TeamSyncSummary> {
   const team = await lockTeam(tx, teamId);
-  const base = { teamId, events: 0, reassignJobs: 0 };
+  const base = { teamId, ...NOTHING_APPLIED };
   if (!team) return { ...base, status: "skipped", reason: "team_not_found" };
-  if (team.membership_source === "manual") return { ...base, status: "skipped", reason: "manual_team" };
+  const run = { teamId, source: "push" as const, snapshotId: input.eventId };
+  if (team.membership_source === "manual") {
+    await recordRun(tx, { ...run, status: "skipped", reason: "manual_team" });
+    return { ...base, status: "skipped", reason: "manual_team" };
+  }
 
   const email = normalizeEmail(input.email);
   const [existing] = await loadMembers(tx, teamId, email);
@@ -291,13 +332,24 @@ async function applyPushToTeam(tx: Tx, teamId: string, queueId: string, input: P
                   ${tx.json({ recentPushRemovals: recent, budget, windowMinutes: PUSH_REMOVAL_WINDOW_MIN })})
         `;
       }
+      await recordRun(tx, { ...run, status: "blocked", reason: "push_removal_budget_exceeded" });
       return { ...base, status: "blocked", reason: "push_removal_budget_exceeded" };
     }
   }
 
   const applied = change
     ? await applyChanges(tx, team, [change], { source: "push", detail: { eventId: input.eventId, queueId } })
-    : { events: 0, reassignJobs: 0 };
+    : NOTHING_APPLIED;
+  await recordRun(tx, {
+    ...run,
+    status: change ? "applied" : "skipped",
+    reason: change ? null : "no_change",
+    added: change?.kind === "add" ? 1 : 0,
+    removed: change?.kind === "remove" ? 1 : 0,
+    reinstated: change?.kind === "reinstate" ? 1 : 0,
+    promoted: change?.kind === "promote" ? 1 : 0,
+    ...applied,
+  });
   // Single changes bypass the safety rail; record them for operators without personal data.
   console.info(
     JSON.stringify({
@@ -364,9 +416,10 @@ async function applyChanges(
   team: TeamRow,
   changes: MemberChange[],
   ctx: ApplyContext,
-): Promise<{ events: number; reassignJobs: number }> {
+): Promise<Applied> {
   let events = 0;
   let reassignJobs = 0;
+  let reviewBookings = 0;
   for (const c of changes) {
     let memberId = c.teamMemberId;
     if (c.kind === "add") {
@@ -400,46 +453,92 @@ async function applyChanges(
       returning id
     `;
     events++;
-    const slack: JobPayloads["slack_membership_sync"] = { teamId: team.id, teamMemberId: memberId! };
-    await enqueue(tx, {
-      kind: "slack_membership_sync",
-      payload: slack,
-      idempotencyKey: `membership_event:${ev.id}`,
-      teamId: team.id,
-    });
+    const slackJobs = await enqueueMemberSlackJobs(tx, { teamId: team.id, teamMemberId: memberId!, idempotencyKey: `membership_event:${ev.id}` });
 
-    if (c.kind === "remove" && team.removal_policy === "reassign" && c.userId) {
-      reassignJobs += await enqueueReassignments(tx, team.id, c.userId, ev.id);
+    let bookings = { reassignJobs: 0, reviewBookings: 0, bookingIds: [] as string[] };
+    if (c.kind === "remove" && c.userId) {
+      bookings = await handleRemovedMemberBookings(tx, team, { userId: c.userId, teamMemberId: memberId!, eventId: ev.id, source: ctx.source });
+      reassignJobs += bookings.reassignJobs;
+      reviewBookings += bookings.reviewBookings;
     }
+
+    await writeAudit(tx, {
+      actorUserId: null,
+      via: "sync",
+      action: `team_member.queue_sync.${c.kind}`,
+      entityType: "team_member",
+      entityId: memberId,
+      before: c.oldStatus === null ? undefined : { status: c.oldStatus },
+      after: {
+        teamId: team.id,
+        email: c.email,
+        status: c.newStatus,
+        source: ctx.source,
+        membershipEventId: ev.id,
+        slackChannelJob: slackJobs.channels !== null,
+        slackUsergroupJob: slackJobs.usergroup !== null,
+        ...(c.kind === "remove"
+          ? { removalPolicy: team.removal_policy, reassignJobs: bookings.reassignJobs, reviewBookingIds: bookings.bookingIds }
+          : {}),
+      },
+    });
   }
-  return { events, reassignJobs };
+  return { events, reassignJobs, reviewBookings };
 }
 
-/** Future confirmed bookings on the team's event types where the user is the primary host. */
-async function enqueueReassignments(tx: Tx, teamId: string, userId: string, eventId: string): Promise<number> {
-  const bookings = await tx<{ id: string }[]>`
-    select b.id
+/**
+ * Upcoming bookings on the team's event types where the removed member is an active host
+ * (primary or collective). With removal_policy 'reassign', confirmed bookings get a
+ * booking_reassign job. Everything else (keep_bookings, flagged bookings, bookings imported
+ * from Calendly) is kept as it is and listed in a removed_member_bookings alert for review.
+ */
+async function handleRemovedMemberBookings(
+  tx: Tx,
+  team: TeamRow,
+  m: { userId: string; teamMemberId: string; eventId: string; source: SyncSource },
+): Promise<{ reassignJobs: number; reviewBookings: number; bookingIds: string[] }> {
+  const bookings = await tx<{ id: string; status: string; imported: boolean }[]>`
+    select b.id, b.status::text as status, b.import_source is not null as imported
     from app.bookings b
     join app.event_types et on et.id = b.event_type_id
-    join app.booking_hosts bh on bh.booking_id = b.id
-    where et.team_id = ${teamId}
-      and bh.user_id = ${userId} and bh.role = 'primary' and bh.active
-      and b.status = 'confirmed' and b.start_at > now()
-    order by b.start_at
+    where et.team_id = ${team.id}
+      and b.status in ('confirmed', 'flagged') and b.start_at > now()
+      and exists (
+        select 1 from app.booking_hosts bh where bh.booking_id = b.id and bh.user_id = ${m.userId} and bh.active
+      )
+    order by b.start_at, b.id
   `;
-  let n = 0;
+  let reassignJobs = 0;
+  const review: string[] = [];
   for (const b of bookings) {
-    const payload: JobPayloads["booking_reassign"] = { bookingId: b.id, fromUserId: userId, reason: "removed_from_queue" };
-    const id = await enqueue(tx, {
-      kind: "booking_reassign",
-      payload,
-      idempotencyKey: `reassign:${b.id}:${eventId}`,
-      bookingId: b.id,
-      teamId,
-    });
-    if (id) n++;
+    if (team.removal_policy === "reassign" && b.status === "confirmed" && !b.imported) {
+      const payload: JobPayloads["booking_reassign"] = { bookingId: b.id, fromUserId: m.userId, reason: QUEUE_REMOVAL_REASON };
+      const id = await enqueue(tx, {
+        kind: "booking_reassign",
+        payload,
+        idempotencyKey: `reassign:${b.id}:${m.eventId}`,
+        bookingId: b.id,
+        teamId: team.id,
+      });
+      if (id) reassignJobs++;
+      continue;
+    }
+    review.push(b.id);
   }
-  return n;
+  if (review.length > 0) {
+    await tx`
+      insert into app.sync_alerts (team_id, kind, detail)
+      values (${team.id}, ${REVIEW_BOOKINGS_ALERT}, ${tx.json({
+        teamMemberId: m.teamMemberId,
+        membershipEventId: m.eventId,
+        source: m.source,
+        removalPolicy: team.removal_policy,
+        count: review.length,
+        bookingIds: review,
+      })})
+    `;
+  }
+  return { reassignJobs, reviewBookings: review.length, bookingIds: review };
 }
 
 /** Inserts an open alert of this kind for the team, or refreshes the detail of the open one. */
@@ -463,15 +562,16 @@ export async function upsertOpenAlert(tx: Tx, teamId: string, kind: string, deta
   return row.id;
 }
 
-async function recordTeamError(teamId: string, err: unknown): Promise<TeamSyncSummary> {
+async function recordTeamError(teamId: string, err: unknown, source: SyncSource, snapshotId: string): Promise<TeamSyncSummary> {
   const message = (err instanceof Error ? err.message : String(err)).slice(0, 500);
   console.error(JSON.stringify({ msg: "queue sync failed", teamId, error: message }));
   try {
     await service()`update app.teams set sync_health = 'error', sync_error = ${message} where id = ${teamId}`;
+    await recordRun(service(), { teamId, source, status: "error", snapshotId, error: message });
   } catch {
-    // The original error is what matters; the health update is best effort.
+    // The original error is what matters; the health and run updates are best effort.
   }
-  return { teamId, status: "error", events: 0, reassignJobs: 0, error: "sync_failed" };
+  return { teamId, status: "error", ...NOTHING_APPLIED, error: "sync_failed" };
 }
 
 /** Stable hash of one queue snapshot (order independent). */

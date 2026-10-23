@@ -18,10 +18,10 @@ display_information:
   long_description: >-
     BTC Scheduler manages booking pages and team rosters for Big Think Capital. Team
     membership is driven by Salesforce Queues. This app adds active team members to the
-    Slack channels linked to their team and, for channels configured to do so, removes
-    members who are paused or removed from the team. Slack membership never changes team
-    membership. New channel links start in dry-run mode, where the app only records what
-    it would do.
+    Slack channels and user group linked to their team and, where configured to do so,
+    removes members who are paused or removed from the team. Workspace owners, admins and
+    bots are never removed. Slack membership never changes team membership. New channel and
+    user group links start in dry-run mode, where the app only records what it would do.
   background_color: "#0b2545"
 
 features:
@@ -45,9 +45,11 @@ oauth_config:
       - channels:manage     # conversations.invite / conversations.kick on public channels
       - groups:write        # conversations.invite / conversations.kick on private channels
       - channels:join       # conversations.join so the bot can join public channels itself
-      - users:read          # companion of users:read.email
+      - users:read          # users.info (owner/admin/bot check before any removal); companion of users:read.email
       - users:read.email    # users.lookupByEmail
       - chat:write          # admin notices and agent reminder DMs via chat.postMessage
+      - usergroups:read     # usergroups.users.list for a team's linked user group
+      - usergroups:write    # usergroups.users.update for a team's linked user group
 
 settings:
   org_deploy_enabled: false

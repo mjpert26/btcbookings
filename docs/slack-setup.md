@@ -1,8 +1,12 @@
 # Slack setup
 
-BTC Scheduler keeps Slack channels in step with team membership. The direction is one way:
+BTC Scheduler keeps Slack channels, and optionally one Slack user group per team, in step
+with team membership. The direction is one way:
 
-Salesforce Queue -> team member status in BTC Scheduler -> Slack channels.
+Salesforce Queue -> team member status in BTC Scheduler -> Slack channels and user group.
+
+The full chain from the queue to booking pages and Slack is described in
+`docs/queue-slack-sync.md`.
 
 Slack membership never changes team membership. The app uses a bot token only; it receives
 no events from Slack.
@@ -15,7 +19,9 @@ no events from Slack.
 4. Paste the contents of `slack/manifest.yml` (YAML tab) and continue.
 5. Review the summary. The bot scopes must be exactly:
    `channels:read`, `groups:read`, `channels:manage`, `groups:write`, `channels:join`,
-   `users:read`, `users:read.email`, `chat:write`.
+   `users:read`, `users:read.email`, `chat:write`, `usergroups:read`, `usergroups:write`.
+   An app created before the user group scopes were added must be updated from the
+   manifest and reinstalled (section 2) before a user group link is turned live.
 6. Choose **Create**.
 7. Optional: under **Basic Information > Display Information**, upload the BTC app icon.
 
@@ -103,11 +109,42 @@ Rules the sync follows:
   mode. `add only` channels never remove anyone.
 - Members pending onboarding are not invited until they become active.
 - Protected users are never removed.
+- Workspace owners, workspace admins and bot users are never removed. The app checks each
+  person with `users.info` before a removal; if Slack cannot confirm the person, nothing is
+  removed.
 - People in the channel who are not on the team are never touched.
 - `#general` and the bot itself are skipped.
 - A member whose email has no Slack account is recorded as a warning and not retried.
+- Teams with no Slack link get no Slack jobs at all.
+- Without `SLACK_BOT_TOKEN`, Slack jobs succeed with `skipped: slack_not_configured` and
+  change nothing.
 
-## 8. Troubleshooting
+## 8. Link a user group to a team
+
+A team can have one Slack user group (for example `@partner-team`) that follows its roster
+the same way as its channels. Slack user groups need a Standard plan or above.
+
+1. In Slack, open **People > User groups**, open the group and copy its id (it starts
+   with `S`).
+2. On **Admin > Teams > (team) > Slack**, under **Slack user group**, enter the id, an
+   optional handle for display, the mode and any protected user ids. Only global admins can
+   do this. The app reads the group once with `usergroups.users.list` to check access.
+3. **The link starts in dry-run mode.** Membership changes record `would_do` actions and
+   make no `usergroups.users.update` calls. Review **Recent user group actions**.
+4. Turn dry run off when the actions look right. Optionally run **Full resync** to queue a
+   sync for every team member.
+
+Rules: active members are added; in `add and remove` mode paused and removed members are
+taken out. Only team members are ever added or removed; everyone else in the group stays.
+Protected users, workspace owners and admins, and bots are never removed. Slack does not
+allow an empty user group, so removing the last member is skipped (disable the group in
+Slack instead).
+
+Workspace owners can restrict who may create and change user groups in the workspace
+permission settings (check the current menu names in Slack's help centre). If the app is
+not allowed, Slack returns `permission_denied` and the user group shows an error.
+
+## 9. Troubleshooting
 
 | Health or error | Meaning | Fix |
 |---|---|---|
@@ -117,3 +154,8 @@ Rules the sync follows:
 | error: token invalid or revoked | `SLACK_BOT_TOKEN` is wrong or the app was uninstalled. | Reinstall, update the variable, redeploy. |
 | error: archived | The channel was archived. | Unarchive it or remove the channel link. |
 | warning: users_not_found | The member's email does not match a Slack account. | Fix the email in Slack or in the roster. |
+| skipped: workspace_admin / bot_user | The person is a workspace owner, admin or a bot. | Expected; remove them by hand if needed. |
+| user group error: not found (`no_such_subteam`) | Wrong user group id, or the group was deleted. | Check the id and relink. |
+| user group error: `permission_denied` | Workspace settings stop the app changing user groups. | Section 8. |
+| user group error: `plan_upgrade_required` | The workspace plan has no user groups. | Unlink the user group. |
+| user group skipped: empty_group | Removing the member would leave the group empty. | Disable the group in Slack if it should be empty. |

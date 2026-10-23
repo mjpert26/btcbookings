@@ -15,3 +15,5 @@ export const SF_FIELD_RE = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
 export const SLACK_CHANNEL_RE = /^[CG][A-Z0-9]{6,}$/;
 /** Slack user id. */
 export const SLACK_USER_RE = /^[UW][A-Z0-9]{6,}$/;
+/** Slack user group id. */
+export const SLACK_USERGROUP_RE = /^S[A-Z0-9]{6,}$/;

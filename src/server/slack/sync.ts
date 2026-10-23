@@ -10,6 +10,7 @@ import {
   noticeReason,
   noticeText,
   planMemberAction,
+  removalProtection,
   type ChannelConfig,
   type MemberState,
   type PlannedAction,
@@ -178,6 +179,23 @@ export async function resolveSlackUserId(
     `;
   }
   return { slackUserId: user.id, source: "lookup" };
+}
+
+export type RemovableResult = { removable: true } | { removable: false; code: string; reason: string };
+
+/**
+ * Reads the user with users.info and refuses removal of workspace owners, workspace admins
+ * and bot users. When Slack cannot confirm the user, nothing is removed.
+ */
+export async function checkRemovable(client: SlackClient, slackUserId: string): Promise<RemovableResult> {
+  const res = await client.usersInfo(slackUserId);
+  if (!res.ok || !res.data?.user) {
+    const code = res.error ?? "unknown_error";
+    if (SLACK_CONFIG_ERRORS.has(code)) throw new SlackConfigError(code);
+    if (isTransient(code)) throw new SlackTransientError([code]);
+    return { removable: false, code, reason: `Slack could not confirm this user (${code}); nothing was removed` };
+  }
+  return removalProtection(res.data.user);
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +452,7 @@ async function syncMemberChannelsUnlocked(
   const actions: ActionRecord[] = [];
   const transient: string[] = [];
   let reason: string | null = null;
+  let removal: RemovableResult | null = null;
 
   for (const { channel, plan } of plans) {
     if (plan.action === "none") continue;
@@ -447,6 +466,23 @@ async function syncMemberChannelsUnlocked(
     }
 
     const target = slackUserId as string;
+    if (plan.action === "kick") {
+      // Checked once per member: workspace owners, admins and bots are never removed.
+      if (!removal) {
+        try {
+          removal = await checkRemovable(client, target);
+        } catch (err) {
+          if (err instanceof SlackConfigError) await setTeamChannelsHealth(db, member.teamId, "error", configErrorMessage(err.code));
+          throw err;
+        }
+      }
+      if (!removal.removable) {
+        const rec: ActionRecord = { ...base, action: "skip", outcome: "skipped", errorCode: removal.code, detail: removal.reason, changed: false };
+        await recordAction(db, member.teamId, memberRef, target, rec);
+        actions.push(rec);
+        continue;
+      }
+    }
     if (channel.dry_run) {
       const rec: ActionRecord = {
         ...base,

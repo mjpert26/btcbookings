@@ -202,6 +202,8 @@ Input: `{ queueId, members: [{ sfUserId, email, isActive }], snapshotAt }` for e
 
 Push events (`/api/sync/queue-membership`) apply the single change immediately, with `source = 'push'`. The poller remains the source of truth and corrects any drift.
 
+Added 2026-10-23 (BTCSCHED-49 to 51): removals also cover collective hosts, kept bookings are listed for review, Slack jobs are queued only for teams with Slack links, a team can link one Slack user group, and every run is recorded for the sync status view. See `docs/queue-slack-sync.md`.
+
 ## 5. Integrations
 
 ### 5.1 Microsoft Graph

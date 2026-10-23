@@ -14,8 +14,11 @@ Re-check these when upgrading or when Slack announces API changes.
 | `conversations.members` | `channels:read`, `groups:read` | Tier 4 (100+/min) | form | https://docs.slack.dev/reference/methods/conversations.members |
 | `users.lookupByEmail` | `users:read.email` | Tier 3 | form | https://docs.slack.dev/reference/methods/users.lookupByEmail |
 | `chat.postMessage` | `chat:write` | Special: about 1 message per second per channel, plus a workspace limit | JSON | https://docs.slack.dev/reference/methods/chat.postMessage |
+| `users.info` | `users:read` | Tier 4 | form | https://docs.slack.dev/reference/methods/users.info |
+| `usergroups.users.list` | `usergroups:read` | Tier 2 (20+/min) | form | https://docs.slack.dev/reference/methods/usergroups.users.list |
+| `usergroups.users.update` | `usergroups:write` | Tier 2 | JSON | https://docs.slack.dev/reference/methods/usergroups.users.update |
 
-All seven method pages list both `application/x-www-form-urlencoded` and `application/json`.
+All method pages list both `application/x-www-form-urlencoded` and `application/json`.
 The Web API overview (https://docs.slack.dev/apis/web-api/) says most write methods accept
 JSON, that a JSON request must carry the token as `Authorization: Bearer`, and that arguments
 must not be mixed between query string, form body and JSON. The client therefore always sends
@@ -46,6 +49,22 @@ Responses are JSON objects with `ok: true|false` and, on failure, an `error` cod
 Note: `users.lookupByEmail` documents `users_not_found` (plural). `user_not_found` is the
 code `conversations.invite` and `conversations.kick` use for a bad user id.
 
+### User groups and removal checks (checked 2026-10-23)
+
+| Method | Code | Our handling |
+|---|---|---|
+| users.info | (ok) `is_admin`, `is_owner`, `is_primary_owner`, `is_bot` | Any of these true: the person is never removed (skip `workspace_admin` or `bot_user`). Checked before every channel kick and user group removal. |
+| users.info | `user_not_found`, `user_not_visible`, other non-transient errors | Nothing is removed; recorded as a skip with the code. |
+| usergroups.users.list / update | `no_such_subteam`, `plan_upgrade_required`, `permission_denied`, `no_permission`, `access_denied`, `subteam_max_users_exceeded` | User group health `error` with an explanation; not retried. |
+| usergroups.users.update | `invalid_users`, `failed_for_some_users` | Per-member error. |
+| usergroups.users.update | `no_users_provided` | Avoided: removing the last member is skipped (`empty_group`). Slack documents `usergroups.disable` for emptying a group. |
+
+`usergroups.users.update` replaces the full member list (`users` is a comma-separated list of
+every member after the update). The sync reads the list first and changes only one member,
+under an advisory lock per user group. `usergroups.users.list` is called with
+`include_disabled=true` so a disabled group is still readable. Guests and bot users cannot be
+added to a user group.
+
 ## Rate limits
 
 Source: https://docs.slack.dev/apis/web-api/rate-limits
@@ -57,6 +76,10 @@ Source: https://docs.slack.dev/apis/web-api/rate-limits
 - Each sync job makes at most one lookup plus one to four channel calls per linked channel,
   so normal roster changes stay far below Tier 3. A full resync of a large team enqueues one
   job per member and may hit the limit; the jobs then back off and continue.
+- User group jobs make one `usergroups.users.list` and at most one
+  `usergroups.users.update` (both Tier 2) per member change, plus one `users.info` (Tier 4)
+  for removals. A full user group resync of a large team can reach Tier 2 and then backs off
+  the same way.
 
 ## Other facts
 

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
-import { linkTestQueue, makeTeam, PUSH_BEARER, sfUserId, signedHeaders, signedPost, SYNC_SECRET } from "../helpers/sync";
+import { linkTestQueue, linkTestSlackChannel, makeTeam, PUSH_BEARER, sfUserId, signedHeaders, signedPost, SYNC_SECRET } from "../helpers/sync";
 import type { Sql } from "@/server/db/client";
 import { computeSignature } from "@/server/crypto/hmac";
 import { applySnapshot, type SnapshotInput } from "@/server/sync/apply";
@@ -81,6 +81,7 @@ describe("applySnapshot", () => {
   it("adds members, writes events and Slack jobs, and records sync state", async () => {
     const team = await makeTeam(sql);
     await linkTestQueue(sql, team, Q1);
+    await linkTestSlackChannel(sql, team);
     const ready = await makeUser(sql, { email: "ready@bigthinkcapital.com" });
     await makeUser(sql, { email: "broken@bigthinkcapital.com", calendar: "broken" });
 
@@ -109,17 +110,37 @@ describe("applySnapshot", () => {
     const [q] = await sql`select last_snapshot_at, last_snapshot_hash, last_member_count from app.team_sf_queues where team_id = ${team}`;
     expect(q.last_snapshot_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(q.last_member_count).toBe(3);
+
+    // Every change is audited as a sync change.
+    const audits = await sql`select action, actor_user_id, via from app.audit_log where entity_type = 'team_member' order by action`;
+    expect(audits).toHaveLength(3);
+    expect(audits.every((a) => a.action === "team_member.queue_sync.add" && a.actor_user_id === null && a.via === "sync")).toBe(true);
+    const [run] = await sql`select source, status, added, removed, events from app.queue_sync_runs where team_id = ${team}`;
+    expect(run).toEqual({ source: "poll", status: "applied", added: 3, removed: 0, events: 3 });
   });
 
   it("is idempotent: the same snapshot twice writes nothing new", async () => {
     const team = await makeTeam(sql);
     await linkTestQueue(sql, team, Q1);
+    await linkTestSlackChannel(sql, team);
     const s = snapshot([{ queueId: Q1, members: [m("a@bigthinkcapital.com"), m("b@bigthinkcapital.com")] }]);
     await applySnapshot(s);
     const again = await applySnapshot({ ...s, snapshotId: "snap-repeat" });
     expect(again.teams[0]).toMatchObject({ status: "applied", events: 0 });
+    await applySnapshot({ ...s, snapshotId: "snap-repeat-2" });
     expect(await count("select count(*) as n from app.membership_events")).toBe(2);
     expect(await count("select count(*) as n from app.jobs")).toBe(2);
+    // Repeated no-change runs collapse into one run row.
+    const runs = await sql`select added, repeat_count from app.queue_sync_runs where team_id = ${team} order by created_at`;
+    expect(runs).toEqual([{ added: 2, repeat_count: 1 }, { added: 0, repeat_count: 2 }]);
+  });
+
+  it("queues no Slack jobs for a team without Slack links", async () => {
+    const team = await makeTeam(sql);
+    await linkTestQueue(sql, team, Q1);
+    await applySnapshot(snapshot([{ queueId: Q1, members: [m("a@bigthinkcapital.com")] }]));
+    expect(await count("select count(*) as n from app.membership_events")).toBe(1);
+    expect(await count("select count(*) as n from app.jobs")).toBe(0);
   });
 
   it("pauses and reinstates without touching round-robin counters", async () => {
@@ -249,14 +270,22 @@ describe("applySnapshot", () => {
     const future = await teamBooking(reassign, host.id, 48);
     await teamBooking(reassign, host.id, -48); // past
     await teamBooking(reassign, host.id, 72, "cancelled");
-    await teamBooking(keep, host.id, 96);
+    const imported = await teamBooking(reassign, host.id, 80);
+    await sql`update app.bookings set import_source = 'calendly', import_ref = 'imp-1' where id = ${imported}`;
+    const kept = await teamBooking(keep, host.id, 96);
 
     const res = await applySnapshot(snapshot([{ queueId: Q1, members: others }, { queueId: Q2, members: others }]));
-    expect(res.teams.find((t) => t.teamId === reassign)).toMatchObject({ status: "applied", reassignJobs: 1 });
-    expect(res.teams.find((t) => t.teamId === keep)).toMatchObject({ status: "applied", reassignJobs: 0 });
+    expect(res.teams.find((t) => t.teamId === reassign)).toMatchObject({ status: "applied", reassignJobs: 1, reviewBookings: 1 });
+    expect(res.teams.find((t) => t.teamId === keep)).toMatchObject({ status: "applied", reassignJobs: 0, reviewBookings: 1 });
     const jobs = await sql`select payload, booking_id from app.jobs where kind = 'booking_reassign'`;
     expect(jobs).toHaveLength(1);
     expect(jobs[0].payload).toEqual({ bookingId: future, fromUserId: host.id, reason: "removed_from_queue" });
+
+    // Kept bookings (keep_bookings, and imported bookings on any team) are surfaced for review.
+    const alerts = await sql`select team_id, detail from app.sync_alerts where kind = 'removed_member_bookings' order by team_id`;
+    expect(Object.fromEntries(alerts.map((a) => [a.team_id, a.detail.bookingIds]))).toEqual({ [keep]: [kept], [reassign]: [imported] });
+    const [audit] = await sql`select after from app.audit_log where action = 'team_member.queue_sync.remove' and after ->> 'teamId' = ${keep}`;
+    expect(audit.after).toMatchObject({ removalPolicy: "keep_bookings", reassignJobs: 0, reviewBookingIds: [kept] });
   });
 });
 
@@ -331,6 +360,7 @@ describe("POST /api/sync/queue-membership", () => {
   it("applies an add and a remove via the bearer path", async () => {
     const team = await makeTeam(sql);
     await linkTestQueue(sql, team, Q1);
+    await linkTestSlackChannel(sql, team);
     await makeUser(sql, { email: "pushed@bigthinkcapital.com" });
     const add = await pushPOST(bearerReq(push()));
     expect(add.status).toBe(200);
@@ -345,6 +375,11 @@ describe("POST /api/sync/queue-membership", () => {
       ["push", "paused"],
     ]);
     expect(await count("select count(*) as n from app.jobs where kind = 'slack_membership_sync'")).toBe(2);
+    const runs = await sql`select source, status, added, removed from app.queue_sync_runs where team_id = ${team} order by created_at`;
+    expect(runs.map((r) => [r.source, r.status, r.added, r.removed])).toEqual([
+      ["push", "applied", 1, 0],
+      ["push", "applied", 0, 1],
+    ]);
   });
 
   it("removal is not subject to the safety rail but keeps people still in another linked queue", async () => {
@@ -497,6 +532,7 @@ describe("admin functions", () => {
     const { admin, user } = await actors();
     const team = await makeTeam(sql);
     await linkTestQueue(sql, team, Q1);
+    await linkTestSlackChannel(sql, team);
     await applySnapshot(snapshot([{ queueId: Q1, members: [m("rep@bigthinkcapital.com")] }]));
     const [tm] = await members(team);
     await expect(manualMemberOverride(user, tm.id, "paused")).rejects.toMatchObject({ code: "forbidden" });

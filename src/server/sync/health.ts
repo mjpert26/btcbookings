@@ -2,8 +2,9 @@ import "server-only";
 import { service } from "@/server/db/client";
 import { STALE_ALERT, upsertOpenAlert } from "@/server/sync/apply";
 import { NONCE_SOURCE_PUSH, NONCE_SOURCE_SNAPSHOT } from "@/server/sync/http";
+import { purgeOldRuns } from "@/server/sync/runs";
 
-export type HealthReport = { checked: number; markedStale: string[]; alertsRaised: number; noncesPurged: number };
+export type HealthReport = { checked: number; markedStale: string[]; alertsRaised: number; noncesPurged: number; runsPurged: number };
 
 /**
  * Marks queue-driven teams stale when no snapshot has been received for `staleMinutes`.
@@ -59,5 +60,6 @@ export async function checkQueueSyncHealth(staleMinutes: number): Promise<Health
     delete from app.webhook_nonces
     where source in (${NONCE_SOURCE_SNAPSHOT}, ${NONCE_SOURCE_PUSH}) and received_at < now() - interval '1 day'
   `;
-  return { checked: teams.length, markedStale, alertsRaised, noncesPurged: purged.count };
+  const runsPurged = await purgeOldRuns(sql);
+  return { checked: teams.length, markedStale, alertsRaised, noncesPurged: purged.count, runsPurged };
 }

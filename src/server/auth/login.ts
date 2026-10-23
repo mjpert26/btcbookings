@@ -4,6 +4,7 @@ import { encryptSecret } from "@/server/crypto/aes";
 import { adminEmails, allowedEmailDomains } from "@/server/env";
 import { writeAudit } from "@/server/audit";
 import { enqueue } from "@/server/jobs/queue";
+import { enqueueMemberSlackJobs } from "@/server/slack/enqueue";
 import { isReservedSlug, slugify } from "@/server/auth/slug";
 import type { IdentityClaims, TokenSet } from "@/server/auth/entra";
 
@@ -168,10 +169,6 @@ export async function activatePendingMemberships(tx: Tx, userId: string, email: 
       values (${m.team_id}, ${m.id}, ${email}, 'pending_onboarding', 'active', 'system',
               ${tx.json({ reason: "signed_in_and_connected_outlook" })})
     `;
-    await tx`
-      insert into app.jobs (kind, payload, team_id, idempotency_key)
-      values ('slack_membership_sync', ${tx.json({ teamId: m.team_id, teamMemberId: m.id })}, ${m.team_id},
-              ${"activate:" + m.id + ":" + Date.now()})
-    `;
+    await enqueueMemberSlackJobs(tx, { teamId: m.team_id, teamMemberId: m.id, idempotencyKey: `activate:${m.id}:${Date.now()}` });
   }
 }

@@ -70,6 +70,66 @@ export function EditChannelDialog({ action, values, label }: { action: FormActio
   );
 }
 
+const USERGROUP_MODE_OPTIONS = [
+  { value: "add_only", label: "Add only: add active members" },
+  { value: "add_and_remove", label: "Add and remove: also remove paused members" },
+];
+
+type UsergroupValues = { mode: string; handle: string; protectedSlackUserIds: string };
+
+function UsergroupFields({ values, includeId }: { values: UsergroupValues; includeId: boolean }) {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {includeId ? (
+        <Input
+          label="User group ID"
+          name="usergroupId"
+          required
+          placeholder="S012ABCDEF"
+          hint="In Slack: People, User groups, open the group and copy its ID from the URL or the group details."
+          autoComplete="off"
+          spellCheck={false}
+        />
+      ) : null}
+      <Input label="Handle (optional)" name="handle" defaultValue={values.handle} placeholder="partner-team" hint="Shown in the admin UI only." spellCheck={false} />
+      <Select label="Mode" name="mode" defaultValue={values.mode} options={USERGROUP_MODE_OPTIONS} />
+      <Textarea
+        label="Protected Slack user IDs"
+        name="protectedSlackUserIds"
+        defaultValue={values.protectedSlackUserIds}
+        rows={2}
+        hint="Never removed by sync. Workspace owners, admins and bots are always protected."
+        wrapperClassName="md:col-span-2"
+        spellCheck={false}
+      />
+    </div>
+  );
+}
+
+export function LinkUsergroupForm({ action }: { action: FormAction }) {
+  return (
+    <ActionForm action={action} className="space-y-4" aria-label="Link a Slack user group">
+      <UsergroupFields values={{ mode: "add_only", handle: "", protectedSlackUserIds: "" }} includeId />
+      <p className="text-sm text-muted">A new link starts in dry-run mode. One user group per team.</p>
+      <SubmitButton pendingLabel="Linking…">Link user group</SubmitButton>
+    </ActionForm>
+  );
+}
+
+export function EditUsergroupDialog({ action, values, label }: { action: FormAction; values: UsergroupValues; label: string }) {
+  return (
+    <Dialog trigger={<>Edit<span className="sr-only"> {label}</span></>} triggerSize="sm" title={`Edit ${label}`} className="w-[min(44rem,calc(100vw-2rem))]">
+      <ActionForm action={action} className="space-y-4">
+        <UsergroupFields values={values} includeId={false} />
+        <div className="flex justify-end gap-2">
+          <DialogCloseButton>Close</DialogCloseButton>
+          <SubmitButton>Save</SubmitButton>
+        </div>
+      </ActionForm>
+    </Dialog>
+  );
+}
+
 /** Dry-run switch that saves immediately. */
 export function DryRunToggle({ action, dryRun, label }: { action: FormAction; dryRun: boolean; label: string }) {
   const [state, run, pending] = useActionState(action, IDLE);

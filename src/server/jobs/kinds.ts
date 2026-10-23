@@ -11,6 +11,7 @@
  * | email_send                | email                | booking, graph conflict detection   |
  * | sf_lead_create            | salesforce           | booking (on confirm, if enabled)    |
  * | slack_membership_sync     | slack                | membership changes (any source)     |
+ * | slack_usergroup_sync      | slack                | membership changes (any source)     |
  * | booking_reassign          | booking              | queue sync (removal_policy=reassign)|
  * | sms_send                  | sms                  | booking (reminders, if enabled)     |
  * | slack_dm_send             | slack                | booking (agent reminders, if enabled)|
@@ -37,6 +38,8 @@ export type JobPayloads = {
   };
   sf_lead_create: { bookingId: string };
   slack_membership_sync: { teamId: string; teamMemberId: string };
+  /** Applies one member's status to the team's Slack user group (when one is linked). */
+  slack_usergroup_sync: { teamId: string; teamMemberId: string };
   booking_reassign: { bookingId: string; fromUserId: string; reason: string };
   /** Text message through SendBlue. "invitee" texts the merchant; a user id texts that host. */
   sms_send: { template: "booking_reminder"; bookingId: string; recipient: "invitee" | { userId: string }; offsetMin: number };

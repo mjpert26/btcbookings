@@ -7,9 +7,10 @@ import { RetryAfterError } from "@/server/jobs/types";
  *
  * - The bot token is sent only in the Authorization header and is never logged or
  *   included in thrown errors.
- * - Write methods (conversations.invite/kick/join, chat.postMessage) send JSON bodies.
- *   Read methods (conversations.info/members, users.lookupByEmail) send form-encoded
- *   bodies, which every Web API method accepts.
+ * - Write methods (conversations.invite/kick/join, usergroups.users.update,
+ *   chat.postMessage) send JSON bodies. Read methods (conversations.info/members,
+ *   users.lookupByEmail, users.info, usergroups.users.list) send form-encoded bodies, which
+ *   every Web API method accepts.
  * - HTTP 429, or an `ok: false` response with `error: "ratelimited"`, throws
  *   RetryAfterError with the Retry-After value so the job worker reschedules the job.
  * - Every other Slack error is returned as `{ ok: false, error }` for the caller to map.
@@ -35,7 +36,14 @@ export type SlackChannelInfo = {
   is_general: boolean;
 };
 
-export type SlackUser = { id: string; deleted?: boolean; is_bot?: boolean };
+export type SlackUser = {
+  id: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_admin?: boolean;
+  is_owner?: boolean;
+  is_primary_owner?: boolean;
+};
 
 export type SlackClient = {
   conversationsInvite(channel: string, user: string): Promise<SlackResponse<Record<string, unknown>>>;
@@ -48,6 +56,10 @@ export type SlackClient = {
     limit?: number,
   ): Promise<SlackResponse<{ members: string[]; response_metadata?: { next_cursor?: string } }>>;
   usersLookupByEmail(email: string): Promise<SlackResponse<{ user: SlackUser }>>;
+  usersInfo(user: string): Promise<SlackResponse<{ user: SlackUser }>>;
+  usergroupsUsersList(usergroup: string): Promise<SlackResponse<{ users: string[] }>>;
+  /** Replaces the full member list of a user group. Slack rejects an empty list. */
+  usergroupsUsersUpdate(usergroup: string, users: string[]): Promise<SlackResponse<{ usergroup?: Record<string, unknown> }>>;
   chatPostMessage(channel: string, text: string): Promise<SlackResponse<{ ts?: string }>>;
 };
 
@@ -139,6 +151,9 @@ export function createSlackClient(opts: SlackClientOptions): SlackClient {
     conversationsMembers: (channel, cursor, limit = 200) =>
       call("conversations.members", { channel, cursor: cursor || undefined, limit }, "form"),
     usersLookupByEmail: (email) => call("users.lookupByEmail", { email }, "form"),
+    usersInfo: (user) => call("users.info", { user }, "form"),
+    usergroupsUsersList: (usergroup) => call("usergroups.users.list", { usergroup, include_disabled: true }, "form"),
+    usergroupsUsersUpdate: (usergroup, users) => call("usergroups.users.update", { usergroup, users: users.join(",") }, "json"),
     chatPostMessage: (channel, text) =>
       call("chat.postMessage", { channel, text, unfurl_links: false, unfurl_media: false }, "json"),
   };

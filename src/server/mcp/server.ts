@@ -38,7 +38,7 @@ function isRequest(m: unknown): m is JsonRpcRequest {
   return Boolean(m && typeof m === "object" && (m as JsonRpcRequest).jsonrpc === "2.0" && typeof (m as JsonRpcRequest).method === "string");
 }
 
-export type ToolErrorReporter = (err: unknown, tool: string) => void;
+export type ToolErrorReporter = (err: unknown, tool: string) => void | Promise<void>;
 
 export async function handleMessage(caller: Caller, message: unknown, report?: ToolErrorReporter): Promise<JsonRpcResponse | null> {
   if (!isRequest(message)) return rpcError(null, INVALID_REQUEST, "Invalid JSON-RPC request");
@@ -90,7 +90,7 @@ export async function handleMessage(caller: Caller, message: unknown, report?: T
         return toolResult(id, out, false);
       } catch (err) {
         if (err instanceof ApiError) return toolResult(id, { error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) }, true);
-        report?.(err, name);
+        await report?.(err, name);
         return toolResult(id, { error: "Something went wrong. The error has been logged." }, true);
       }
     }

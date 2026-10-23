@@ -40,8 +40,8 @@ export default async function AvailabilityPage() {
         `
       : [];
     const [settings] = await tx<
-      { unavailable_show_as: string[]; daily_booking_cap: number | null; outlook_conflict_policy: string; notify_host_by_email: boolean }[]
-    >`select unavailable_show_as, daily_booking_cap, outlook_conflict_policy, notify_host_by_email from app.user_settings where user_id = ${user.id}`;
+      { unavailable_show_as: string[]; daily_booking_cap: number | null; outlook_conflict_policy: string; notify_host_by_email: boolean; sms_phone: string | null }[]
+    >`select unavailable_show_as, daily_booking_cap, outlook_conflict_policy, notify_host_by_email, sms_phone from app.user_settings where user_id = ${user.id}`;
     return { schedule, overrides, settings };
   });
 
@@ -96,6 +96,7 @@ export default async function AvailabilityPage() {
                   dailyBookingCap: data.settings?.daily_booking_cap ?? null,
                   outlookConflictPolicy: data.settings?.outlook_conflict_policy ?? "flag",
                   notifyHostByEmail: data.settings?.notify_host_by_email ?? false,
+                  smsPhone: data.settings?.sms_phone ?? null,
                 }}
               />
             </CardBody>

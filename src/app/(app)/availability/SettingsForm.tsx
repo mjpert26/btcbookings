@@ -10,7 +10,7 @@ import { saveSettingsAction } from "./_actions";
 export function SettingsForm({
   initial,
 }: {
-  initial: { unavailableShowAs: string[]; dailyBookingCap: number | null; outlookConflictPolicy: string; notifyHostByEmail: boolean };
+  initial: { unavailableShowAs: string[]; dailyBookingCap: number | null; outlookConflictPolicy: string; notifyHostByEmail: boolean; smsPhone: string | null };
 }) {
   return (
     <ActionForm action={saveSettingsAction} className="space-y-5" aria-label="Booking preferences">
@@ -42,6 +42,15 @@ export function SettingsForm({
         ]}
       />
       <Switch name="notifyHostByEmail" label="Email me when someone books" defaultChecked={initial.notifyHostByEmail} description="Outlook invitations are always sent." />
+      <Input
+        label="Mobile number for text reminders"
+        name="smsPhone"
+        type="tel"
+        autoComplete="tel"
+        defaultValue={initial.smsPhone ?? ""}
+        hint="Used only for booking pages that send agent text reminders. Leave empty to receive none."
+        wrapperClassName="max-w-xs"
+      />
       <SubmitButton>Save preferences</SubmitButton>
     </ActionForm>
   );

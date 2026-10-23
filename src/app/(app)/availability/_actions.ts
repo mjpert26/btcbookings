@@ -8,6 +8,7 @@ import { withUser, type Tx } from "@/server/db/client";
 import type { ActionState } from "@/lib/form-state";
 import { bool, fail, invalid, isUuid, json, ok, str, zodFieldErrors } from "@/server/ui/form";
 import { DEFAULT_WEEKLY, intervalListSchema, SHOW_AS_VALUES, timeZoneSchema, weeklyRulesSchema } from "@/lib/availability";
+import { normalizeE164 } from "@/server/sms/phone";
 
 /** Returns the user's default schedule id, creating it from the standard template if missing. */
 async function ensureDefaultSchedule(tx: Tx, userId: string, timezone: string): Promise<string> {
@@ -85,6 +86,19 @@ const settingsSchema = z.object({
     .transform((v) => (v === "" ? null : v)),
   outlookConflictPolicy: z.enum(["auto_cancel", "flag"]),
   notifyHostByEmail: z.boolean(),
+  smsPhone: z
+    .string()
+    .trim()
+    .max(40)
+    .transform((v, ctx) => {
+      if (!v) return null;
+      const e164 = normalizeE164(v);
+      if (!e164) {
+        ctx.addIssue({ code: "custom", message: "Enter a mobile number such as (555) 123-4567 or +44 20 7946 0958." });
+        return z.NEVER;
+      }
+      return e164;
+    }),
 });
 
 export async function saveSettingsAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
@@ -94,17 +108,19 @@ export async function saveSettingsAction(_prev: ActionState, fd: FormData): Prom
     dailyBookingCap: str(fd, "dailyBookingCap"),
     outlookConflictPolicy: str(fd, "outlookConflictPolicy"),
     notifyHostByEmail: bool(fd, "notifyHostByEmail"),
+    smsPhone: str(fd, "smsPhone"),
   });
   if (!parsed.success) return invalid(parsed.error);
   const s = parsed.data;
   await withUser(user.id, (tx) => tx`
-    insert into app.user_settings (user_id, unavailable_show_as, daily_booking_cap, outlook_conflict_policy, notify_host_by_email)
-    values (${user.id}, ${s.unavailableShowAs}, ${s.dailyBookingCap}, ${s.outlookConflictPolicy}, ${s.notifyHostByEmail})
+    insert into app.user_settings (user_id, unavailable_show_as, daily_booking_cap, outlook_conflict_policy, notify_host_by_email, sms_phone)
+    values (${user.id}, ${s.unavailableShowAs}, ${s.dailyBookingCap}, ${s.outlookConflictPolicy}, ${s.notifyHostByEmail}, ${s.smsPhone})
     on conflict (user_id) do update set
       unavailable_show_as = excluded.unavailable_show_as,
       daily_booking_cap = excluded.daily_booking_cap,
       outlook_conflict_policy = excluded.outlook_conflict_policy,
-      notify_host_by_email = excluded.notify_host_by_email
+      notify_host_by_email = excluded.notify_host_by_email,
+      sms_phone = excluded.sms_phone
   `);
   revalidatePath("/availability");
   return ok("Booking preferences saved.");

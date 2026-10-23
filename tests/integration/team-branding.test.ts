@@ -22,6 +22,7 @@ import { getBookingByToken } from "@/server/booking/manage";
 import { visibleHosts } from "@/components/public/branding";
 import { GET as logoGET } from "@/app/api/public/team-logo/[teamId]/route";
 import { brand } from "@/theme/brand";
+import { partnerNameForEventType } from "@/server/email/partner";
 
 /** Partner page settings and logos: permissions, RLS, audit, the public logo route and rendering data. */
 
@@ -278,5 +279,17 @@ describe("public branding", () => {
 
     expect(await getPartnerBrandingForManageToken("short")).toBeNull();
     expect(await getPartnerBrandingForManageToken(randomBytes(32).toString("base64url"))).toBeNull();
+  });
+});
+
+describe("partner name in notifications", () => {
+  it("uses the branding display name when set and the team name otherwise", async () => {
+    const { eventTypeId, teamId } = await makeTeamEventType(sql);
+    const [team] = await sql<{ name: string }[]>`select name from app.teams where id = ${teamId}`;
+    expect(await partnerNameForEventType(sql, eventTypeId)).toBe(team.name);
+    await sql`update app.teams set page_settings = ${sql.json({ displayName: "Acme Funding" })} where id = ${teamId}`;
+    expect(await partnerNameForEventType(sql, eventTypeId)).toBe("Acme Funding");
+    const owner = await makeUser(sql);
+    expect(await partnerNameForEventType(sql, await makeIndividualEventType(sql, owner.id))).toBeNull();
   });
 });

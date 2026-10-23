@@ -6,6 +6,7 @@ import { loadActiveUser } from "@/server/auth/session";
 import { service } from "@/server/db/client";
 import { rateLimit } from "@/server/http/rate-limit";
 import { ApiError, type Caller } from "@/server/api/context";
+import { logError } from "@/server/errors/log";
 
 /**
  * HTTP plumbing for the REST API (/api/v1). Requests authenticate with an API key
@@ -15,15 +16,6 @@ import { ApiError, type Caller } from "@/server/api/context";
 
 const RATE_LIMIT = 120;
 const MAX_BODY_BYTES = 1_000_000;
-
-export type ErrorReporter = (err: unknown, info: { source: "api" | "mcp"; route: string; method: string }) => void;
-
-let reportError: ErrorReporter = (err) => console.error("[api] unexpected error", (err as Error)?.name ?? "Error");
-
-/** Lets the error log module receive unexpected errors without a hard dependency. */
-export function setApiErrorReporter(fn: ErrorReporter): void {
-  reportError = fn;
-}
 
 export function apiJson(body: unknown, status = 200, headers?: Record<string, string>): NextResponse {
   return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
@@ -104,7 +96,7 @@ export function apiRoute<C = unknown>(handler: Handler<C>, opts: { successStatus
     } catch (err) {
       if (err instanceof ApiError) return apiErrorResponse(err);
       if (err instanceof ZodError) return apiErrorResponse(new ApiError(400, "invalid_request", "The request is invalid."));
-      reportError(err, { source: "api", route, method: req.method });
+      await logError(err, { source: "api", route, method: req.method });
       return apiErrorResponse(new ApiError(500, "internal_error", "Something went wrong. The error has been logged."));
     }
   };

@@ -46,6 +46,17 @@ $$;
 
 alter policy audit_log_select on app.audit_log using (app.is_manager());
 
+-- The event_types SELECT policy tests the row's columns directly (20261002700000), so it is
+-- updated here as well.
+alter policy event_types_select on app.event_types using (
+  owner_user_id = app.current_user_id()
+  or app.is_manager()
+  or (team_id is not null and (app.is_team_admin(team_id) or app.is_team_member(team_id)))
+);
+alter policy team_members_select on app.team_members using (
+  user_id = app.current_user_id() or app.is_manager() or app.is_team_admin(team_id) or app.is_team_member(team_id)
+);
+
 -- ---------------------------------------------------------------------------
 -- How a booking was made
 -- ---------------------------------------------------------------------------

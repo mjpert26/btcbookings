@@ -9,8 +9,9 @@ import { withUser } from "@/server/db/client";
 import { writeAudit } from "@/server/audit";
 import type { ActionState } from "@/lib/form-state";
 import { fail, ok, requestIpHash, str } from "@/server/ui/form";
+import { ROLE_LABEL, ROLES } from "@/lib/permissions";
 
-const schema = z.object({ userId: z.string().uuid(), role: z.enum(["user", "admin"]) });
+const schema = z.object({ userId: z.string().uuid(), role: z.enum(ROLES) });
 
 /**
  * Promotes or demotes a user. Demoting the last active admin is refused, which also stops
@@ -29,22 +30,22 @@ export async function setRoleAction(_prev: ActionState, fd: FormData): Promise<A
     const admins = await tx<{ id: string }[]>`select id from app.users where role = 'admin' and is_active for update`;
     const [target] = await tx<{ id: string; email: string; role: string; name: string }[]>`select id, email, role, name from app.users where id = ${userId}`;
     if (!target) return { error: "User not found." };
-    if (target.role === role) return { message: `${target.name} is already ${role === "admin" ? "an admin" : "a standard user"}.` };
-    if (role === "user" && admins.filter((a) => a.id !== userId).length === 0) {
+    if (target.role === role) return { message: `${target.name} is already ${role === "admin" ? "an admin" : `a ${ROLE_LABEL[role].toLowerCase()}`}.` };
+    if (target.role === "admin" && role !== "admin" && admins.filter((a) => a.id !== userId).length === 0) {
       return { error: userId === user.id ? "You are the last admin. Promote someone else before demoting yourself." : "At least one admin must remain." };
     }
     await tx`update app.users set role = ${role} where id = ${userId}`;
-    if (role === "user") await tx`delete from app.admin_seeds where email = ${target.email}`;
+    if (target.role === "admin" && role !== "admin") await tx`delete from app.admin_seeds where email = ${target.email}`;
     await writeAudit(tx, {
       actorUserId: user.id,
-      action: role === "admin" ? "user.promote_admin" : "user.demote_admin",
+      action: role === "admin" ? "user.promote_admin" : target.role === "admin" ? "user.demote_admin" : "user.role_change",
       entityType: "user",
       entityId: userId,
       before: { role: target.role },
       after: { role },
       ipHash,
     });
-    return { message: role === "admin" ? `${target.name} is now an admin.` : `${target.name} is now a standard user.` };
+    return { message: role === "admin" ? `${target.name} is now an admin.` : `${target.name} is now a ${ROLE_LABEL[role].toLowerCase()}.` };
   });
   if ("error" in res) return fail(res.error ?? "Could not change the role.");
   revalidatePath("/admin/users");

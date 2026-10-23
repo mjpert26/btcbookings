@@ -26,8 +26,28 @@ const securityHeaders = [
   },
 ];
 
+// The MCP server answers at "<MCP_BASE_URL>/mcp" (for example https://mcp.bigthinkcapital.com/mcp)
+// and also at "<APP_BASE_URL>/mcp".
+function mcpHost(): string | null {
+  try {
+    return process.env.MCP_BASE_URL ? new URL(process.env.MCP_BASE_URL).host : null;
+  } catch {
+    return null;
+  }
+}
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  async rewrites() {
+    return { beforeFiles: [{ source: "/mcp", destination: "/api/mcp" }], afterFiles: [], fallback: [] };
+  },
+  async redirects() {
+    const host = mcpHost();
+    const app = (process.env.APP_BASE_URL ?? "").replace(/\/+$/, "");
+    if (!host || !app) return [];
+    // A browser opening the MCP host lands on the connection instructions.
+    return [{ source: "/", has: [{ type: "host", value: host }], destination: `${app}/settings/integrations`, permanent: false }];
+  },
   serverExternalPackages: ["postgres"],
   experimental: {
     // The admin Calendly import uploads a JSON snapshot through a server action.

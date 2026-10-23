@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatRelative } from "@/lib/format";
 import { setRoleAction } from "../_actions/users";
+import { ROLE_LABEL } from "@/lib/permissions";
 
 export const metadata: Metadata = { title: "Users" };
 
@@ -33,7 +34,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
 
   return (
     <>
-      <PageHeader title="Users" description="Everyone who has signed in. Role changes are audited; at least one admin must remain." />
+      <PageHeader title="Users" description="Everyone who has signed in or was added. Agents see their own bookings, managers read everything, admins manage everything. Role changes are audited; at least one admin must remain." />
       <form method="get" className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end" aria-label="Search users">
         <Input label="Search" name="q" defaultValue={q} placeholder="Name or email" wrapperClassName="sm:w-80" />
         <Button type="submit" variant="secondary">
@@ -66,7 +67,7 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                   </TD>
                   <TD>
                     <span className="flex flex-wrap items-center gap-1">
-                      {u.role === "admin" ? <Badge tone="navy">Admin</Badge> : <Badge>User</Badge>}
+                      <Badge tone={u.role === "admin" ? "navy" : u.role === "manager" ? "primary" : "neutral"}>{ROLE_LABEL[u.role as keyof typeof ROLE_LABEL] ?? u.role}</Badge>
                       {!u.is_active ? <Badge tone="danger">Inactive</Badge> : null}
                       {u.seeded ? <Badge tone="primary" title="Promoted to admin on every sign-in">Seeded</Badge> : null}
                     </span>
@@ -76,18 +77,19 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                   </TD>
                   <TD>{formatRelative(u.last_login_at)}</TD>
                   <TD>
-                    {u.role === "admin" ? (
-                      lastAdmin ? (
-                        <span className="text-xs text-muted">Last admin</span>
-                      ) : (
-                        <ActionButton action={setRoleAction} hidden={{ userId: u.id, role: "user" }} size="sm" pendingLabel="Saving…">
-                          Make user<span className="sr-only"> {u.name}</span>
-                        </ActionButton>
-                      )
+                    {lastAdmin ? (
+                      <span className="text-xs text-muted">Last admin</span>
                     ) : (
-                      <ActionButton action={setRoleAction} hidden={{ userId: u.id, role: "admin" }} size="sm" variant="subtle" pendingLabel="Saving…">
-                        Make admin<span className="sr-only"> {u.name}</span>
-                      </ActionButton>
+                      <span className="flex flex-wrap gap-1">
+                        {(["user", "manager", "admin"] as const)
+                          .filter((r) => r !== u.role)
+                          .map((r) => (
+                            <ActionButton key={r} action={setRoleAction} hidden={{ userId: u.id, role: r }} size="sm" variant={r === "admin" ? "subtle" : "secondary"} pendingLabel="Saving…">
+                              Make {ROLE_LABEL[r].toLowerCase()}
+                              <span className="sr-only"> {u.name}</span>
+                            </ActionButton>
+                          ))}
+                      </span>
                     )}
                   </TD>
                 </TR>

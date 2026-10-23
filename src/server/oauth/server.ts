@@ -209,16 +209,17 @@ export async function exchangeAuthCode(
 }
 
 export async function refreshTokens(p: { refreshToken: string; clientId: string }, db: Db = service()): Promise<TokenResponse> {
-  return (await (db as ReturnType<typeof service>).begin(async (tx) => {
+  const result = (await (db as ReturnType<typeof service>).begin(async (tx) => {
     const [row] = await tx<{ id: string; user_id: string; client_id: string; scopes: string[]; resource: string | null; family_id: string; revoked: boolean; expired: boolean }[]>`
       select id, user_id, client_id, scopes, resource, family_id, revoked_at is not null as revoked, expires_at < now() as expired
       from app.api_tokens where token_hash = ${sha256Hex(p.refreshToken)} and kind = 'oauth_refresh' for update
     `;
     if (!row || row.client_id !== p.clientId) throw new OAuthError("invalid_grant", "Invalid refresh token.");
+    // A rotated refresh token was presented again: treat the family as compromised. The
+    // revocation must commit, so it is returned rather than thrown inside the transaction.
     if (row.revoked) {
-      // A rotated refresh token was presented again: treat the family as compromised.
       await tx`update app.api_tokens set revoked_at = now() where family_id = ${row.family_id} and revoked_at is null`;
-      throw new OAuthError("invalid_grant", "Refresh token reuse detected; sign in again.");
+      return { reuse: true } as const;
     }
     if (row.expired) throw new OAuthError("invalid_grant", "The refresh token has expired.");
     const [user] = await tx<{ ok: boolean }[]>`select is_active as ok from app.users where id = ${row.user_id}`;
@@ -226,7 +227,9 @@ export async function refreshTokens(p: { refreshToken: string; clientId: string 
     if (!user?.ok || !client?.ok) throw new OAuthError("invalid_grant", "The user or client is no longer active.");
     await tx`update app.api_tokens set revoked_at = now() where id = ${row.id}`;
     return issuePair(tx, { userId: row.user_id, clientId: row.client_id, scope: row.scopes[0] ?? MCP_SCOPE, resource: row.resource ?? mcpResource(), familyId: row.family_id });
-  })) as TokenResponse;
+  })) as TokenResponse | { reuse: true };
+  if ("reuse" in result) throw new OAuthError("invalid_grant", "Refresh token reuse detected; sign in again.");
+  return result;
 }
 
 /** RFC 7009: revokes a token (and, for OAuth tokens, its family). Unknown tokens are ignored. */

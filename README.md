@@ -14,6 +14,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Salesforce and n8n](#salesforce-and-n8n)
 - [Deploying to Vercel](#deploying-to-vercel)
 - [Cron jobs](#cron-jobs)
+- [REST API and MCP server](#rest-api-and-mcp-server)
 - [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
 - [Testing](#testing)
@@ -65,6 +66,7 @@ Every variable is documented in [`.env.example`](.env.example). Summary:
 | Variable | Required | Purpose |
 |---|---|---|
 | `APP_BASE_URL` | yes | Public base URL; used for OAuth redirects, Graph notification URLs and email links |
+| `MCP_BASE_URL` | no | Public origin of the MCP server (for example `https://mcp.bigthinkcapital.com`); defaults to `APP_BASE_URL` |
 | `DATABASE_URL` | yes | Postgres connection (Supabase transaction pooler, port 6543, in production) |
 | `DATABASE_POOL_MAX` | no | Connections per instance (default 5) |
 | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` | yes | Entra app registration |
@@ -124,6 +126,16 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
 | `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows and old job rows |
 
+## REST API and MCP server
+
+AI assistants connect to the MCP server at `https://mcp.bigthinkcapital.com/mcp` (or `<APP_BASE_URL>/mcp`), signing in with Microsoft through OAuth 2.1. Scripts use the REST API at `<APP_BASE_URL>/api/v1` with an API key. Both act as the signed-in user with their role:
+
+- **Agent:** their own bookings and pages.
+- **Manager:** reads everything.
+- **Admin:** manages everything.
+
+Every change is audited with its channel. Users manage their API keys and connected apps under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients under **Admin > Integrations**. For setup (including the mcp.bigthinkcapital.com domain), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
+
 ## Importing from Calendly
 
 **Admin > Import** (`/admin/import`) copies the Calendly organization from a JSON snapshot built by `scripts/calendly-snapshot.py`. The runbook covers pulling the data, building the snapshot, the dry run, going live and keeping in sync: [`docs/calendly-import.md`](docs/calendly-import.md). In short:
@@ -135,7 +147,7 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 
 ## Adding an admin
 
-Admins are global (`users.role = 'admin'`). Any of these works:
+Roles are global: `admin`, `manager` (reads everything, changes nothing that belongs to others) and `user` (shown as Agent). See `src/lib/permissions.ts` and [`docs/api-and-mcp.md`](docs/api-and-mcp.md#roles). To make someone an admin, any of these works:
 
 - Add the email to `ADMIN_EMAILS` in Vercel. It applies at that person's next sign-in.
 - Insert into the seed table (applies at next sign-in): `insert into app.admin_seeds (email) values ('name@bigthinkcapital.com');`

@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/event-types", label: "Event types" },
   { href: "/availability", label: "Availability" },
   { href: "/teams", label: "Teams" },
+  { href: "/settings/integrations", label: "Integrations" },
 ];
 
 function initials(name: string): string {

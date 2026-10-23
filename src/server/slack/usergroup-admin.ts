@@ -102,7 +102,7 @@ function clientOrNull(opts: { client?: SlackClient }): SlackClient | null {
   }
 }
 
-/** Links a Slack user group to a team (one per team). Starts in dry-run mode. */
+/** Links a Slack user group to a team (one per team, one team per group). Starts in dry-run mode. */
 export async function linkUsergroup(
   actorUserId: string,
   teamId: string,
@@ -117,6 +117,10 @@ export async function linkUsergroup(
     if (!t) throw new SlackAdminError("not_found", "Team not found");
     const [dup] = await tx`select id from app.team_slack_usergroups where team_id = ${team}`;
     if (dup) throw new SlackAdminError("duplicate", "This team already has a Slack user group linked");
+    // One team per group (unique usergroup_id), so a removal on one team never takes a rep
+    // out of a group they still belong to through another team.
+    const [taken] = await tx`select id from app.team_slack_usergroups where usergroup_id = ${data.usergroupId}`;
+    if (taken) throw new SlackAdminError("duplicate", "This Slack user group is already linked to another team");
     const h = await checkUsergroupAccess(clientOrNull(opts), data.usergroupId);
     const [row] = await tx<UsergroupConfigRow[]>`
       insert into app.team_slack_usergroups

@@ -342,6 +342,46 @@ describe("queue removal with removal_policy keep_bookings", () => {
     expect(slack.usergroups.get(USERGROUP)).not.toContain("UREPA0001");
     const [host] = await sql`select user_id, active from app.booking_hosts where booking_id = ${bookingId}`;
     expect(host).toEqual({ user_id: f.repA.id, active: true });
+
+    // Adding the rep back resolves their review alert in the same sync, with an audit entry.
+    f.sf.queues.get(QUEUE)!.add(f.sfA);
+    expect((await syncNow(f.admin, f.team, f.sf)).teams).toMatchObject([{ status: "applied" }]);
+    const alerts = await sql<{ id: string; resolved_at: Date | null; detail: Record<string, unknown> }[]>`
+      select id, resolved_at, detail from app.sync_alerts where team_id = ${f.team} and kind = 'removed_member_bookings'
+    `;
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].resolved_at).not.toBeNull();
+    expect(alerts[0].detail).toMatchObject({ autoResolved: true, resolvedReason: "member_reinstated" });
+    const [audit] = await sql`
+      select actor_user_id, via, entity_id, after from app.audit_log where action = 'sync_alert.auto_resolved'
+    `;
+    expect(audit).toMatchObject({ actor_user_id: null, via: "sync", entity_id: alerts[0].id, after: { reason: "member_reinstated" } });
+  });
+
+  it("resolves only the reinstated member's review alert", async () => {
+    const f = await setup("keep_bookings");
+    await syncNow(f.admin, f.team, f.sf);
+    const start = day(5).set({ hour: 16 });
+    for (const rep of [f.repA, f.repB]) {
+      const s = start.plus({ hours: rep === f.repA ? 0 : 1 });
+      await makeBooking(sql, { eventTypeId: f.allPage.id, hosts: [{ userId: rep.id }], start: s.toJSDate(), end: s.plus({ minutes: 30 }).toJSDate() });
+    }
+    // Remove both reps over two syncs (one removal each stays under the safety rail).
+    f.sf.queues.get(QUEUE)!.add(f.sfC);
+    await syncNow(f.admin, f.team, f.sf);
+    f.sf.queues.get(QUEUE)!.delete(f.sfA);
+    await syncNow(f.admin, f.team, f.sf);
+    f.sf.queues.get(QUEUE)!.delete(f.sfB);
+    await syncNow(f.admin, f.team, f.sf);
+    expect(await sql`select 1 from app.sync_alerts where kind = 'removed_member_bookings' and resolved_at is null`).toHaveLength(2);
+
+    f.sf.queues.get(QUEUE)!.add(f.sfA);
+    await syncNow(f.admin, f.team, f.sf);
+    const [memberB] = await sql<{ id: string }[]>`select id from app.team_members where team_id = ${f.team} and email = ${f.repB.email}`;
+    const open = await sql<{ member: string }[]>`
+      select detail ->> 'teamMemberId' as member from app.sync_alerts where kind = 'removed_member_bookings' and resolved_at is null
+    `;
+    expect(open).toEqual([{ member: memberB.id }]);
   });
 });
 

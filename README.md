@@ -97,7 +97,7 @@ Step-by-step instructions: [`docs/entra-setup.md`](docs/entra-setup.md). In shor
 
 ## Slack app
 
-Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel and user group links start in dry-run mode.
+Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel and user group links start in dry-run mode with mode `add only`, which never removes anyone; set the mode to `add and remove` for reps who leave the queue to be taken out. A Slack user group can be linked to one team only.
 
 The manifest now includes `usergroups:read` and `usergroups:write` (for a team's linked Slack user group). An app installed before this change must be updated from the manifest and reinstalled before a user group link is turned live; channel sync keeps working without them. Without `SLACK_BOT_TOKEN`, Slack jobs succeed with a `slack_not_configured` result and change nothing.
 

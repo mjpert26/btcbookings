@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planUsergroupMember, removalProtection, USERGROUP_ID_RE } from "@/server/slack/plan";
+import { dryRunChangedMessage, planUsergroupMember, removalProtection, USERGROUP_ID_RE } from "@/server/slack/plan";
 import { createSlackClient } from "@/server/slack/client";
 import { RetryAfterError } from "@/server/jobs/types";
 import { createFakeSlack } from "../helpers/slack-fake";
@@ -75,5 +75,24 @@ describe("Slack client user group methods", () => {
     await expect(client.usergroupsUsersUpdate("S1111111", [])).resolves.toMatchObject({ ok: false, error: "no_users_provided" });
     fake.force("users.info", { status: 429, headers: { "retry-after": "3" }, body: { ok: false, error: "ratelimited" } });
     await expect(client.usersInfo("U0000001")).rejects.toBeInstanceOf(RetryAfterError);
+  });
+});
+
+describe("dryRunChangedMessage", () => {
+  it("does not claim removals apply when the link is add only", () => {
+    const msg = dryRunChangedMessage("user group", false, "add_only");
+    expect(msg).toContain("add only");
+    expect(msg).toContain("set the mode to add and remove");
+    expect(msg).not.toMatch(/removed from the Slack/);
+  });
+
+  it("says members are added and removed in add-and-remove mode", () => {
+    expect(dryRunChangedMessage("channel", false, "add_and_remove")).toBe(
+      "Dry run is off. Members are now added to and removed from the Slack channel.",
+    );
+  });
+
+  it("says nothing is applied while dry run is on", () => {
+    expect(dryRunChangedMessage("user group", true, "add_and_remove")).toBe("Dry run is on. Changes are recorded but not applied.");
   });
 });

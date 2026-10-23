@@ -19,8 +19,14 @@ import {
  *
  * usergroups.users.update replaces the whole member list, so each run reads the current list
  * with usergroups.users.list and adds or removes only this member, under an advisory lock per
- * user group so that two members' jobs cannot overwrite each other. Running a job twice
- * leaves the group unchanged and only appends to the action log.
+ * user group so that two members' jobs cannot overwrite each other. A user group can be
+ * linked to one team only (unique usergroup_id). Running a job twice leaves the group
+ * unchanged and only appends to the action log.
+ *
+ * The link is read again after the lock is taken, so a job that waited behind another one
+ * uses the current dry-run flag, mode and protected users, and stops if the link was removed.
+ * The locking transaction also holds a key-share lock on the link row until the job is done,
+ * so an unlink waits for a running job instead of removing the row it is about to log against.
  */
 
 export type UsergroupRow = {
@@ -64,10 +70,11 @@ const GROUP_ERRORS: Record<string, string> = {
 const TRANSIENT = new Set(["internal_error", "fatal_error", "service_unavailable", "request_timeout", "invalid_response"]);
 const isTransient = (code: string) => TRANSIENT.has(code) || code.startsWith("http_5");
 
-export async function loadUsergroup(db: Db, teamId: string): Promise<UsergroupRow | null> {
+export async function loadUsergroup(db: Db, teamId: string, opts: { keyShare?: boolean } = {}): Promise<UsergroupRow | null> {
   const [row] = await db<UsergroupRow[]>`
     select id, team_id, usergroup_id, usergroup_handle, mode, dry_run, protected_slack_user_ids, health
     from app.team_slack_usergroups where team_id = ${teamId}
+    ${opts.keyShare ? db`for key share` : db``}
   `;
   return row ?? null;
 }
@@ -113,20 +120,33 @@ export async function syncMemberUsergroup(
   input: { teamId: string; teamMemberId: string },
   opts: SyncOptions = {},
 ): Promise<UsergroupSyncResult> {
-  const cfg = await loadUsergroup(sql, input.teamId);
-  if (!cfg) return { memberState: "no_usergroup", slackUserId: null, usergroupId: null, action: null };
-  return (await sql.begin(async (lockTx) => {
-    await lockTx`select pg_advisory_xact_lock(hashtext(${"slack-usergroup:" + cfg.usergroup_id}))`;
-    try {
-      return await syncUnlocked(sql, client, cfg, input, opts);
-    } catch (err) {
-      if (err instanceof SlackConfigError) {
-        const msg = configErrorMessage(err.code);
-        await setHealth(sql, cfg.id, "error", msg);
+  const noUsergroup: UsergroupSyncResult = { memberState: "no_usergroup", slackUserId: null, usergroupId: null, action: null };
+  // The first read only picks the lock key. If the link was replaced by one for another
+  // group while this job waited, take that group's lock and read again.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const seen = await loadUsergroup(sql, input.teamId);
+    if (!seen) return noUsergroup;
+    const result = (await sql.begin(async (lockTx) => {
+      await lockTx`select pg_advisory_xact_lock(hashtext(${"slack-usergroup:" + seen.usergroup_id}))`;
+      // FOR KEY SHARE does not block the job's own health updates or action log inserts
+      // (made on other connections), but makes an unlink wait until this transaction ends.
+      const cfg = await loadUsergroup(lockTx, input.teamId, { keyShare: true });
+      if (!cfg) return noUsergroup;
+      if (cfg.usergroup_id !== seen.usergroup_id) return null;
+      try {
+        return await syncUnlocked(sql, client, cfg, input, opts);
+      } catch (err) {
+        if (err instanceof SlackConfigError) {
+          const msg = configErrorMessage(err.code);
+          await setHealth(sql, cfg.id, "error", msg);
+        }
+        throw err;
       }
-      throw err;
-    }
-  })) as UsergroupSyncResult;
+    })) as UsergroupSyncResult | null;
+    if (result) return result;
+  }
+  // The link changed twice while waiting; the job is retried later.
+  throw new SlackTransientError(["usergroup_link_changed"]);
 }
 
 async function syncUnlocked(

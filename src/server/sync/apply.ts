@@ -38,7 +38,8 @@ import {
  * - for a removal, the member's upcoming bookings on the team follow removal_policy:
  *   'reassign' enqueues booking_reassign, 'keep_bookings' keeps them and raises a
  *   removed_member_bookings alert listing them for review. Bookings imported from Calendly
- *   are never reassigned (they produce no outbound work) and are always listed for review.
+ *   are never reassigned (they produce no outbound work) and are always listed for review;
+ * - for a reinstatement, that member's open removed_member_bookings alerts are resolved.
  */
 
 export type SyncSource = "poll" | "push";
@@ -461,6 +462,7 @@ async function applyChanges(
       reassignJobs += bookings.reassignJobs;
       reviewBookings += bookings.reviewBookings;
     }
+    if (c.kind === "reinstate") await resolveReviewAlerts(tx, team.id, memberId!, ev.id);
 
     await writeAudit(tx, {
       actorUserId: null,
@@ -539,6 +541,33 @@ async function handleRemovedMemberBookings(
     `;
   }
   return { reassignJobs, reviewBookings: review.length, bookingIds: review };
+}
+
+/**
+ * A member who is back in the queue hosts their kept bookings again, so their open
+ * removed_member_bookings alerts are resolved (with an audit entry each) in the same
+ * transaction as the reinstatement.
+ */
+async function resolveReviewAlerts(tx: Tx, teamId: string, teamMemberId: string, membershipEventId: string): Promise<void> {
+  const resolved = await tx<{ id: string }[]>`
+    update app.sync_alerts
+    set resolved_at = now(),
+        detail = detail || ${tx.json({ autoResolved: true, resolvedReason: "member_reinstated", resolvedByMembershipEventId: membershipEventId })}
+    where team_id = ${teamId} and kind = ${REVIEW_BOOKINGS_ALERT} and resolved_at is null
+      and detail ->> 'teamMemberId' = ${teamMemberId}
+    returning id
+  `;
+  for (const a of resolved) {
+    await writeAudit(tx, {
+      actorUserId: null,
+      via: "sync",
+      action: "sync_alert.auto_resolved",
+      entityType: "sync_alert",
+      entityId: a.id,
+      before: { resolved: false },
+      after: { resolved: true, kind: REVIEW_BOOKINGS_ALERT, reason: "member_reinstated", teamId, teamMemberId, membershipEventId },
+    });
+  }
 }
 
 /** Inserts an open alert of this kind for the team, or refreshes the detail of the open one. */

@@ -29,7 +29,9 @@ transaction (`src/server/sync/apply.ts`) does all of the following:
    - `keep_bookings`: the bookings stay with the rep.
    - Bookings kept for any reason (keep_bookings, already flagged, or imported from
      Calendly, which never produce outbound work) are listed in a `removed_member_bookings`
-     alert and in **Upcoming bookings to review** on the team's queue sync page.
+     alert and in **Upcoming bookings to review** on the team's queue sync page. If the
+     rep is added back to the queue, the sync resolves their open alerts in the same
+     transaction (audit action `sync_alert.auto_resolved`).
 4. **Slack jobs are queued** through the `app.jobs` outbox for the team's linked channels
    (`slack_membership_sync`) and linked user group (`slack_usergroup_sync`). A team with no
    Slack link gets no Slack jobs.
@@ -61,8 +63,16 @@ time.
   admins can link, edit or unlink it; team admins can see it. Each job reads the group with
   `usergroups.users.list`, adds or removes only that member, and writes the full list back
   with `usergroups.users.update`, under an advisory lock per group so two jobs cannot
-  overwrite each other. Everyone else in the group is left alone. Removing the last member
-  is skipped because Slack does not accept an empty group.
+  overwrite each other. The link is read again after the lock is taken, so a job that waited
+  uses the current dry-run flag, mode and protected users, and stops if the group was
+  unlinked; an unlink waits for a running job to finish. Everyone else in the group is left
+  alone. Removing the last member is skipped because Slack does not accept an empty group.
+  A user group can be linked to one team only, so a removal on one team never takes a rep
+  out of a group they still belong to through another team. (Channels can still be linked
+  to more than one team; a channel shared by two teams follows whichever team changed last.)
+- **Mode:** new channel and user group links default to `add only`, which adds members but
+  never removes anyone. Set the mode to `add and remove` for reps who leave the queue to be
+  taken out.
 - **Never removed:** workspace owners, workspace admins and bot users (including the app's
   own bot) are checked with `users.info` before any channel or user group removal, plus
   each link's protected user list. If Slack cannot confirm a user, nothing is removed.
@@ -98,12 +108,28 @@ repeat count; rows not seen for 30 days are purged by the queue sync health cron
 
 ## Rollout
 
-1. Apply migration `20261023090000_sync_chain.sql`. It adds tables only; nothing changes
-   for existing teams until a user group is linked.
+1. Apply migration `20261023090000_sync_chain.sql`. Besides the new tables, it changes
+   behaviour for existing teams as soon as it is deployed:
+   - `app.enqueue_membership_slack_sync()` queues Slack jobs only for teams with a Slack
+     channel or user group linked. Admin roster changes on teams without a Slack link no
+     longer queue (no-op) Slack jobs.
+   - `app.enqueue_member_reassignments()` also reassigns bookings where the paused rep is a
+     collective (non-primary) host, for an admin pause or a queue removal under removal
+     policy `reassign`. For those bookings this means Graph calendar delete and update jobs
+     and cancelled host reminders. Bookings imported from Calendly are skipped.
+   The same deploy also changes the Slack jobs: without `SLACK_BOT_TOKEN` they succeed with
+   `slack_not_configured` instead of failing, and every channel kick (and user group
+   removal) is preceded by one `users.info` call so that workspace owners, admins and bots
+   are never removed.
 2. Update the Slack app from `slack/manifest.yml` and reinstall it so the token has the
    `usergroups:*` scopes.
-3. For each partner team: link its Salesforce Queue, link its channel and user group, review
-   the dry-run actions, then turn dry run off.
+3. For each partner team: link its Salesforce Queue, then link its channel and user group.
+   Each user group can be linked to one team only.
+4. Review the dry-run actions (`would_do`) for the channel and the user group.
+5. Links default to mode `add only`, which never removes anyone. Where reps who leave the
+   queue should be taken out of the channel or user group, set the mode to
+   `add and remove`.
+6. Turn dry run off.
 
 ## Tests
 

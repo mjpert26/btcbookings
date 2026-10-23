@@ -230,3 +230,13 @@ export function planUsergroupMember(
 
 /** Slack user group ids. Matches the DB check constraint. */
 export const USERGROUP_ID_RE = /^S[A-Z0-9]{6,}$/;
+
+/**
+ * The confirmation shown after an admin turns dry run on or off for a channel or user group.
+ * In add-only mode only additions apply; removed members stay until the mode is changed.
+ */
+export function dryRunChangedMessage(target: "channel" | "user group", dryRun: boolean, mode: SlackMode): string {
+  if (dryRun) return "Dry run is on. Changes are recorded but not applied.";
+  if (mode === "add_and_remove") return `Dry run is off. Members are now added to and removed from the Slack ${target}.`;
+  return `Dry run is off. New members are now added to the Slack ${target}. The mode is add only, so members who leave the team stay in the ${target} until you set the mode to add and remove.`;
+}

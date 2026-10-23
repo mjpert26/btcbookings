@@ -3,7 +3,9 @@
 -- 1. app.team_slack_usergroups: an optional Slack user group per team. Its membership
 --    follows the team roster the same way linked channels do. New links start in dry-run
 --    mode, so linking a group never changes Slack until an admin turns dry run off.
---    Team admins can read the link; only global admins can write it.
+--    Team admins can read the link; only global admins can write it. A user group belongs to
+--    one partner team, so usergroup_id is unique: removing a rep from one team's queue can
+--    never take them out of a group they still belong to through another team.
 -- 2. app.slack_usergroup_actions: per-member log of what the user group sync did (or, in dry
 --    run, would have done). Written only by the job worker (service role).
 -- 3. app.queue_sync_runs: one row per team per applied, blocked, skipped or failed queue
@@ -24,7 +26,7 @@
 create table app.team_slack_usergroups (
   id uuid primary key default gen_random_uuid(),
   team_id uuid not null unique references app.teams (id) on delete cascade,
-  usergroup_id text not null check (usergroup_id ~ '^S[A-Z0-9]{6,}$'),
+  usergroup_id text not null unique check (usergroup_id ~ '^S[A-Z0-9]{6,}$'),
   usergroup_handle text,
   mode app.slack_mode not null default 'add_only',
   dry_run boolean not null default true,

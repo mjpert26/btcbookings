@@ -128,17 +128,22 @@ the same way as its channels. Slack user groups need a Standard plan or above.
    with `S`).
 2. On **Admin > Teams > (team) > Slack**, under **Slack user group**, enter the id, an
    optional handle for display, the mode and any protected user ids. Only global admins can
-   do this. The app reads the group once with `usergroups.users.list` to check access.
+   do this. The app reads the group once with `usergroups.users.list` to check access. A
+   user group can be linked to one team only.
 3. **The link starts in dry-run mode.** Membership changes record `would_do` actions and
    make no `usergroups.users.update` calls. Review **Recent user group actions**.
-4. Turn dry run off when the actions look right. Optionally run **Full resync** to queue a
+4. **Check the mode.** The mode defaults to `add only`, which never removes anyone. To take
+   reps who leave the partner's queue out of the group, set the mode to `add and remove`.
+5. Turn dry run off when the actions look right. Optionally run **Full resync** to queue a
    sync for every team member.
 
 Rules: active members are added; in `add and remove` mode paused and removed members are
 taken out. Only team members are ever added or removed; everyone else in the group stays.
 Protected users, workspace owners and admins, and bots are never removed. Slack does not
 allow an empty user group, so removing the last member is skipped (disable the group in
-Slack instead).
+Slack instead). Each job reads the link again after it takes the group's lock, so a change
+to dry run, mode or protected users applies to jobs that are already waiting. Unlinking
+waits for a job that is running on the group to finish.
 
 Workspace owners can restrict who may create and change user groups in the workspace
 permission settings (check the current menu names in Slack's help centre). If the app is

@@ -16,6 +16,7 @@ import type { ActionState } from "@/lib/form-state";
 import { bool, fail, invalid, isUuid, ok, str } from "@/server/ui/form";
 import { adminError, audited } from "@/server/ui/admin";
 import { SLACK_CHANNEL_RE, SLACK_USER_RE, SLACK_USERGROUP_RE } from "@/lib/ids";
+import { dryRunChangedMessage, type SlackMode } from "@/server/slack/plan";
 
 /**
  * Admin actions for Slack channel sync. Each action parses the form and delegates to
@@ -91,13 +92,14 @@ export async function setDryRunAction(configId: string, _prev: ActionState, fd: 
   const user = await requireAdmin();
   if (!isUuid(configId)) return fail("Channel not found.");
   const dryRun = bool(fd, "dryRun");
+  let mode: SlackMode;
   try {
-    await audited(() => setDryRun(user.id, configId, dryRun));
+    mode = (await audited(() => setDryRun(user.id, configId, dryRun))).mode;
   } catch (err) {
     return adminError(err);
   }
   revalidatePath(SLACK_PAGE, "page");
-  return ok(dryRun ? "Dry run is on. Changes are recorded but not applied." : "Dry run is off. Membership changes now apply to the Slack channel.");
+  return ok(dryRunChangedMessage("channel", dryRun, mode));
 }
 
 export async function removeChannelAction(configId: string): Promise<ActionState> {
@@ -190,13 +192,14 @@ export async function setUsergroupDryRunAction(configId: string, _prev: ActionSt
   const user = await requireAdmin();
   if (!isUuid(configId)) return fail("User group link not found.");
   const dryRun = bool(fd, "dryRun");
+  let mode: SlackMode;
   try {
-    await audited(() => setUsergroupDryRun(user.id, configId, dryRun));
+    mode = (await audited(() => setUsergroupDryRun(user.id, configId, dryRun))).mode;
   } catch (err) {
     return adminError(err);
   }
   revalidatePath(SLACK_PAGE, "page");
-  return ok(dryRun ? "Dry run is on. Changes are recorded but not applied." : "Dry run is off. Membership changes now apply to the Slack user group.");
+  return ok(dryRunChangedMessage("user group", dryRun, mode));
 }
 
 export async function unlinkUsergroupAction(configId: string): Promise<ActionState> {

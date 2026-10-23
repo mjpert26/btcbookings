@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { createWebhookAction, rotateWebhookSecretAction, type SecretState } from "../_actions/webhooks";
+import { createWebhookAction, rotateWebhookSecretAction, type SecretState } from "../../_actions/webhooks";
 
 const IDLE: SecretState = { status: "idle" };
 

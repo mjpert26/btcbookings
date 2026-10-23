@@ -10,7 +10,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { ActionButton } from "@/components/app/ActionButton";
 import { ConfirmAction } from "@/components/app/ConfirmAction";
 import { formatDateTime } from "@/lib/format";
-import { deleteWebhookAction, testWebhookAction, toggleWebhookAction } from "../_actions/webhooks";
+import { deleteWebhookAction, testWebhookAction, toggleWebhookAction } from "../../_actions/webhooks";
 import { NewWebhookForm, RotateSecretButton } from "./SecretForms";
 
 export const metadata: Metadata = { title: "Webhooks" };

@@ -99,7 +99,8 @@
       "bookAgain": "Agendar otro horario",
       "reschedule": "Reprogramar",
       "cancel": "Cancelar reunión",
-      "hostPhotoAlt": "Foto de {name}"
+      "hostPhotoAlt": "Foto de {name}",
+      "hostPhotoAltGeneric": "Foto de su anfitrión"
     },
     "manage": {
       "cancelHeading": "Cancelar esta reunión",

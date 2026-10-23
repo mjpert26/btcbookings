@@ -7,11 +7,14 @@ import { formatWhen } from "@/server/email/format";
 import { PublicShell } from "./PublicShell";
 import { ManageBooking } from "./ManageBooking";
 import { Avatar, Card, IconClock, IconLocation } from "./bits";
+import { getPartnerBrandingForManageToken } from "@/server/teams/branding";
+import { visibleHosts } from "./branding";
 
 /** /b/[token]: confirmation, status and self-service for one booking. */
 export async function BookingPage(props: { token: string; isNew: boolean; updated: boolean }) {
-  const view = await getBookingByToken(props.token);
+  const [view, partner] = await Promise.all([getBookingByToken(props.token), getPartnerBrandingForManageToken(props.token)]);
   if (!view) notFound();
+  const hosts = visibleHosts(view.hosts, partner);
   const locale = view.language;
   const t = await getTranslations({ locale, namespace: "booking" });
   const tp = await getTranslations({ locale, namespace: "public" });
@@ -39,12 +42,12 @@ export async function BookingPage(props: { token: string; isNew: boolean; update
     start,
     end,
     location: view.locationType === "teams" ? view.onlineMeetingUrl ?? where : [where, view.locationDetail].filter(Boolean).join(": "),
-    description: view.hosts.map((h) => h.name).join(", "),
+    description: hosts.flatMap((h) => (h.name ? [h.name] : [])).join(", "),
   };
   const live = view.status === "confirmed" && !view.isPast;
 
   return (
-    <PublicShell locale={locale}>
+    <PublicShell locale={locale} partner={partner}>
       <Card className="mx-auto max-w-2xl p-6 sm:p-8">
         <div className="mb-6 flex items-start gap-3">
           {state.tone === "success" ? (
@@ -75,15 +78,22 @@ export async function BookingPage(props: { token: string; isNew: boolean; update
               <p className="text-sm text-muted">{t("confirm.timezone", { tz: `${when.zoneName} (${view.inviteeTimezone.replace(/_/g, " ")})` })}</p>
             </dd>
           </div>
-          {view.hosts.length ? (
+          {hosts.length ? (
             <div>
               <dt className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">{t("confirm.with")}</dt>
               <dd>
                 <ul className="flex flex-wrap gap-4">
-                  {view.hosts.map((h) => (
-                    <li key={h.name} className="flex items-center gap-2">
-                      <Avatar name={h.name} photoUrl={h.photoUrl} size={40} alt={t("confirm.hostPhotoAlt", { name: h.name })} />
-                      <span className="font-medium">{h.name}</span>
+                  {hosts.map((h, i) => (
+                    <li key={h.name ?? `host-${i}`} className="flex items-center gap-2">
+                      {h.showAvatar ? (
+                        <Avatar
+                          name={h.name ?? ""}
+                          photoUrl={h.photoUrl}
+                          size={40}
+                          alt={h.name ? t("confirm.hostPhotoAlt", { name: h.name }) : t("confirm.hostPhotoAltGeneric")}
+                        />
+                      ) : null}
+                      {h.name ? <span className="font-medium">{h.name}</span> : null}
                     </li>
                   ))}
                 </ul>

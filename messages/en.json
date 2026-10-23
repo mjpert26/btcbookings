@@ -99,7 +99,8 @@
       "bookAgain": "Book another time",
       "reschedule": "Reschedule",
       "cancel": "Cancel meeting",
-      "hostPhotoAlt": "Photo of {name}"
+      "hostPhotoAlt": "Photo of {name}",
+      "hostPhotoAltGeneric": "Photo of your host"
     },
     "manage": {
       "cancelHeading": "Cancel this meeting",

@@ -97,6 +97,7 @@ Create an API key under **Settings > Integrations** and send it as `Authorizatio
 | `POST /teams/{id}/members`, `DELETE /teams/{id}/members/{memberId}` | Add or remove a member |
 | `GET /users`, `POST /users`, `PATCH /users/{id}` | Directory; add a user (admin); change a user (admin) |
 | `GET /audit` | Audit log (manager, admin) |
+| `POST /import/calendly?apply=true` | Run the Calendly import from a snapshot body, up to 4 MB (admin). Dry run unless `apply=true`; a refused run returns 409. |
 
 Example: schedule a meeting.
 

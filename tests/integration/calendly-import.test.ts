@@ -8,6 +8,8 @@ import { enqueue } from "@/server/jobs/queue";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
 import { completeLogin } from "@/server/auth/login";
 import { withUser } from "@/server/db/client";
+import { createApiKey } from "@/server/oauth/server";
+import { POST as importPOST } from "@/app/api/v1/import/calendly/route";
 
 let sql: Sql;
 beforeAll(() => {
@@ -471,5 +473,41 @@ describe("Calendly import", () => {
     const r = await importCalendly(snap, { apply: true, actorUserId: null, now: NOW });
     expect(r.bookings.created).toBe(3);
     expect(r.warnings.some((w) => w.includes("more than once"))).toBe(true);
+  });
+});
+
+describe("Calendly import endpoint", () => {
+  const post = (token: string, body: unknown, apply = false) =>
+    importPOST(
+      new Request(`http://localhost:3000/api/v1/import/calendly${apply ? "?apply=true" : ""}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      {} as never,
+    );
+
+  it("lets admins dry-run and apply, refuses agents, and reports refusals as 409", async () => {
+    const agent = await makeUser(sql, { email: "agent@bigthinkcapital.com", role: "user" });
+    const admin = await makeUser(sql, { email: "admin@bigthinkcapital.com", role: "admin" });
+    const agentKey = (await createApiKey(agent.id, "a")).key;
+    const adminKey = (await createApiKey(admin.id, "b")).key;
+    const snap = snapshot();
+
+    expect((await post(agentKey, snap)).status).toBe(403);
+    expect((await post(adminKey, { nope: true })).status).toBe(400);
+
+    const dry = await post(adminKey, snap);
+    expect(dry.status).toBe(200);
+    const dryBody = (await dry.json()) as { data: { applied: boolean; users: { created: number } } };
+    expect(dryBody.data).toMatchObject({ applied: false, users: { created: 3 } });
+    expect(await count(sql`select count(*)::int as n from app.event_types`)).toBe(0);
+
+    expect((await post(adminKey, snapshot({ placeholder: true }), true)).status).toBe(409);
+
+    const applied = await post(adminKey, snap, true);
+    expect(applied.status).toBe(200);
+    expect(((await applied.json()) as { data: { applied: boolean } }).data.applied).toBe(true);
+    expect(await count(sql`select count(*)::int as n from app.event_types where import_source = 'calendly'`)).toBe(4);
   });
 });

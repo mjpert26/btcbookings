@@ -144,6 +144,14 @@ export function openApiDocument() {
         patch: { summary: "Change name, role or active state (admins)", parameters: [idParam("id", "User")], requestBody: json(updateUserSchema), responses: { "200": ok("User"), ...errors } },
       },
       "/audit": { get: { summary: "Audit log (managers and admins)", parameters: queryParams(listAuditSchema), responses: { "200": ok("Entries"), ...errors } } },
+      "/import/calendly": {
+        post: {
+          summary: "Run the Calendly import from a snapshot (admins). Dry run unless apply=true.",
+          parameters: [{ name: "apply", in: "query", required: false, schema: { type: "boolean" } }],
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", description: "Snapshot produced by scripts/calendly-snapshot.py" } } } },
+          responses: { "200": ok("Import report"), "413": { $ref: "#/components/responses/Error" }, ...errors },
+        },
+      },
     },
   };
 }

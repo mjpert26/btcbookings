@@ -72,6 +72,24 @@ describe("first login", () => {
     expect(audit.before).toEqual({ email: "jdoe@bigthinkcapital.com" });
   });
 
+  it("links an imported account by display name when its derived email is wrong, only if the name is unique", async () => {
+    const imported = await makeUser(sql, { email: "chris.henao@bigthinkcapital.com", name: "Christopher Henao", calendar: null });
+    await sql`update app.users set import_source = 'calendly', import_ref = 'https://api.calendly.com/users/x' where id = ${imported.id}`;
+    const id = await completeLogin({ ...claims("christopher.henao@bigthinkcapital.com"), name: "Christopher Henao" }, tokens());
+    expect(id).toBe(imported.id);
+    const [audit] = await sql`select after from app.audit_log where action = 'user.linked' and entity_id = ${id}`;
+    expect(audit.after.linkedBy).toBe("name");
+
+    // Two unlinked imported accounts with the same name: no guess, a new account is created.
+    for (const e of ["sam.smith1@bigthinkcapital.com", "sam.smith2@bigthinkcapital.com"]) {
+      const u = await makeUser(sql, { email: e, name: "Sam Smith", calendar: null });
+      await sql`update app.users set import_source = 'calendly', import_ref = ${e} where id = ${u.id}`;
+    }
+    const other = await completeLogin({ ...claims("samuel.smith@bigthinkcapital.com"), name: "Sam Smith" }, tokens());
+    const [row] = await sql`select import_source from app.users where id = ${other}`;
+    expect(row.import_source).toBeNull();
+  });
+
   it("prefers the mail match and never links by user principal name to an account linked elsewhere", async () => {
     // Another person's linked account happens to use this user's UPN as its email.
     const other = await makeUser(sql, { email: "jdoe@bigthinkcapital.com" });

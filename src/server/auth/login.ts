@@ -40,13 +40,29 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
     // account, and a mail address match always wins.
     const upn = claims.preferredUsername.toLowerCase();
     const alias = upn.includes("@") && upn !== email ? upn : null;
-    const [existing] = await tx<{ id: string; email: string; role: "user" | "admin" | "manager"; entra_oid: string | null; is_active: boolean }[]>`
+    type Row = { id: string; email: string; role: "user" | "admin" | "manager"; entra_oid: string | null; is_active: boolean };
+    let [existing] = await tx<Row[]>`
       select id, email::text as email, role, entra_oid, is_active from app.users
       where entra_oid = ${claims.oid} or email = ${email}::citext
          or (${alias}::citext is not null and email = ${alias}::citext and entra_oid is null)
       order by (entra_oid = ${claims.oid}) is true desc, (email = ${email}::citext) desc
       limit 1
     `;
+    let linkedBy: "email" | "name" = "email";
+    if (!existing && claims.name.trim()) {
+      // Imported Calendly accounts may carry a derived email that differs from the real one.
+      // Link by display name, but only when exactly one unlinked imported account has it.
+      const byName = await tx<Row[]>`
+        select id, email::text as email, role, entra_oid, is_active from app.users
+        where entra_oid is null and import_source = 'calendly' and last_login_at is null
+          and lower(btrim(name)) = lower(btrim(${claims.name}))
+        limit 2
+      `;
+      if (byName.length === 1) {
+        existing = byName[0];
+        linkedBy = "name";
+      }
+    }
     if (existing && !existing.is_active) {
       throw new LoginRejected("This account has been deactivated. Contact an admin.");
     }
@@ -73,7 +89,7 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
           entityType: "user",
           entityId: userId,
           before: { email: existing.email },
-          after: { email, entra_oid: claims.oid },
+          after: { email, entra_oid: claims.oid, linkedBy },
         });
       }
       if (shouldBeAdmin && existing.role !== "admin") {

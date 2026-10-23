@@ -50,11 +50,11 @@ export async function apiCaller(req: Request): Promise<Caller | null> {
   return { user, via: "api", tokenId: t.tokenId, clientId: null };
 }
 
-export async function readJsonBody(req: Request): Promise<unknown> {
+export async function readJsonBody(req: Request, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   const len = Number(req.headers.get("content-length") ?? "0");
-  if (len > MAX_BODY_BYTES) throw new ApiError(413, "payload_too_large", "The request body is too large.");
+  if (len > maxBytes) throw new ApiError(413, "payload_too_large", "The request body is too large.");
   const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw new ApiError(413, "payload_too_large", "The request body is too large.");
+  if (text.length > maxBytes) throw new ApiError(413, "payload_too_large", "The request body is too large.");
   if (!text.trim()) return {};
   try {
     return JSON.parse(text);

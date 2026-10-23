@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
-import { futureSlot, invitee, makeEvent, makeHost } from "../helpers/booking-flow-fixtures";
+import { futureSlot, invitee, makeEvent, makeHost, makeTeam } from "../helpers/booking-flow-fixtures";
+import { reassignBooking } from "@/server/booking/jobs";
+import { loadAuditPage } from "@/server/audit-log";
 import { withUser, type Sql } from "@/server/db/client";
 import type { SessionUser } from "@/server/auth/session";
 import { createBooking } from "@/server/booking/create";
@@ -11,7 +15,7 @@ import { encryptSecret } from "@/server/crypto/aes";
 import { PermanentJobError } from "@/server/jobs/types";
 import { handleWebhookDeliver, handleWebhookDispatch } from "@/server/webhooks/jobs";
 import { signatureFor } from "@/server/webhooks/sign";
-import { createWebhook, deleteWebhook, sendTestWebhook, WebhookError } from "@/server/webhooks/admin";
+import { auditUrl, createWebhook, deleteWebhook, sendTestWebhook, updateWebhook, WebhookError } from "@/server/webhooks/admin";
 
 let sql: Sql;
 beforeAll(() => {
@@ -96,6 +100,43 @@ describe("webhook events", () => {
       ]),
     );
     expect(events).toHaveLength(3);
+  });
+
+  it("sends booking.reassigned only when a reassignment moves the booking, once per move", async () => {
+    await endpoint({ events: ["booking.reassigned"] });
+    const a = await makeHost(sql, { name: "Agent A" });
+    const b = await makeHost(sql, { name: "Agent B" });
+    const team = await makeTeam(sql, [a.id, b.id]);
+    const ev = await makeEvent(sql, { teamId: team.id }, { minNotice: 0 });
+    const owner = { kind: "team" as const, slug: team.slug };
+    const reassigned = async () => (await dispatchJobs()).filter((j) => j.payload.event === "booking.reassigned");
+    const hostOfBooking = async (id: string) =>
+      (await sql<{ user_id: string }[]>`select user_id from app.booking_hosts where booking_id = ${id} and active`)[0].user_id;
+    const pauseOnly = async (userId: string) => {
+      await sql`update app.team_members set status = case when user_id = ${userId} then 'paused'::app.member_status else 'active'::app.member_status end`;
+    };
+
+    // Both members booked at the same time: nobody is free, the booking is flagged, no event.
+    const start = futureSlot(3, 13);
+    const busy = await createBooking({ owner, eventSlug: ev.slug, language: "en", start, durationMin: 30, ...invitee() });
+    await createBooking({ owner, eventSlug: ev.slug, language: "en", start, durationMin: 30, ...invitee() });
+    const busyHost = await hostOfBooking(busy.bookingId);
+    await pauseOnly(busyHost);
+    expect(await reassignBooking({ bookingId: busy.bookingId, fromUserId: busyHost, reason: "paused" })).toEqual({ result: { flagged: "no eligible host is free" } });
+    expect(await reassigned()).toHaveLength(0);
+
+    // X to Y, Y back to X, X to Y again: one event per move, including the second move away from X.
+    const moving = await createBooking({ owner, eventSlug: ev.slug, language: "en", start: futureSlot(4, 13), durationMin: 30, ...invitee() });
+    const x = await hostOfBooking(moving.bookingId);
+    const y = x === a.id ? b.id : a.id;
+    for (const [from, to] of [[x, y], [y, x], [x, y]]) {
+      await pauseOnly(from);
+      expect(await reassignBooking({ bookingId: moving.bookingId, fromUserId: from, reason: "removed_from_queue" })).toEqual({ result: { reassignedTo: to } });
+    }
+    const events = await reassigned();
+    expect(events).toHaveLength(3);
+    expect(events.every((j) => j.payload.bookingId === moving.bookingId)).toBe(true);
+    expect(new Set(events.map((j) => j.idempotency_key)).size).toBe(3);
   });
 
   it("dispatches to matching endpoints only and delivers a signed payload", async () => {
@@ -192,5 +233,69 @@ describe("webhook administration", () => {
     await deleteWebhook(session(admin.id, "admin"), id);
     expect(await sql`select 1 from app.webhook_endpoints`).toHaveLength(0);
     expect((await sql<{ action: string }[]>`select action from app.audit_log order by created_at`).map((r) => r.action)).toEqual(["webhook.create", "webhook.test", "webhook.delete"]);
+  });
+
+  it("writes the test delivery, its job and its audit entry in one transaction, for admins only", async () => {
+    const admin = await makeUser(sql, { role: "admin" });
+    const manager = await makeUser(sql, { role: "manager" });
+    const id = await endpoint();
+    await expect(sendTestWebhook(session(manager.id, "manager"), id)).rejects.toThrow("Admin access required.");
+    await expect(sendTestWebhook(session(admin.id, "admin"), randomUUID())).rejects.toThrow("Webhook not found.");
+    expect(await sql`select 1 from app.webhook_deliveries`).toHaveLength(0);
+    expect(await sql`select 1 from app.audit_log`).toHaveLength(0);
+
+    await sendTestWebhook(session(admin.id, "admin"), id);
+    const [d] = await sql<{ created_at: Date }[]>`select created_at from app.webhook_deliveries`;
+    const [j] = await sql<{ created_at: Date }[]>`select created_at from app.jobs where kind = 'webhook_deliver'`;
+    const [a] = await sql<{ created_at: Date; actor_user_id: string; entity_id: string }[]>`
+      select created_at, actor_user_id, entity_id from app.audit_log where action = 'webhook.test'
+    `;
+    expect(a).toMatchObject({ actor_user_id: admin.id, entity_id: id });
+    // now() is the transaction start time, so equal timestamps mean one transaction.
+    expect(a.created_at.getTime()).toBe(d.created_at.getTime());
+    expect(j.created_at.getTime()).toBe(d.created_at.getTime());
+  });
+
+  it("never stores the endpoint URL path in the audit log, which managers can read", async () => {
+    const admin = await makeUser(sql, { role: "admin" });
+    const manager = await makeUser(sql, { role: "manager" });
+    const secretUrl = "https://hooks.zapier.com/hooks/catch/123456/abcSECRETdef/";
+    const { id } = await createWebhook(session(admin.id, "admin"), { url: secretUrl, events: ["booking.created"] });
+    await updateWebhook(session(admin.id, "admin"), id, { url: "https://hooks.zapier.com/hooks/catch/123456/otherSECRET/", events: ["booking.created"], enabled: true });
+    await updateWebhook(session(admin.id, "admin"), id, { url: "https://hooks.zapier.com/hooks/catch/123456/otherSECRET/", events: ["booking.created"], enabled: false });
+    await deleteWebhook(session(admin.id, "admin"), id);
+
+    const page = await loadAuditPage({ id: manager.id, role: "manager" }, { action: "webhook." });
+    expect(page.entries.map((e) => e.action).sort()).toEqual(["webhook.create", "webhook.delete", "webhook.update", "webhook.update"]);
+    const text = JSON.stringify(page.entries);
+    expect(text).not.toContain("SECRET");
+    expect(text).not.toContain("/hooks/catch");
+    expect(text).toContain("https://hooks.zapier.com/…");
+
+    const rows = await sql<{ action: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null }[]>`
+      select action, before, after from app.audit_log order by created_at, id
+    `;
+    expect(rows[0].after).toMatchObject({ url: "https://hooks.zapier.com/…", urlHash: auditUrl(secretUrl).urlHash });
+    // A URL change shows as a hash change; a change of other fields does not mention the URL.
+    const urlChange = rows.find((r) => r.action === "webhook.update" && r.after && "urlHash" in r.after)!;
+    expect(urlChange.before?.urlHash).not.toBe(urlChange.after?.urlHash);
+    const toggle = rows.find((r) => r.action === "webhook.update" && r.after && "enabled" in r.after)!;
+    expect(toggle.after).toEqual({ enabled: false });
+  });
+
+  it("masks webhook URLs in audit entries written before the fix", async () => {
+    const url = "https://hooks.slack.com/services/T000/B000/XXXXSECRET";
+    const [{ id }] = await sql<{ id: string }[]>`
+      insert into app.audit_log (action, entity_type, entity_id, before, after, via)
+      values ('webhook.update', 'webhook_endpoint', ${randomUUID()}, ${sql.json({ url, enabled: true })}, ${sql.json({ url: "https://n8n.example.com/webhook/abc-SECRET?x=1" })}, 'web')
+      returning id
+    `;
+    const file = join(process.cwd(), "supabase/migrations/20261023126000_reassign_webhook_audit_hardening.sql");
+    await sql.unsafe(readFileSync(file, "utf8"));
+    await sql.unsafe(readFileSync(file, "utf8")); // re-running changes nothing
+    const [row] = await sql<{ before: Record<string, unknown>; after: Record<string, unknown> }[]>`select before, after from app.audit_log where id = ${id}`;
+    expect(row.before).toEqual({ ...auditUrl(url), enabled: true });
+    expect(row.after).toEqual(auditUrl("https://n8n.example.com/webhook/abc-SECRET?x=1"));
+    expect(JSON.stringify(row)).not.toContain("SECRET");
   });
 });

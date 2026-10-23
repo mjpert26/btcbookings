@@ -519,13 +519,16 @@ describe("booking_reassign", () => {
     const to = from === a.id ? b.id : a.id;
     await sql`update app.team_members set status = 'paused' where user_id = ${from}`;
     const [bk] = await sql`select id from app.bookings`;
-    const out = await reassignBooking({ bookingId: bk.id, fromUserId: from, reason: "removed from queue" });
+    const rid = "6f1c2a8e-0b7d-4c55-9a43-1d2e3f405162";
+    const out = await reassignBooking({ bookingId: bk.id, fromUserId: from, reason: "removed from queue" }, { reassignId: rid });
     expect(out).toEqual({ result: { reassignedTo: to } });
     expect(await hostOf(r.token)).toEqual([to]);
     const js = await jobs(bk.id);
-    expect(js.some((j) => j.kind === "graph_event_delete" && j.payload.userId === from)).toBe(true);
-    expect(js.some((j) => j.idempotency_key === `${bk.id}:upsert:reassign:${to}`)).toBe(true);
-    expect(js.some((j) => j.idempotency_key === `${bk.id}:rescheduled:reassign:${to}`)).toBe(true);
+    expect(js.some((j) => j.kind === "graph_event_delete" && j.payload.userId === from && j.idempotency_key === `${bk.id}:delete:${from}:${rid}`)).toBe(true);
+    expect(js.some((j) => j.idempotency_key === `${bk.id}:upsert:reassign:${to}:${rid}`)).toBe(true);
+    expect(js.some((j) => j.idempotency_key === `${bk.id}:rescheduled:reassign:${to}:${rid}`)).toBe(true);
+    // Salesforce is not touched by a reassignment (docs/n8n-workflows.md).
+    expect(js.some((j) => j.kind === "sf_lead_create" && j.idempotency_key !== bk.id)).toBe(false);
   });
 
   it("flags the booking when nobody else is free", async () => {
@@ -538,6 +541,7 @@ describe("booking_reassign", () => {
     const r = await createBooking(input(ref, ev.slug, start));
     await createBooking(input(ref, ev.slug, start));
     const from = (await hostOf(r.token))[0];
+    await sql`update app.team_members set status = 'paused' where user_id = ${from}`;
     const [bk] = await sql`select id from app.bookings where manage_token_hash = ${sha256Hex(r.token)}`;
     const out = await reassignBooking({ bookingId: bk.id, fromUserId: from, reason: "paused" });
     expect(out).toEqual({ result: { flagged: "no eligible host is free" } });
@@ -545,5 +549,29 @@ describe("booking_reassign", () => {
     expect(row.status).toBe("flagged");
     expect(row.flagged_reason).toContain("paused");
     expect(await hostOf(r.token)).toEqual([from]);
+    const [host] = await sql`select active, reassigned_at from app.booking_hosts where booking_id = ${bk.id} and user_id = ${from}`;
+    expect(host).toEqual({ active: true, reassigned_at: null });
+  });
+
+  it("does nothing when the member was reinstated before the job ran", async () => {
+    const a = await makeHost(sql);
+    const b = await makeHost(sql);
+    const team = await makeTeam(sql, [a.id, b.id]);
+    const ev = await makeEvent(sql, { teamId: team.id }, { minNotice: 0 });
+    const r = await createBooking(input({ kind: "team", slug: team.slug }, ev.slug, futureSlot(2, 13)));
+    const from = (await hostOf(r.token))[0];
+    // Paused (job queued), then added back to the queue: status is active again.
+    await sql`update app.team_members set status = 'paused' where user_id = ${from}`;
+    await sql`update app.team_members set status = 'active' where user_id = ${from}`;
+    const before = await jobs(r.bookingId);
+    expect(await reassignBooking({ bookingId: r.bookingId, fromUserId: from, reason: "removed from queue" })).toEqual({ result: { skipped: "host_active" } });
+    expect(await hostOf(r.token)).toEqual([from]);
+    expect(await jobs(r.bookingId)).toHaveLength(before.length);
+    const [row] = await sql`select status from app.bookings where id = ${r.bookingId}`;
+    expect(row.status).toBe("confirmed");
+
+    // pending_onboarding counts as back in the queue too.
+    await sql`update app.team_members set status = 'pending_onboarding' where user_id = ${from}`;
+    expect(await reassignBooking({ bookingId: r.bookingId, fromUserId: from, reason: "removed from queue" })).toEqual({ result: { skipped: "host_active" } });
   });
 });

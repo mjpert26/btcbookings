@@ -25,7 +25,11 @@ transaction (`src/server/sync/apply.ts`) does all of the following:
    where the rep is an active host (primary or collective), in the future:
    - `reassign`: each confirmed booking gets a `booking_reassign` job. The job moves it to
      another free member (round-robin), removes the rep from a collective booking, or flags
-     the booking when nobody can take it.
+     the booking when nobody can take it. If the rep is back in the queue (status `active`
+     or `pending_onboarding` on the team) when the job runs, the job does nothing
+     (`result.skipped = "host_active"`) and the booking stays with the rep. A reassignment
+     does not update Salesforce: the Lead keeps its owner (see `docs/n8n-workflows.md`,
+     "Host reassignments").
    - `keep_bookings`: the bookings stay with the rep.
    - Bookings kept for any reason (keep_bookings, already flagged, or imported from
      Calendly, which never produce outbound work) are listed in a `removed_member_bookings`

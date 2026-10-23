@@ -182,6 +182,42 @@ describe("reminder scheduling", () => {
     expect((await jobsFor(res.bookingId)).filter((j) => j.payload.template === "booking_reminder" && j.kind === "email_send").every((j) => j.status === "pending")).toBe(true);
   });
 
+  it("gives a host who gets a booking back new reminders and Outlook jobs on every move", async () => {
+    const a = await makeHost(sql);
+    const b = await makeHost(sql);
+    const team = await makeTeam(sql, [a.id, b.id]);
+    const ev = await makeEvent(sql, { teamId: team.id });
+    await sql`update app.event_types set agent_reminder_channels = '{email,slack,sms}', agent_reminder_offsets_min = '{15}' where id = ${ev.id}`;
+    await sql`insert into app.event_type_questions (event_type_id, key, type, label, position) values (${ev.id}, 'company', 'text', ${sql.json({ en: "Company" })}, 0)`;
+    const res = await book(team, ev);
+    const [{ user_id: x }] = await sql<{ user_id: string }[]>`select user_id from app.booking_hosts where booking_id = ${res.bookingId} and active`;
+    const y = x === a.id ? b.id : a.id;
+
+    const hop = async (from: string, to: string, n: number) => {
+      await sql`update app.team_members set status = 'paused' where user_id = ${from}`;
+      await sql`update app.team_members set status = 'active' where user_id = ${to}`;
+      expect(await reassignBooking({ bookingId: res.bookingId, fromUserId: from, reason: `hop ${n}` }, { reassignId: randomUUID() })).toEqual({
+        result: { reassignedTo: to },
+      });
+      const js = await jobsFor(res.bookingId);
+      const recipientOf = (j: JobRowT) => (j.payload.userId ?? (j.payload.recipient as { userId?: string } | undefined)?.userId) as string | undefined;
+      const pendingFor = (u: string) => js.filter((j) => isReminder(j) && j.status === "pending" && recipientOf(j) === u);
+      // One pending reminder per channel for the current host, none for the previous one.
+      expect(pendingFor(to)).toHaveLength(3);
+      expect(pendingFor(from)).toHaveLength(0);
+      return js;
+    };
+
+    await hop(x, y, 1);
+    await hop(y, x, 2);
+    const js = await hop(x, y, 3);
+    const deletes = js.filter((j) => j.kind === "graph_event_delete");
+    expect(deletes.filter((j) => j.payload.userId === x)).toHaveLength(2);
+    expect(deletes.filter((j) => j.payload.userId === y)).toHaveLength(1);
+    expect(js.filter((j) => j.kind === "graph_event_upsert" && j.idempotency_key.startsWith(`${res.bookingId}:upsert:reassign:${y}:`))).toHaveLength(2);
+    expect(js.filter((j) => j.kind === "email_send" && j.idempotency_key.startsWith(`${res.bookingId}:rescheduled:reassign:`))).toHaveLength(3);
+  });
+
   it("never enqueues reminders for imported bookings", async () => {
     const { host, ev } = await teamSetup();
     const id = randomUUID();

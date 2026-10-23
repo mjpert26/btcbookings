@@ -14,14 +14,18 @@ import { enqueueSfLeadOnReschedule } from "@/server/salesforce/jobs";
  *
  * Idempotency keys (unique per job kind):
  *   graph_event_upsert  <bookingId>:upsert[:<suffix>]
- *   graph_event_delete  <bookingId>:delete:<userId>
+ *   graph_event_delete  <bookingId>:delete:<userId>[:<suffix>]
  *   email_send          <bookingId>:confirmed | :rescheduled[:<suffix>] | :cancelled
  *                       <bookingId>:reminder:<offsetMin>                 (merchant reminder)
- *                       <bookingId>:host_reminder:<userId>:<offsetMin>   (agent reminder)
+ *                       <bookingId>:host_reminder:<userId>:<offsetMin>[:<suffix>]   (agent reminder)
  *                       <bookingId>:host_notice:<event>:<userId>
- *   sms_send            <bookingId>:sms:invitee:<offsetMin> | <bookingId>:sms:<userId>:<offsetMin>
- *   slack_dm_send       <bookingId>:slack_dm:<userId>:<offsetMin>
+ *   sms_send            <bookingId>:sms:invitee:<offsetMin> | <bookingId>:sms:<userId>:<offsetMin>[:<suffix>]
+ *   slack_dm_send       <bookingId>:slack_dm:<userId>:<offsetMin>[:<suffix>]
  *   sf_lead_create      <bookingId> (a new booking, or the new booking of a reschedule)
+ *
+ * A host reassignment (booking/jobs.ts) adds its booking_reassign job id as the suffix to
+ * every key it enqueues (and to the host_notice event), so a booking that returns to a
+ * previous host gets new jobs instead of colliding with that host's earlier, cancelled ones.
  *
  * Every reminder job carries payload.bookingId and booking_id, so the
  * jobs_skip_imported_bookings trigger drops them for imported bookings.
@@ -55,12 +59,14 @@ export async function enqueueGraphDelete(
   db: Db,
   bookingId: string,
   host: { userId: string; graphEventId: string | null },
+  suffix?: string,
 ): Promise<void> {
   const payload: JobPayloads["graph_event_delete"] = { bookingId, userId: host.userId, graphEventId: host.graphEventId };
+  const key = `${bookingId}:delete:${host.userId}`;
   await enqueue(db, {
     kind: "graph_event_delete",
     payload,
-    idempotencyKey: `${bookingId}:delete:${host.userId}`,
+    idempotencyKey: suffix ? `${key}:${suffix}` : key,
     bookingId,
   });
 }
@@ -146,31 +152,35 @@ async function enqueueMerchantSms(db: Db, bookingId: string, startMs: number, of
   }
 }
 
-/** Agent reminders on every enabled channel, for each host and offset. */
+/**
+ * Agent reminders on every enabled channel, for each host and offset. `keySuffix` is
+ * appended to every idempotency key (used by host reassignment).
+ */
 export async function enqueueAgentReminders(
   db: Db,
-  input: { bookingId: string; startMs: number; settings: ReminderSettings; userIds: string[]; now?: number },
+  input: { bookingId: string; startMs: number; settings: ReminderSettings; userIds: string[]; now?: number; keySuffix?: string },
 ): Promise<void> {
   const { bookingId, settings } = input;
   if (!settings.agentChannels.length || !input.userIds.length) return;
   const due = dueOffsets(input.startMs, settings.agentOffsetsMin, input.now ?? Date.now());
+  const sfx = input.keySuffix ? `:${input.keySuffix}` : "";
   for (const userId of [...new Set(input.userIds)]) {
     for (const { offset, runAt } of due) {
       if (settings.agentChannels.includes("email")) {
         await enqueueEmail(
           db,
           { template: "host_booking_reminder", bookingId, recipient: { userId }, offsetMin: offset },
-          `${bookingId}:host_reminder:${userId}:${offset}`,
+          `${bookingId}:host_reminder:${userId}:${offset}${sfx}`,
           runAt,
         );
       }
       if (settings.agentChannels.includes("slack")) {
         const payload: JobPayloads["slack_dm_send"] = { template: "booking_reminder", bookingId, userId, offsetMin: offset };
-        await enqueue(db, { kind: "slack_dm_send", payload, idempotencyKey: `${bookingId}:slack_dm:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+        await enqueue(db, { kind: "slack_dm_send", payload, idempotencyKey: `${bookingId}:slack_dm:${userId}:${offset}${sfx}`, bookingId, runAt, maxAttempts: 5 });
       }
       if (settings.agentChannels.includes("sms")) {
         const payload: JobPayloads["sms_send"] = { template: "booking_reminder", bookingId, recipient: { userId }, offsetMin: offset };
-        await enqueue(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+        await enqueue(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:${userId}:${offset}${sfx}`, bookingId, runAt, maxAttempts: 5 });
       }
     }
   }

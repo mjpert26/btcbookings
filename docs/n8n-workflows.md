@@ -37,6 +37,10 @@ A reschedule, through the invitee's manage link or through the REST API and MCP 
 - A job never overtakes the job of an earlier booking in the same reschedule chain. While that job is running, or waiting for a retry without a Lead, the new job retries every 60 seconds.
 - If the mode changes to `create` after a reschedule job was queued, the job ends with `result.skipped = "reschedule_in_create_mode"`.
 
+### Host reassignments
+
+A host change made by the `booking_reassign` job (queue removal or admin pause on a team with removal policy `reassign`) sends nothing to Salesforce, in every lead mode and owner mode. The Lead's `OwnerId` and its "Meeting Booked" Task stay with the rep who was removed, even with owner mode `assigned_host`. Change the owner in Salesforce if the new rep should own the Lead. A later reschedule of the booking sends the usual update, which moves the Lead to the booking's host at that time (`set_owner`, owner mode `assigned_host` only).
+
 Imported Calendly bookings never produce Salesforce work: the `jobs_skip_imported_bookings` trigger drops every job that carries their booking id, the reschedule rule refuses an imported original, and the handler ignores a job whose booking is imported.
 
 ### Settings and inheritance

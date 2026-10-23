@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { service, type Sql } from "@/server/db/client";
 import { PermanentJobError, type JobHandler, type JobResult } from "@/server/jobs/types";
@@ -48,13 +49,23 @@ const MAX_CANDIDATE_TRIES = 5;
  * The invitee is told about a host change with the booking_rescheduled template (the
  * template set in jobs/kinds.ts is shared and has no "host changed" value); that email
  * shows the unchanged time and the new host.
+ *
+ * The job does nothing when the member is no longer paused on the event type's team (for
+ * example, added back to the queue before the job ran).
+ *
+ * `reassignId` (the booking_reassign job id) is part of every idempotency key the move
+ * enqueues, so a booking that moves back and forth between hosts gets fresh Outlook, email
+ * and reminder jobs on every move. The keys are listed in side-effects.ts.
+ *
+ * Salesforce is not updated: the Lead keeps its owner (docs/n8n-workflows.md).
  */
 export async function reassignBooking(
   payload: z.infer<typeof reassignPayload>,
-  opts: { sql?: Sql; now?: number } = {},
+  opts: { sql?: Sql; now?: number; reassignId?: string } = {},
 ): Promise<JobResult> {
   const sql = opts.sql ?? service();
   const now = opts.now ?? Date.now();
+  const reassignId = opts.reassignId ?? randomUUID();
   const booking = await bookingById(sql, payload.bookingId);
   if (!booking) return { result: { skipped: "booking_not_found" } };
   if (booking.status !== "confirmed" || booking.start_at.getTime() <= now) {
@@ -77,6 +88,14 @@ export async function reassignBooking(
     const hosts = await bookingHosts(tx, booking.id, true);
     const from = hosts.find((h) => h.user_id === payload.fromUserId);
     if (!from) return { result: { skipped: "host_not_assigned" } };
+    // The member may have been reinstated (queue add, push or admin unpause) after the job
+    // was queued. A member with no row on the team is still moved.
+    if (et.team_id) {
+      const [member] = await tx<{ status: string }[]>`
+        select status::text as status from app.team_members where team_id = ${et.team_id} and user_id = ${from.user_id}
+      `;
+      if (member && member.status !== "paused") return { result: { skipped: "host_active" } };
+    }
 
     const flag = async (why: string) => {
       const flaggedReason = `Reassignment needed: ${why} (${payload.reason})`.slice(0, 500);
@@ -105,8 +124,8 @@ export async function reassignBooking(
       if (from.role === "primary") {
         await tx`update app.booking_hosts set role = 'primary' where booking_id = ${booking.id} and user_id = ${remaining[0].user_id}`;
       }
-      await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id });
-      await enqueueGraphUpsert(tx, booking.id, `reassign:${from.user_id}`);
+      await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id }, reassignId);
+      await enqueueGraphUpsert(tx, booking.id, `reassign:${from.user_id}:${reassignId}`);
       await cancelPendingReminders(tx, booking.id, { userId: from.user_id });
       await writeBookingAudit(tx, {
         action: "booking.reassign",
@@ -119,8 +138,9 @@ export async function reassignBooking(
       return { result: { removed: from.user_id } };
     }
 
-    // Round-robin. Deactivate first so the old hold does not count for anyone.
-    await tx`update app.booking_hosts set active = false, reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Round-robin. Deactivate first so the old hold does not count for anyone. reassigned_at,
+    // which sends the booking.reassigned webhook, is set only once another host has the booking.
+    await tx`update app.booking_hosts set active = false where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     const confirmed = await confirmSlot(tx, loaded, {
       startMs,
       durationMin,
@@ -146,16 +166,17 @@ export async function reassignBooking(
         throw err;
       }
       const to = chosen[0];
+      await tx`update app.booking_hosts set reassigned_at = now() where booking_id = ${booking.id} and user_id = ${from.user_id}`;
       await recordRoundRobin(tx, to.teamMemberId);
-      await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id });
-      await enqueueGraphUpsert(tx, booking.id, `reassign:${to.userId}`);
+      await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id }, reassignId);
+      await enqueueGraphUpsert(tx, booking.id, `reassign:${to.userId}:${reassignId}`);
       await enqueue(tx, {
         kind: "email_send",
         payload: { template: "booking_rescheduled", bookingId: booking.id, recipient: "invitee" },
-        idempotencyKey: `${booking.id}:rescheduled:reassign:${to.userId}`,
+        idempotencyKey: `${booking.id}:rescheduled:reassign:${to.userId}:${reassignId}`,
         bookingId: booking.id,
       });
-      await enqueueHostNotices(tx, booking.id, [to.userId], `reassigned`);
+      await enqueueHostNotices(tx, booking.id, [to.userId], `reassigned:${reassignId}`);
       await cancelPendingReminders(tx, booking.id, { userId: from.user_id });
       await enqueueAgentReminders(tx, {
         bookingId: booking.id,
@@ -163,6 +184,7 @@ export async function reassignBooking(
         settings: await loadReminderSettings(tx, booking.id),
         userIds: [to.userId],
         now,
+        keySuffix: reassignId,
       });
       const afterHosts = await hostNames(tx, [to.userId, ...hosts.filter((h) => h.user_id !== from.user_id).map((h) => h.user_id)]);
       await writeBookingAudit(tx, {
@@ -175,9 +197,9 @@ export async function reassignBooking(
       });
       return { result: { reassignedTo: to.userId } };
     }
-    // Nobody free: restore the original host and flag for a human. Clearing reassigned_at
-    // keeps the booking visible to that host (app.can_read_booking).
-    await tx`update app.booking_hosts set active = true, reassigned_at = null where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Nobody free: restore the original host and flag for a human. reassigned_at was never
+    // set, so the host keeps the booking (app.can_read_booking) and no webhook is sent.
+    await tx`update app.booking_hosts set active = true where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     return flag("no eligible host is free");
   }) as Promise<JobResult>;
 }
@@ -187,6 +209,6 @@ export const bookingHandlers: Record<string, JobHandler> = {
   booking_reassign: async (job) => {
     const parsed = reassignPayload.safeParse(job.payload);
     if (!parsed.success) throw new PermanentJobError("Invalid booking_reassign payload");
-    return reassignBooking(parsed.data);
+    return reassignBooking(parsed.data, { reassignId: job.id });
   },
 };

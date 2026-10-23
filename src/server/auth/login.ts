@@ -40,7 +40,7 @@ export async function completeLogin(claims: IdentityClaims, tokens: TokenSet, pr
     // account, and a mail address match always wins.
     const upn = claims.preferredUsername.toLowerCase();
     const alias = upn.includes("@") && upn !== email ? upn : null;
-    const [existing] = await tx<{ id: string; email: string; role: "user" | "admin"; entra_oid: string | null; is_active: boolean }[]>`
+    const [existing] = await tx<{ id: string; email: string; role: "user" | "admin" | "manager"; entra_oid: string | null; is_active: boolean }[]>`
       select id, email::text as email, role, entra_oid, is_active from app.users
       where entra_oid = ${claims.oid} or email = ${email}::citext
          or (${alias}::citext is not null and email = ${alias}::citext and entra_oid is null)

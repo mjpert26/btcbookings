@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { brand } from "@/theme/brand";
 import { cn } from "@/lib/cn";
 
-type NavUser = { name: string; email: string; slug: string; role: "user" | "admin"; photoUrl: string | null };
+type NavUser = { name: string; email: string; slug: string; role: "user" | "admin" | "manager"; photoUrl: string | null };
 
 const LINKS = [
   { href: "/dashboard", label: "Dashboard" },

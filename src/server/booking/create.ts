@@ -62,6 +62,7 @@ async function replayResult(db: Db, bookingId: string, email: string, startMs: n
   }
   const booking = (await bookingById(db, bookingId))!;
   return {
+    bookingId,
     token: decryptSecret(row.manage_token_enc, bookingId),
     view: await buildPublicView(db, booking),
     replayed: true,
@@ -151,6 +152,7 @@ export async function createBooking(input: BookingInput, opts: BookingOptions = 
               tokenHash: issued.hash,
               tokenEnc: issued.encrypted,
               idempotencyKey: idemKey,
+              createdVia: opts.createdVia ?? "public",
             });
             await insertBookingHosts(sp, id, hosts, range);
             for (const a of answers.value.answers) {
@@ -190,7 +192,7 @@ export async function createBooking(input: BookingInput, opts: BookingOptions = 
   }
 
   const booking = (await bookingById(sql, bookingId))!;
-  return { token, view: await buildPublicView(sql, booking), replayed: false };
+  return { bookingId, token, view: await buildPublicView(sql, booking), replayed: false };
 }
 
 export async function insertBooking(
@@ -210,6 +212,7 @@ export async function insertBooking(
     rescheduledFromId?: string | null;
     sfLeadId?: string | null;
     sfLeadStatus?: string | null;
+    createdVia?: "public" | "api" | "mcp" | "reschedule";
   },
 ): Promise<void> {
   const et = loaded.resolved.eventType;
@@ -217,12 +220,12 @@ export async function insertBooking(
     insert into app.bookings (
       id, event_type_id, language, status, start_at, end_at, invitee_name, invitee_email,
       invitee_phone, invitee_timezone, location_type, location_detail, manage_token_hash,
-      manage_token_enc, idempotency_key, rescheduled_from_id, sf_lead_id, sf_lead_status
+      manage_token_enc, idempotency_key, rescheduled_from_id, sf_lead_id, sf_lead_status, created_via
     ) values (
       ${b.id}, ${et.id}, ${et.language}, 'confirmed', ${new Date(b.startMs)}, ${new Date(b.endMs)},
       ${b.name}, ${b.email}, ${b.phone}, ${b.timezone}, ${et.location_type}, ${et.location_detail},
       ${b.tokenHash}, ${b.tokenEnc}, ${b.idempotencyKey}, ${b.rescheduledFromId ?? null},
-      ${b.sfLeadId ?? null}, ${b.sfLeadStatus ?? null}
+      ${b.sfLeadId ?? null}, ${b.sfLeadStatus ?? null}, ${b.createdVia ?? (b.rescheduledFromId ? "reschedule" : "public")}
     )
   `;
 }

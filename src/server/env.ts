@@ -9,6 +9,16 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   // Trailing slashes are stripped so "${APP_BASE_URL}/api/..." never produces "//".
   APP_BASE_URL: z.string().url().transform((v) => v.replace(/\/+$/, "")),
+  // Public origin of the MCP server (for example https://mcp.bigthinkcapital.com). The MCP
+  // endpoint is "<origin>/mcp". Defaults to APP_BASE_URL.
+  MCP_BASE_URL: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z
+      .string()
+      .url()
+      .transform((v) => v.replace(/\/+$/, ""))
+      .optional(),
+  ),
   DATABASE_URL: z.string().min(1),
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(5),
 

@@ -10,9 +10,13 @@ export type AuditEntry = {
   before?: unknown;
   after?: unknown;
   ipHash?: string | null;
+  via?: AuditVia | null;
 };
 
-type AuditContext = { ipHash: string | null };
+/** The channel a change came through. */
+export type AuditVia = "web" | "api" | "mcp" | "sync" | "system";
+
+type AuditContext = { ipHash: string | null; via?: AuditVia };
 
 const context = new AsyncLocalStorage<AuditContext>();
 
@@ -30,12 +34,31 @@ export function withAuditContext<T>(ctx: AuditContext, fn: () => Promise<T>): Pr
  * entry and the change commit together. Never pass secrets in before/after.
  */
 export async function writeAudit(db: Db, e: AuditEntry): Promise<void> {
-  const ipHash = e.ipHash ?? context.getStore()?.ipHash ?? null;
+  const store = context.getStore();
+  const ipHash = e.ipHash ?? store?.ipHash ?? null;
+  const via = e.via ?? store?.via ?? (e.actorUserId ? "web" : "system");
   await db`
-    insert into app.audit_log (actor_user_id, action, entity_type, entity_id, before, after, ip_hash)
+    insert into app.audit_log (actor_user_id, action, entity_type, entity_id, before, after, ip_hash, via)
     values (${e.actorUserId}, ${e.action}, ${e.entityType}, ${e.entityId ?? null},
             ${e.before === undefined ? null : db.json(e.before as never)},
             ${e.after === undefined ? null : db.json(e.after as never)},
-            ${ipHash})
+            ${ipHash}, ${via})
   `;
+}
+
+/**
+ * The fields that differ between two snapshots of a record, for audit entries that show
+ * exactly what changed. Values are compared as JSON.
+ */
+export function changedFields<T extends Record<string, unknown>>(before: T, after: Partial<T>): { before: Partial<T>; after: Partial<T> } | null {
+  const b: Partial<T> = {};
+  const a: Partial<T> = {};
+  for (const key of Object.keys(after) as (keyof T)[]) {
+    if (after[key] === undefined) continue;
+    if (JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null)) {
+      b[key] = before[key];
+      a[key] = after[key];
+    }
+  }
+  return Object.keys(a).length ? { before: b, after: a } : null;
 }

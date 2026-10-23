@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { service, type Db } from "@/server/db/client";
 import { randomToken, sha256Hex } from "@/server/crypto/random";
 import { hashIp } from "@/server/http/ip";
+import { can, type Capability, type Role } from "@/lib/permissions";
 
 export const SESSION_COOKIE = "__Host-btc_session";
 const DEV_SESSION_COOKIE = "btc_session";
@@ -14,7 +15,7 @@ export type SessionUser = {
   email: string;
   name: string;
   slug: string;
-  role: "user" | "admin";
+  role: Role;
   timezone: string;
   languages: string[];
   photoUrl: string | null;
@@ -93,6 +94,37 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 export async function requireUser(): Promise<SessionUser> {
   const user = await getSessionUser();
   if (!user) redirect("/login");
+  return user;
+}
+
+/** Loads an active user by id in the SessionUser shape (used for API and MCP tokens). */
+export async function loadActiveUser(db: Db, userId: string): Promise<SessionUser | null> {
+  const [row] = await db<
+    (Omit<SessionUser, "photoUrl" | "calendarStatus"> & { photo_url: string | null; calendar_status: SessionUser["calendarStatus"] })[]
+  >`
+    select u.id, u.email, u.name, u.slug, u.role, u.timezone, u.languages, u.photo_url, cc.status as calendar_status
+    from app.users u
+    left join app.calendar_connections cc on cc.user_id = u.id
+    where u.id = ${userId} and u.is_active
+  `;
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    slug: row.slug,
+    role: row.role,
+    timezone: row.timezone,
+    languages: row.languages,
+    photoUrl: row.photo_url,
+    calendarStatus: row.calendar_status,
+  };
+}
+
+/** Requires a signed-in user whose role grants the capability. */
+export async function requireCapability(capability: Capability): Promise<SessionUser> {
+  const user = await requireUser();
+  if (!can(user.role, capability)) redirect("/dashboard?error=forbidden");
   return user;
 }
 

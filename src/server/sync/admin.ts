@@ -15,7 +15,7 @@ import { ADMIN_OVERRIDE_REASON, normalizeQueueId, type MemberStatus } from "@/se
  * same transaction. The admin UI calls these from server actions.
  */
 
-export type Actor = { id: string; role: "user" | "admin" };
+export type Actor = { id: string; role: "user" | "admin" | "manager" };
 
 export type SyncAdminErrorCode = "forbidden" | "not_found" | "invalid" | "conflict";
 

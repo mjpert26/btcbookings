@@ -231,5 +231,5 @@ export async function rescheduleByInvitee(
     throw err;
   }
   const booking = (await bookingById(sql, newId))!;
-  return { token: newToken, view: await buildPublicView(sql, booking, now), replayed: false };
+  return { bookingId: newId, token: newToken, view: await buildPublicView(sql, booking, now), replayed: false };
 }

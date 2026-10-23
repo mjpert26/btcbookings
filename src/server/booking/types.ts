@@ -116,6 +116,8 @@ export type BookingInput = {
 
 export type BookingOptions = {
   liveBusy?: LiveBusyProvider;
+  /** Where the booking was made: the public page (default), the REST API or the MCP server. */
+  createdVia?: "public" | "api" | "mcp";
   /** Milliseconds to wait for liveBusy before falling back to the cache. */
   liveBusyTimeoutMs?: number;
   /** Clock override for tests (epoch ms). */
@@ -123,6 +125,8 @@ export type BookingOptions = {
 };
 
 export type BookingResult = {
+  /** Internal booking id. Never sent to invitees. */
+  bookingId: string;
   /** The manage token. Returned once; only its hash and an encrypted copy are stored. */
   token: string;
   view: PublicBookingView;

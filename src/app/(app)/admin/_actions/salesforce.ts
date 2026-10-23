@@ -135,6 +135,7 @@ const SAVED_MESSAGE: Record<SfLeadMode, string> = {
 const RETRY_ERRORS: Record<string, string> = {
   "55000": "Only failed or dead jobs can be retried.",
   "22023": "Invalid retry request.",
+  BTC01: "This booking was rescheduled. Retry the Salesforce job of the new booking instead.",
 };
 
 export async function retrySfJobAction(_prev: ActionState, fd: FormData): Promise<ActionState> {

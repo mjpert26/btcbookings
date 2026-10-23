@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
-import { futureSlot, invitee, makeEvent, makeHost } from "../helpers/booking-flow-fixtures";
+import { futureSlot, invitee, makeEvent, makeHost, makeTeam } from "../helpers/booking-flow-fixtures";
 import { withUser, type Sql } from "@/server/db/client";
 import type { SessionUser } from "@/server/auth/session";
 import { createBooking } from "@/server/booking/create";
 import { cancelByInvitee, rescheduleByInvitee } from "@/server/booking/manage";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
+import { reassignBooking } from "@/server/booking/jobs";
 import { encryptSecret } from "@/server/crypto/aes";
 import { PermanentJobError } from "@/server/jobs/types";
 import { handleWebhookDeliver, handleWebhookDispatch } from "@/server/webhooks/jobs";
@@ -98,6 +99,47 @@ describe("webhook events", () => {
     expect(events).toHaveLength(3);
   });
 
+  it("sends booking.reassigned only when a round-robin reassignment finds a new host", async () => {
+    await endpoint({ events: ["booking.reassigned"] });
+    const a = await makeHost(sql, { name: "Agent A" });
+    const b = await makeHost(sql, { name: "Agent B" });
+    const team = await makeTeam(sql, [a.id, b.id]);
+    const ev = await makeEvent(sql, { teamId: team.id });
+    const start = futureSlot(2, 13);
+    const owner = { kind: "team" as const, slug: team.slug };
+    // Both members are booked at the same time, so nobody is free to take the booking.
+    const r = await createBooking({ owner, eventSlug: ev.slug, language: "en", start, durationMin: 30, ...invitee() });
+    const other = await createBooking({ owner, eventSlug: ev.slug, language: "en", start, durationMin: 30, ...invitee() });
+    const bk = { id: r.bookingId };
+    const [from] = await sql<{ user_id: string }[]>`select user_id from app.booking_hosts where booking_id = ${bk.id} and active`;
+
+    expect(await reassignBooking({ bookingId: bk.id, fromUserId: from.user_id, reason: "paused" })).toEqual({ result: { flagged: "no eligible host is free" } });
+    expect(await dispatchJobs()).toHaveLength(0);
+    const [kept] = await sql<{ active: boolean; reassigned_at: Date | null }[]>`
+      select active, reassigned_at from app.booking_hosts where booking_id = ${bk.id} and user_id = ${from.user_id}`;
+    expect(kept).toEqual({ active: true, reassigned_at: null });
+
+    // Once the other member is free, the reassignment goes through and is reported once.
+    await cancelByInvitee(other.token, "Changed plans");
+    await sql`update app.bookings set status = 'confirmed', flagged_reason = null where id = ${bk.id}`;
+    const moved = await reassignBooking({ bookingId: bk.id, fromUserId: from.user_id, reason: "paused" });
+    expect(moved).toMatchObject({ result: { reassignedTo: expect.any(String) } });
+    expect((await dispatchJobs()).map((j) => j.payload.event)).toEqual(["booking.reassigned"]);
+  });
+
+  it("reports a second reassignment of the same host on the same booking", async () => {
+    await endpoint({ events: ["booking.reassigned"] });
+    const a = await book();
+    const host = () => sql`update app.booking_hosts set reassigned_at = now() where booking_id = ${a.bookingId}`;
+    await host();
+    // The host is assigned to the booking again, then moved away again.
+    await sql`update app.booking_hosts set reassigned_at = null where booking_id = ${a.bookingId}`;
+    await host();
+    const jobs = await dispatchJobs();
+    expect(jobs.map((j) => j.payload.event)).toEqual(["booking.reassigned", "booking.reassigned"]);
+    expect(new Set(jobs.map((j) => j.idempotency_key)).size).toBe(2);
+  });
+
   it("dispatches to matching endpoints only and delivers a signed payload", async () => {
     const all = await endpoint({ events: ["booking.created"] });
     await endpoint({ events: ["booking.cancelled"] });
@@ -115,13 +157,20 @@ describe("webhook events", () => {
     expect(JSON.stringify(body)).not.toContain(b.token);
     expect(await sql`select 1 from app.jobs where kind = 'webhook_deliver'`).toHaveLength(1);
 
-    const calls: { url: string; init: RequestInit }[] = [];
+    const calls: { url: string; init: RequestInit; pinned: unknown }[] = [];
     const ok = await handleWebhookDeliver(
       { payload: { deliveryId: delivery.id }, attempts: 1, max_attempts: 8 },
       { log: () => undefined },
-      { sql, lookup: publicDns, now: () => 1_700_000_000_000, fetch: async (url, init) => (calls.push({ url, init }), new Response(null, { status: 204 })) },
+      {
+        sql,
+        lookup: publicDns,
+        now: () => 1_700_000_000_000,
+        fetch: async (url, init, pinned) => (calls.push({ url, init, pinned }), new Response(null, { status: 204 })),
+      },
     );
     expect(ok).toEqual({ result: { status: 204 } });
+    // The connection goes to the address that was checked, not to a second DNS answer.
+    expect(calls[0].pinned).toEqual({ address: "93.184.216.34", family: 4 });
     const headers = calls[0].init.headers as Record<string, string>;
     expect(calls[0].url).toBe("https://hooks.example.com/btc");
     expect(headers["BTC-Webhook-Event"]).toBe("booking.created");
@@ -164,6 +213,39 @@ describe("webhook events", () => {
     const [ep] = await sql<{ consecutive_failures: number }[]>`select consecutive_failures from app.webhook_endpoints`;
     expect(ep.consecutive_failures).toBe(4);
   });
+
+  it("retries a delivery when DNS fails temporarily and fails it when the name does not exist", async () => {
+    await endpoint({ events: ["booking.created"] });
+    await book();
+    const [job] = await dispatchJobs();
+    await handleWebhookDispatch(job, { sql });
+    const [{ id }] = await sql<{ id: string }[]>`select id from app.webhook_deliveries`;
+    const failing = (code: string) => async () => {
+      throw Object.assign(new Error(`queryA ${code} hooks.example.com`), { code });
+    };
+    let fetched = false;
+    const deliver = (code: string, attempts: number) =>
+      handleWebhookDeliver({ payload: { deliveryId: id }, attempts, max_attempts: 8 }, { log: () => undefined }, {
+        sql,
+        lookup: failing(code),
+        fetch: async () => ((fetched = true), new Response(null, { status: 204 })),
+      });
+    const row = async () => (await sql<{ status: string; error: string }[]>`select status, error from app.webhook_deliveries`)[0];
+
+    for (const code of ["ESERVFAIL", "ETIMEOUT", "EAI_AGAIN"]) {
+      const err = await deliver(code, 1).catch((e: unknown) => e);
+      expect(err, code).toBeInstanceOf(Error);
+      expect(err, code).not.toBeInstanceOf(PermanentJobError);
+      expect(await row(), code).toEqual({ status: "pending", error: "URL host name lookup failed" });
+    }
+    await expect(deliver("ESERVFAIL", 8)).rejects.not.toBeInstanceOf(PermanentJobError);
+    expect((await row()).status).toBe("failed");
+
+    await sql`update app.webhook_deliveries set status = 'pending'`;
+    await expect(deliver("ENOTFOUND", 1)).rejects.toBeInstanceOf(PermanentJobError);
+    expect(await row()).toEqual({ status: "failed", error: "URL host name does not resolve" });
+    expect(fetched).toBe(false);
+  });
 });
 
 describe("webhook administration", () => {
@@ -192,5 +274,35 @@ describe("webhook administration", () => {
     await deleteWebhook(session(admin.id, "admin"), id);
     expect(await sql`select 1 from app.webhook_endpoints`).toHaveLength(0);
     expect((await sql<{ action: string }[]>`select action from app.audit_log order by created_at`).map((r) => r.action)).toEqual(["webhook.create", "webhook.test", "webhook.delete"]);
+  });
+
+  it("writes the test delivery and its audit entry together", async () => {
+    const admin = await makeUser(sql, { role: "admin" });
+    const { id } = await createWebhook(session(admin.id, "admin"), { url: "https://hooks.example.com/a", events: ["booking.created"] });
+    // Make the audit insert fail: the test delivery must not be created either.
+    await sql.unsafe(`
+      create or replace function app.test_reject_webhook_audit() returns trigger language plpgsql as $$
+      begin
+        if new.action = 'webhook.test' then raise exception 'audit write failed'; end if;
+        return new;
+      end $$;
+      create trigger test_reject_webhook_audit before insert on app.audit_log
+        for each row execute function app.test_reject_webhook_audit();
+    `);
+    try {
+      await expect(sendTestWebhook(session(admin.id, "admin"), id)).rejects.toThrow("audit write failed");
+    } finally {
+      await sql.unsafe(`
+        drop trigger if exists test_reject_webhook_audit on app.audit_log;
+        drop function if exists app.test_reject_webhook_audit();
+      `);
+    }
+    expect(await sql`select 1 from app.webhook_deliveries`).toHaveLength(0);
+    expect(await sql`select 1 from app.jobs where kind = 'webhook_deliver'`).toHaveLength(0);
+
+    await sendTestWebhook(session(admin.id, "admin"), id);
+    const [audit] = await sql<{ actor_user_id: string; entity_id: string }[]>`select actor_user_id, entity_id from app.audit_log where action = 'webhook.test'`;
+    expect(audit).toEqual({ actor_user_id: admin.id, entity_id: id });
+    expect(await sql`select 1 from app.webhook_deliveries`).toHaveLength(1);
   });
 });

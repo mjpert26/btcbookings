@@ -1,5 +1,7 @@
 import "server-only";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { request as httpsRequest } from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 import { z } from "zod";
 import { service, type Sql, type Tx } from "@/server/db/client";
 import { decryptSecret } from "@/server/crypto/aes";
@@ -16,7 +18,10 @@ import { resolvePublicUrl, type LookupFn } from "@/server/webhooks/url";
  *
  * webhook_deliver: POSTs one delivery, signed with the endpoint's secret. 2xx succeeds;
  * redirects (not followed) and 4xx other than 408, 409, 425 and 429 fail without retrying;
- * anything else is retried with the outbox backoff.
+ * anything else is retried with the outbox backoff. The host name is resolved once and
+ * every answer checked; the request then connects to a checked address (pinnedFetch), so
+ * a DNS answer that changes between the check and the connection cannot reach a private
+ * address. A host name that does not exist fails the delivery; a resolver error is retried.
  */
 
 const DELIVERY_TIMEOUT_MS = 10_000;
@@ -31,11 +36,62 @@ const dispatchSchema = z.object({
 });
 const deliverSchema = z.object({ deliveryId: z.uuid() });
 
-type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+export type DeliveryInit = {
+  method: "POST";
+  redirect: "manual";
+  signal: AbortSignal;
+  headers: Record<string, string>;
+  body: string;
+};
+export type DeliveryResponse = { status: number; headers: Headers; body?: ReadableStream | null };
+/** The checked address the connection must use; null when the URL host is an IP literal. */
+export type PinnedAddress = { address: string; family: 4 | 6 };
+type FetchLike = (url: string, init: DeliveryInit, pinned: PinnedAddress | null) => Promise<DeliveryResponse>;
 
 export type WebhookDeps = { sql?: Sql; fetch?: FetchLike; lookup?: LookupFn; now?: () => number };
 
 const defaultLookup: LookupFn = async (host) => (await dnsLookup(host, { all: true, verbatim: true })).map((a) => a.address);
+
+function pinnedLookup(pinned: PinnedAddress): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options?.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
+    else callback(null, pinned.address, pinned.family);
+  };
+}
+
+/**
+ * HTTPS POST that connects to `pinned` instead of resolving the host name again. TLS
+ * certificate checks, SNI and the Host header still use the URL's host name. Redirects
+ * are not followed, connections are not reused, and the response body is discarded.
+ */
+export function pinnedFetch(url: string, init: DeliveryInit, pinned: PinnedAddress | null): Promise<DeliveryResponse> {
+  const target = new URL(url);
+  return new Promise<DeliveryResponse>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        protocol: "https:",
+        hostname: target.hostname.replace(/^\[|\]$/g, ""),
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method: init.method,
+        headers: { ...init.headers, "Content-Length": String(Buffer.byteLength(init.body)) },
+        agent: false,
+        signal: init.signal,
+        ...(pinned ? { lookup: pinnedLookup(pinned) } : {}),
+      },
+      (res) => {
+        res.resume();
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(res.headers)) {
+          if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+        }
+        resolve({ status: res.statusCode ?? 0, headers, body: null });
+      },
+    );
+    req.on("error", reject);
+    req.end(init.body);
+  });
+}
 
 export async function handleWebhookDispatch(job: Pick<JobRow, "payload">, deps: WebhookDeps = {}): Promise<JobResult> {
   const parsed = dispatchSchema.safeParse(job.payload);
@@ -128,38 +184,51 @@ export async function handleWebhookDeliver(
     return { result: { skipped: "endpoint_disabled" } };
   }
 
+  // The worker counts the current attempt before calling the handler.
+  const isLastAttempt = job.attempts >= job.max_attempts;
   const target = await resolvePublicUrl(d.url, deps.lookup ?? defaultLookup);
   if (!target.ok) {
+    if (target.transient) {
+      // A resolver error (timeout, SERVFAIL): retried with the outbox backoff.
+      await recordAttempt(sql, d, { status: isLastAttempt ? "failed" : "pending", code: null, error: `URL ${target.reason}` });
+      throw new Error(`Webhook URL ${target.reason}`);
+    }
     await recordAttempt(sql, d, { status: "failed", code: null, error: `URL ${target.reason}` });
     throw new PermanentJobError(`Webhook URL ${target.reason}`);
   }
+  const first = target.addresses[0];
+  const pinned: PinnedAddress | null = first ? { address: first, family: isIP(first) === 6 ? 6 : 4 } : null;
 
   const body = JSON.stringify(d.payload);
   const timestamp = Math.floor((deps.now?.() ?? Date.now()) / 1000);
   const secret = decryptSecret(d.secret_enc, d.endpoint_id);
-  const doFetch: FetchLike = deps.fetch ?? ((url, init) => fetch(url, init));
-  // The worker counts the current attempt before calling the handler.
-  const isLastAttempt = job.attempts >= job.max_attempts;
+  const doFetch: FetchLike = deps.fetch ?? pinnedFetch;
   const request = { host: target.url.host, event: d.event, deliveryId: d.id };
   ctx.log({ request });
 
-  let res: Response;
+  const signal = AbortSignal.timeout(DELIVERY_TIMEOUT_MS);
+  let res: DeliveryResponse;
   try {
-    res = await doFetch(target.url.toString(), {
-      method: "POST",
-      redirect: "manual",
-      signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent": "BTC-Scheduler-Webhooks/1.0",
-        "BTC-Webhook-Id": d.id,
-        "BTC-Webhook-Event": d.event,
-        [SIGNATURE_HEADER]: signatureHeader(secret, timestamp, body),
+    res = await doFetch(
+      target.url.toString(),
+      {
+        method: "POST",
+        redirect: "manual",
+        signal,
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "BTC-Scheduler-Webhooks/1.0",
+          "BTC-Webhook-Id": d.id,
+          "BTC-Webhook-Event": d.event,
+          [SIGNATURE_HEADER]: signatureHeader(secret, timestamp, body),
+        },
+        body,
       },
-      body,
-    });
+      pinned,
+    );
   } catch (err) {
-    const message = err instanceof Error && err.name === "TimeoutError" ? "Timed out after 10 seconds" : "Connection failed";
+    const timedOut = signal.aborted || (err instanceof Error && err.name === "TimeoutError");
+    const message = timedOut ? "Timed out after 10 seconds" : "Connection failed";
     await recordAttempt(sql, d, { status: isLastAttempt ? "failed" : "pending", code: null, error: message });
     throw new Error(`Webhook delivery failed: ${message}`);
   }

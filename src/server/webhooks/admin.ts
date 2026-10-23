@@ -195,7 +195,8 @@ export async function sendTestWebhook(user: SessionUser, id: string): Promise<vo
   const [exists] = await withUser(user.id, (tx) => tx`select 1 from app.webhook_endpoints where id = ${id}`);
   if (!exists) throw new WebhookError("Webhook not found.");
   const eventId = randomUUID();
-  // Deliveries are written by the service connection only.
+  // Deliveries are written by the service connection only. The audit entry is written in
+  // the same transaction, so a test delivery never goes out without one.
   await service().begin(async (tx) => {
     const [d] = await tx<{ id: string }[]>`
       insert into app.webhook_deliveries (endpoint_id, event_id, event, payload)
@@ -203,6 +204,6 @@ export async function sendTestWebhook(user: SessionUser, id: string): Promise<vo
       returning id
     `;
     await enqueue(tx, { kind: "webhook_deliver", payload: { deliveryId: d.id }, idempotencyKey: d.id, maxAttempts: 1 });
+    await writeAudit(tx, { actorUserId: user.id, action: "webhook.test", entityType: "webhook_endpoint", entityId: id });
   });
-  await withUser(user.id, (tx) => writeAudit(tx, { actorUserId: user.id, action: "webhook.test", entityType: "webhook_endpoint", entityId: id }));
 }

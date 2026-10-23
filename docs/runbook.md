@@ -135,6 +135,6 @@ where j.status in ('failed', 'dead') order by j.created_at desc;
 - `REQUIRED_FIELD_MISSING` / `FIELD_CUSTOM_VALIDATION_EXCEPTION` / `INVALID_FIELD`: the event type's field mapping does not satisfy Lead validation. Fix it under **Admin > Event types > Salesforce**, then select **Retry**.
 - Token errors inside n8n: check the **SF Token Broker** workflow (`7wen5ULQg7DBlCvC`) and the Redis cache key `sf:access_token`.
 
-**Retry.** Use **Retry** in the admin UI (audited). Retries are idempotent: the booking ID is the idempotency key, and n8n skips bookings it already created a Lead for.
+**Retry.** Use **Retry** in the admin UI (audited). Retries are idempotent: the booking ID is the idempotency key, and n8n skips bookings it already created a Lead for. The job of a booking that was rescheduled cannot be retried when the new booking has its own lead job ("This booking was rescheduled"); retry the new booking's job, which also takes over a first booking that never got its Lead.
 
 A booking never fails because Salesforce is down. The lead job waits in the outbox and retries with exponential backoff up to `SF_LEAD_MAX_ATTEMPTS`.

@@ -9,7 +9,7 @@ Admins send booking events to other systems (n8n, a partner CRM) from **Admin > 
 | `booking.created` | A booking is made on any page (public page, REST API, MCP). |
 | `booking.rescheduled` | A booking is moved. The payload is the new booking; `rescheduledFromId` is the old one. |
 | `booking.cancelled` | A booking is cancelled by the invitee, a host, an Outlook conflict or the system. |
-| `booking.reassigned` | A host is taken off a booking (round-robin reassignment or queue removal). Sent once per previous host. |
+| `booking.reassigned` | A host is taken off a booking (round-robin reassignment or queue removal). Sent once per previous host and reassignment. Not sent when no other host is free and the booking is flagged for an admin instead. |
 | `webhook.test` | Sent by **Send test** on the admin page. |
 
 An endpoint subscribes to one or more events and can be limited to one partner's (team's) booking pages. Imported Calendly bookings never produce events.
@@ -70,9 +70,10 @@ The secret is shown once, when the endpoint is added or its secret is rotated. R
 
 - Delivery runs through the jobs outbox, usually within a minute of the change.
 - A `2xx` response is a success. Respond quickly; the request times out after 10 seconds. Redirects are not followed: a `3xx` response fails the delivery without retrying.
-- `408`, `409`, `425`, `429` and `5xx` responses, timeouts and connection errors are retried with exponential backoff, up to 8 attempts. `429` with `Retry-After` is honored, up to one hour.
-- Any other `4xx` stops retrying.
-- Only public HTTPS destinations on port 443 are allowed. Host names that resolve to private, loopback, link-local or reserved addresses are refused at every attempt.
+- `408`, `409`, `425`, `429` and `5xx` responses, timeouts, connection errors and temporary DNS failures (resolver timeout or `SERVFAIL`) are retried with exponential backoff, up to 8 attempts. `429` with `Retry-After` is honored, up to one hour.
+- Any other `4xx`, and a host name that does not exist, stops retrying.
+- Only public HTTPS destinations on port 443 are allowed. Host names that resolve to private, loopback, link-local or reserved addresses are refused at every attempt. The host name is resolved once per attempt and the request connects to an address that passed the check (TLS and the `Host` header still use the host name), so a DNS answer that changes between the check and the connection cannot reach an internal address.
+- Refused IPv6 literals include the ranges that embed IPv4 addresses (`::/96`, `::ffff:0:0:0/96`, `64:ff9b::/96`, `2002::/16`, `2001::/32`) and site-local `fec0::/10`. A trailing dot on a host name (`localhost.`) does not get past the name checks.
 - Disabling an endpoint stops its pending deliveries.
 - The admin page shows each endpoint's last status and consecutive failures, and the last 50 deliveries. Delivery records are deleted after 30 days.
 
@@ -81,4 +82,5 @@ The secret is shown once, when the endpoint is added or its secret is rotated. R
 - `app.webhook_endpoints`: URL, events, optional team, encrypted secret (never readable through `app_user`), enabled flag, last delivery status.
 - `app.webhook_deliveries`: one row per endpoint and event, with the payload sent, status, attempts and last response.
 - Triggers `bookings_webhook_events` (on `app.bookings`) and `booking_hosts_webhook_events` (on `app.booking_hosts`) add a `webhook_dispatch` job only when an enabled endpoint subscribes to the event. The dispatch handler (`src/server/webhooks/jobs.ts`) records the deliveries and enqueues `webhook_deliver` jobs.
-- Every admin change is audited (`webhook.create`, `webhook.update`, `webhook.enable`, `webhook.disable`, `webhook.rotate_secret`, `webhook.test`, `webhook.delete`).
+- Every admin change is audited (`webhook.create`, `webhook.update`, `webhook.enable`, `webhook.disable`, `webhook.rotate_secret`, `webhook.test`, `webhook.delete`). The `webhook.test` entry is written in the same transaction as the test delivery.
+- The `booking.reassigned` dispatch is keyed by booking, previous host and reassignment time, so a host reassigned away from the same booking twice produces two events.

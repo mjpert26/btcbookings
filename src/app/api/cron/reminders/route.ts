@@ -12,7 +12,8 @@ export const maxDuration = 60;
 /**
  * Every 5 minutes (vercel.json). Reminders are delayed email_send, sms_send and
  * slack_dm_send jobs created at booking time, and the main /api/cron/jobs worker sends
- * them. This route is a safety net that drains only those kinds so reminders still go out
+ * them. This route is a safety net that drains every job of those kinds (including the
+ * non-reminder emails, such as confirmations and cancellations) so reminders still go out
  * if the main worker falls behind.
  */
 export async function GET(req: Request) {

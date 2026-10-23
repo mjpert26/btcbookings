@@ -4,6 +4,7 @@ import { service, serviceTx, type Tx } from "@/server/db/client";
 import { decryptSecret, encryptSecret } from "@/server/crypto/aes";
 import { writeBookingAudit } from "@/server/booking/audit";
 import { enqueue } from "@/server/jobs/queue";
+import { cancelPendingReminders } from "@/server/booking/side-effects";
 import { GraphError, graphQuery, type GraphEvent } from "@/server/graph/client";
 import { CalendarConnectionBroken } from "@/server/graph/tokens";
 import { deltaBucket } from "@/server/graph/subscriptions";
@@ -270,6 +271,8 @@ export async function applyConflictPolicy(
       returning id
     `;
     await tx`update app.booking_hosts set active = false where booking_id = ${bookingId}`;
+    // Like every other cancel path, drop the reminders still queued for the booking.
+    if (changed.length) await cancelPendingReminders(tx, bookingId);
     await enqueue(tx, {
       kind: "email_send",
       payload: { template: "booking_cancelled", bookingId, recipient: "invitee" },

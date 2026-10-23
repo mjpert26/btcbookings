@@ -54,7 +54,10 @@ export type JobPayloads = {
   webhook_deliver: { deliveryId: string; bookingId?: string };
 };
 
-/** Job kinds that carry booking reminders (all channels). */
+/**
+ * Job kinds that carry booking reminders (all channels). email_send also carries the
+ * other booking emails, so a worker limited to these kinds sends those too.
+ */
 export const REMINDER_JOB_KINDS = ["email_send", "sms_send", "slack_dm_send"] as const;
 
 export type JobKind = keyof JobPayloads;

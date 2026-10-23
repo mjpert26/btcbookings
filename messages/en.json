@@ -62,6 +62,8 @@
     "submit": "Schedule meeting",
     "submitting": "Scheduling…",
     "privacy": "Your information is used only to schedule and manage this meeting.",
+    "smsConsent": "Send me text message reminders about this meeting at this number.",
+    "smsDisclosure": "Optional, and not required to book. If you check the box, you agree to receive automated reminder texts for this meeting at the number above. Message and data rates may apply. Reply STOP to opt out at any time.",
     "errors": {
       "required": "This field is required.",
       "invalid_email": "Enter a valid email address.",

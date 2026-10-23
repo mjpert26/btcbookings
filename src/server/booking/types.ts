@@ -61,6 +61,11 @@ export type PublicEventType = {
   /** Counterpart language variants that are active, for the language switcher. */
   alternates: { language: Locale; path: string }[];
   path: string;
+  /**
+   * The page sends merchant reminders by text, so the form shows the text-message
+   * disclosure and consent checkbox next to the phone field.
+   */
+  smsReminders: boolean;
 };
 
 export type PublicEventCard = {
@@ -109,6 +114,11 @@ export type BookingInput = {
   name: string;
   email: string;
   phone?: string | null;
+  /**
+   * The invitee agreed to reminder texts at `phone` (the consent checkbox on the public form,
+   * or the API caller confirming the invitee agreed). Stored as bookings.sms_consent_at.
+   */
+  smsConsent?: boolean;
   timezone: string;
   answers?: Record<string, unknown>;
   idempotencyKey?: string | null;

@@ -11,7 +11,7 @@ export function hostReminderSubject(d: HostReminderData): { subject: string; pre
   const partner = d.partnerName ? ` (${d.partnerName})` : "";
   return {
     subject: `Reminder: ${d.eventName} with ${d.inviteeName}${partner} at ${when.time}`,
-    preview: `Starts in ${leadTimeLabel(d.offsetMin)}: ${when.date} at ${when.time}`,
+    preview: `Starts in ${leadTimeLabel(d.leadMin)}: ${when.date} at ${when.time}`,
   };
 }
 
@@ -31,7 +31,7 @@ export function HostBookingReminderEmail(d: HostReminderData) {
       lang="en"
       preview={hostReminderSubject(d).preview}
       logoUrl={d.logoUrl}
-      heading={`Your meeting starts in ${leadTimeLabel(d.offsetMin)}`}
+      heading={`Your meeting starts in ${leadTimeLabel(d.leadMin)}`}
       footer={`${brand.productName}. Reminders for this booking page are set by its owner.`}
     >
       <Paragraph>Hi {d.hostName},</Paragraph>

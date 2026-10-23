@@ -310,7 +310,7 @@ export function EventTypeForm({
       </Section>
 
       <Section title="Reminders" description="Reminders sent before the meeting. Nothing is sent on a channel that is turned off.">
-        <Fieldset legend="Merchant reminders" description="Sent to the person who booked. Texts go to the phone number they enter and include opt-out instructions." errorKey="merchantReminderChannels">
+        <Fieldset legend="Merchant reminders" description="Sent to the person who booked. With text messages on, the booking form asks for consent; texts go only to people who enter a phone number and check the consent box, and include opt-out instructions. Turning a channel or time off also stops reminders already scheduled." errorKey="merchantReminderChannels">
           <div className="flex flex-wrap gap-x-6 gap-y-2">
             {MERCHANT_REMINDER_CHANNELS.map((c) => (
               <Checkbox

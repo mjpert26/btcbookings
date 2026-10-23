@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { normalizeE164, redactPhone } from "@/server/sms/phone";
 import { parseOptKeyword } from "@/server/sms/opt-out";
-import { createSendblueClient } from "@/server/sms/sendblue";
+import { createSendblueClient, SENDBLUE_TIMEOUT_MS } from "@/server/sms/sendblue";
+import { createSlackClient, SLACK_TIMEOUT_MS } from "@/server/slack/client";
 import { agentReminderSms, merchantReminderSms } from "@/server/sms/templates";
 import { agentReminderSlackText, slackEscape } from "@/server/slack/dm";
 import { partnerDisplayName } from "@/server/email/partner";
-import { leadTimeLabel, reminderSkipReason, type AgentReminderData } from "@/server/email/reminder-rules";
+import {
+  effectiveLeadMin,
+  leadTimeLabel,
+  reminderDisabledReason,
+  reminderSkipReason,
+  type AgentReminderData,
+} from "@/server/email/reminder-rules";
 import { renderHostReminder, renderInviteeEmail } from "@/server/email/render";
 import type { InviteeEmailData } from "@/server/email/templates/invitee";
 import { buildUpdatePayload, type EventPayloadInput } from "@/server/graph/event-payload";
@@ -47,7 +54,39 @@ describe("parseOptKeyword", () => {
   it.each(["START", "unstop", "Start!"])("treats %s as a re-subscribe", (s) => {
     expect(parseOptKeyword(s)?.action).toBe("start");
   });
-  it.each(["Please stop by at 3", "Thanks", "", null, "Can we start later?"])("ignores %s", (s) => {
+  it.each([
+    "REVOKE",
+    "Please stop texting me",
+    "stop texting",
+    "unsubscribe me",
+    "STOP STOP",
+    "BAJA",
+    "CANCELAR",
+    "Detener",
+    "Dar de baja",
+    "Opt out",
+    "opt-out please",
+    "I need to cancel",
+    "Quit sending these",
+    "I am not interested anymore, please stop sending me these messages",
+    "Please stop by at 3",
+  ])("treats %s as an opt-out", (s) => {
+    expect(parseOptKeyword(s)?.action).toBe("stop");
+  });
+  it("records the matched keyword", () => {
+    expect(parseOptKeyword("Please stop texting me")).toEqual({ action: "stop", keyword: "STOP" });
+    expect(parseOptKeyword("dar de baja")).toEqual({ action: "stop", keyword: "BAJA" });
+    expect(parseOptKeyword("Opt out")).toEqual({ action: "stop", keyword: "OPTOUT" });
+  });
+  it.each([
+    "Thanks",
+    "",
+    null,
+    "Can we start later?",
+    "See you then",
+    "Can I cancel and pick another time?",
+    "I will call you at the end of the day if anything changes",
+  ])("ignores %s", (s) => {
     expect(parseOptKeyword(s)).toBeNull();
   });
 });
@@ -122,6 +161,37 @@ describe("SendBlue client", () => {
     expect(err).not.toBeInstanceOf(PermanentJobError);
     expect(err).not.toBeInstanceOf(RetryAfterError);
   });
+
+  it("aborts a stalled request after the timeout and leaves it retryable", async () => {
+    expect(SENDBLUE_TIMEOUT_MS).toBe(15_000);
+    const err = await createSendblueClient({ apiKey: "k", apiSecret: "very-secret", fetch: hangingFetch, timeoutMs: 20 })
+      .sendMessage({ to: "+12125550142", content: "x" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("SendBlue request timed out");
+    expect(err).not.toBeInstanceOf(PermanentJobError);
+    expect(String((err as Error).message)).not.toContain("very-secret");
+  });
+});
+
+/** A fetch that never answers until its abort signal fires. */
+function hangingFetch(_url: string, init: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    if (!init.signal) return; // Without a signal the request would hang forever.
+    init.signal.addEventListener("abort", () => reject(init.signal!.reason));
+  });
+}
+
+describe("Slack client timeout", () => {
+  it("aborts a stalled Web API call and throws a retryable error without the token", async () => {
+    expect(SLACK_TIMEOUT_MS).toBe(15_000);
+    const client = createSlackClient({ token: "xoxb-secret", fetch: hangingFetch, timeoutMs: 20 });
+    const err = await client.chatPostMessage("U1", "hi").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("Slack chat.postMessage timed out");
+    expect(err).not.toBeInstanceOf(RetryAfterError);
+    expect((err as Error).message).not.toContain("xoxb-secret");
+  });
 });
 
 describe("partnerDisplayName", () => {
@@ -146,10 +216,49 @@ describe("reminderSkipReason", () => {
     expect(reminderSkipReason("agent", b("confirmed"), 15, START.getTime())).toBe("started");
     expect(reminderSkipReason("agent", b("confirmed"), 15, due - 60 * 60_000)).toBe("start_moved");
   });
+  it("drops stale reminders instead of sending every overdue one at once", () => {
+    const start = START.getTime();
+    const twentyBefore = start - 20 * 60_000;
+    expect(reminderSkipReason("merchant", b("confirmed"), 1440, twentyBefore)).toBe("stale");
+    expect(reminderSkipReason("merchant", b("confirmed"), 60, twentyBefore)).toBe("stale");
+    expect(reminderSkipReason("agent", b("confirmed"), 15, twentyBefore)).toBeNull();
+    // A 1 day reminder may run up to 12 hours late; a 1 hour reminder up to 30 minutes.
+    expect(reminderSkipReason("merchant", b("confirmed"), 1440, start - 1440 * 60_000 + 12 * 3600_000)).toBeNull();
+    expect(reminderSkipReason("merchant", b("confirmed"), 1440, start - 1440 * 60_000 + 12 * 3600_000 + 1)).toBe("stale");
+    expect(reminderSkipReason("merchant", b("confirmed"), 60, start - 30 * 60_000)).toBeNull();
+    expect(reminderSkipReason("merchant", b("confirmed"), 60, start - 30 * 60_000 + 1)).toBe("stale");
+    // Short offsets always get at least 10 minutes.
+    expect(reminderSkipReason("agent", b("confirmed"), 15, start - 5 * 60_000)).toBeNull();
+  });
   it("labels lead times", () => {
     expect(leadTimeLabel(5)).toBe("5 minutes");
     expect(leadTimeLabel(60)).toBe("1 hour");
     expect(leadTimeLabel(1440)).toBe("1 day");
+    expect(leadTimeLabel(23)).toBe("23 minutes");
+    expect(leadTimeLabel(75)).toBe("75 minutes");
+    expect(leadTimeLabel(735)).toBe("12 hours");
+    expect(leadTimeLabel(4000)).toBe("3 days");
+  });
+  it("shows the actual time left when a reminder runs late", () => {
+    expect(effectiveLeadMin(START, 15, START.getTime() - 15 * 60_000)).toBe(15);
+    expect(effectiveLeadMin(START, 1440, START.getTime() - 1438 * 60_000)).toBe(1440);
+    expect(effectiveLeadMin(START, 1440, START.getTime() - 720 * 60_000)).toBe(720);
+    expect(effectiveLeadMin(START, 60, START.getTime() - 35 * 60_000)).toBe(35);
+  });
+});
+
+describe("reminderDisabledReason", () => {
+  const settings = { merchantOffsetsMin: [1440, 60], merchantChannels: ["email"], agentChannels: ["slack"], agentOffsetsMin: [15] };
+  it("allows reminders whose channel and time are still enabled", () => {
+    expect(reminderDisabledReason(settings, "merchant", "email", 60)).toBeNull();
+    expect(reminderDisabledReason(settings, "agent", "slack", 15)).toBeNull();
+  });
+  it("skips reminders on a channel or at a time that was turned off", () => {
+    expect(reminderDisabledReason(settings, "merchant", "sms", 60)).toBe("channel_disabled");
+    expect(reminderDisabledReason(settings, "agent", "email", 15)).toBe("channel_disabled");
+    expect(reminderDisabledReason(settings, "merchant", "email", 120)).toBe("offset_disabled");
+    expect(reminderDisabledReason(settings, "agent", "slack", 60)).toBe("offset_disabled");
+    expect(reminderDisabledReason(settings, "merchant", "email", undefined)).toBe("offset_disabled");
   });
 });
 
@@ -193,6 +302,7 @@ const agent: AgentReminderData = {
   meeting: { text: "Join Microsoft Teams meeting", url: "https://teams.example/join" },
   bookingUrl: "http://localhost:3000/bookings/abc",
   offsetMin: 15,
+  leadMin: 15,
 };
 
 describe("agent reminder messages", () => {
@@ -214,6 +324,14 @@ describe("agent reminder messages", () => {
     expect(text).toContain("Reminder: Funding consultation with Pat Smith (Acme <ISO>) on Tue, Nov 3 at 7:00 AM PST.");
     expect(text).toContain("Phone: (212) 555-0142.");
     expect(text).toContain("Join: https://teams.example/join");
+  });
+
+  it("states the time actually left when the reminder runs late", async () => {
+    const late = { ...agent, offsetMin: 1440, leadMin: 20 };
+    expect(agentReminderSlackText(late)).toContain("*Reminder: Funding consultation starts in 20 minutes*");
+    const r = await renderHostReminder({ ...late, logoUrl: "http://localhost:3000/brand/btc-logo.png" });
+    expect(r.html).toContain("Your meeting starts in 20 minutes");
+    expect(r.html).not.toContain("1 day");
   });
 
   it("renders the agent reminder email", async () => {

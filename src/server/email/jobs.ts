@@ -11,7 +11,8 @@ import { buildIcs } from "@/server/booking/ics";
 import { redactEmail, sendEmail, type OutgoingEmail } from "@/server/email/send";
 import { renderHostConflict, renderHostNotice, renderHostReminder, renderInviteeEmail, type RenderedEmail } from "@/server/email/render";
 import { partnerNameForEventType } from "@/server/email/partner";
-import { loadAgentReminderData, reminderSkipReason } from "@/server/email/reminders";
+import { loadAgentReminderData, reminderDisabledReason, reminderSkipReason } from "@/server/email/reminders";
+import { loadReminderSettings } from "@/server/booking/side-effects";
 import { locationText, type InviteeEmailData, type InviteeKind } from "@/server/email/templates/invitee";
 
 const payloadSchema = z.object({
@@ -131,9 +132,9 @@ async function inviteeEmail(sql: Sql, p: Payload, b: BookingRow): Promise<{ rend
   return { rendered, ics };
 }
 
-async function hostEmail(sql: Sql, p: Payload, b: BookingRow, userId: string): Promise<{ rendered: RenderedEmail; to: string } | null> {
+async function hostEmail(sql: Sql, p: Payload, b: BookingRow, userId: string, now: number): Promise<{ rendered: RenderedEmail; to: string } | null> {
   if (p.template === "host_booking_reminder") {
-    const data = await loadAgentReminderData(sql, b, userId, p.offsetMin ?? 0);
+    const data = await loadAgentReminderData(sql, b, userId, p.offsetMin ?? 0, now);
     if (!data) return null;
     return { to: data.hostEmail, rendered: await renderHostReminder({ ...data, logoUrl: logoUrl() }) };
   }
@@ -197,8 +198,15 @@ export async function handleEmailSend(
   const sql = opts.sql ?? service();
   const booking = await bookingById(sql, p.bookingId);
   if (!booking) return skip("booking_not_found");
-  const reason = skipReason(p, booking, opts.now ?? Date.now());
+  const now = opts.now ?? Date.now();
+  const reason = skipReason(p, booking, now);
   if (reason) return skip(reason);
+  if (p.template === "booking_reminder" || p.template === "host_booking_reminder") {
+    // Turning a channel or reminder time off also stops reminders already queued.
+    const audience = p.template === "booking_reminder" ? "merchant" : "agent";
+    const disabled = reminderDisabledReason(await loadReminderSettings(sql, p.bookingId), audience, "email", p.offsetMin);
+    if (disabled) return skip(disabled);
+  }
 
   let email: OutgoingEmail;
   const idempotencyKey = `email_send:${job.idempotency_key ?? job.id}`;
@@ -215,7 +223,7 @@ export async function handleEmailSend(
       tag: p.template,
     };
   } else {
-    const host = await hostEmail(sql, p, booking, p.recipient.userId);
+    const host = await hostEmail(sql, p, booking, p.recipient.userId, now);
     if (!host) return skip("not_a_host");
     email = { to: host.to, ...host.rendered, idempotencyKey, tag: p.template };
   }

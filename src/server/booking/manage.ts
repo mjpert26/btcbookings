@@ -198,6 +198,7 @@ export async function rescheduleByInvitee(
               name: old.invitee_name,
               email: old.invitee_email,
               phone: old.invitee_phone,
+              smsConsentAt: old.sms_consent_at,
               timezone: input.timezone ?? old.invitee_timezone,
               tokenHash: issued.hash,
               tokenEnc: issued.encrypted,

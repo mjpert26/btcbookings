@@ -62,6 +62,8 @@
     "submit": "Agendar reunión",
     "submitting": "Agendando…",
     "privacy": "Su información se utiliza únicamente para agendar y gestionar esta reunión.",
+    "smsConsent": "Enviarme recordatorios por mensaje de texto sobre esta reunión a este número.",
+    "smsDisclosure": "Opcional y no es necesario para agendar. Si marca la casilla, acepta recibir mensajes de texto automáticos de recordatorio para esta reunión en el número indicado. Pueden aplicarse tarifas de mensajes y datos. Responda STOP en cualquier momento para dejar de recibirlos.",
     "errors": {
       "required": "Este campo es obligatorio.",
       "invalid_email": "Ingrese un correo electrónico válido.",

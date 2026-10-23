@@ -60,6 +60,7 @@ export const bookingRequestSchema = z.object({
   name: z.string().trim().min(1).max(LIMITS.name),
   email: emailSchema,
   phone: z.union([phoneSchema, z.literal(""), z.null()]).optional(),
+  smsConsent: z.boolean().optional(),
   timezone: z.string().refine(isValidTimezone, "invalid_timezone"),
   answers: z.record(z.string().max(64), z.unknown()).optional(),
   idempotencyKey: z
@@ -81,6 +82,7 @@ export const bookingInputSchema = z.object({
   name: z.string().trim().min(1).max(LIMITS.name),
   email: emailSchema,
   phone: z.union([z.string().max(LIMITS.phone), z.null()]).optional(),
+  smsConsent: z.boolean().optional(),
   timezone: z.string().refine(isValidTimezone, "invalid_timezone"),
   answers: z.record(z.string().max(64), z.unknown()).optional(),
   idempotencyKey: z

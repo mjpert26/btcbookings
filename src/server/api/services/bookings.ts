@@ -171,6 +171,14 @@ export const scheduleSchema = z.object({
     name: z.string().trim().min(1).max(200),
     email: z.string().trim().email().max(254),
     phone: z.string().trim().max(40).optional().nullable(),
+    /**
+     * Set true only when the invitee agreed to receive reminder texts at `phone`. Without it
+     * the booking gets no merchant text reminders, even on pages that send them.
+     */
+    smsConsent: z
+      .boolean()
+      .optional()
+      .describe("True only if the invitee agreed to receive reminder text messages at this phone number. Defaults to false."),
     timezone: z.string().min(1).max(64),
   }),
   answers: z.record(z.string(), z.unknown()).optional(),
@@ -209,6 +217,7 @@ export async function scheduleBooking(caller: Caller, raw: unknown): Promise<Boo
           name: v.invitee.name,
           email: v.invitee.email,
           phone: v.invitee.phone ?? null,
+          smsConsent: v.invitee.smsConsent === true,
           timezone: v.invitee.timezone,
           answers: v.answers,
           idempotencyKey: v.idempotencyKey ? `${caller.user.id}:${v.idempotencyKey}` : null,

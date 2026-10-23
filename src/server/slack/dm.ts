@@ -19,7 +19,7 @@ function link(url: string, text: string): string {
 export function agentReminderSlackText(d: AgentReminderData): string {
   const when = formatWhen(d.start, d.end, d.timezone, "en");
   const lines = [
-    `*Reminder: ${slackEscape(d.eventName)} starts in ${leadTimeLabel(d.offsetMin)}*`,
+    `*Reminder: ${slackEscape(d.eventName)} starts in ${leadTimeLabel(d.leadMin)}*`,
     ...(d.partnerName ? [`*Partner:* ${slackEscape(d.partnerName)}`] : []),
     `*When:* ${when.date}, ${when.range} (${when.zoneName})`,
     `*Merchant:* ${slackEscape(d.inviteeName)} (${slackEscape(d.inviteeEmail)})`,

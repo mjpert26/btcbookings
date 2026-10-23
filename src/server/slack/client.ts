@@ -14,6 +14,8 @@ import { RetryAfterError } from "@/server/jobs/types";
  * - HTTP 429, or an `ok: false` response with `error: "ratelimited"`, throws
  *   RetryAfterError with the Retry-After value so the job worker reschedules the job.
  * - Every other Slack error is returned as `{ ok: false, error }` for the caller to map.
+ * - Transport failures and timeouts (SLACK_TIMEOUT_MS) throw a plain Error, which the job
+ *   worker retries with backoff.
  */
 
 export type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -69,7 +71,15 @@ export type SlackClientOptions = {
   baseUrl?: string;
   /** Used when Slack rate limits without a Retry-After header. */
   defaultRetryAfterSeconds?: number;
+  /** Per-request timeout. Defaults to SLACK_TIMEOUT_MS. */
+  timeoutMs?: number;
 };
+
+/**
+ * Each Web API call is aborted after this long, well inside the 60 second function limit,
+ * so a stalled call fails and retries instead of the function being killed mid-job.
+ */
+export const SLACK_TIMEOUT_MS = 15_000;
 
 /** Slack errors that mean the app is not installed or configured correctly. */
 export const SLACK_CONFIG_ERRORS = new Set([
@@ -100,6 +110,7 @@ export function createSlackClient(opts: SlackClientOptions): SlackClient {
   const doFetch: FetchLike = opts.fetch ?? ((input, init) => fetch(input, init));
   const base = (opts.baseUrl ?? "https://slack.com/api").replace(/\/$/, "");
   const fallbackRetry = opts.defaultRetryAfterSeconds ?? 30;
+  const timeoutMs = opts.timeoutMs ?? SLACK_TIMEOUT_MS;
 
   async function call<T>(
     method: string,
@@ -117,7 +128,14 @@ export function createSlackClient(opts: SlackClientOptions): SlackClient {
       body = new URLSearchParams(Object.entries(clean).map(([k, v]) => [k, String(v)])).toString();
     }
 
-    const res = await doFetch(`${base}/${method}`, { method: "POST", headers, body });
+    let res: Response;
+    try {
+      res = await doFetch(`${base}/${method}`, { method: "POST", headers, body, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      const name = (err as Error)?.name;
+      // Thrown as a plain Error so jobs retry with backoff. The token is never included.
+      throw new Error(name === "TimeoutError" || name === "AbortError" ? `Slack ${method} timed out` : `Slack ${method} request failed`);
+    }
     const retryHeader = res.headers.get("retry-after");
     if (res.status === 429) {
       throw new RetryAfterError(`Slack ${method} rate limited`, parseRetryAfter(retryHeader, fallbackRetry));

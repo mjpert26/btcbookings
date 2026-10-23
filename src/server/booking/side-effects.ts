@@ -2,6 +2,7 @@ import "server-only";
 import type { Db } from "@/server/db/client";
 import { enqueue } from "@/server/jobs/queue";
 import type { JobPayloads } from "@/server/jobs/kinds";
+import type { EnqueueInput } from "@/server/jobs/types";
 import { env } from "@/server/env";
 import { encryptSecret } from "@/server/crypto/aes";
 import { randomToken, sha256Hex } from "@/server/crypto/random";
@@ -25,6 +26,10 @@ import { enqueueSfLeadOnReschedule } from "@/server/salesforce/jobs";
  *
  * Every reminder job carries payload.bookingId and booking_id, so the
  * jobs_skip_imported_bookings trigger drops them for imported bookings.
+ *
+ * Agent reminder keys stay the same when a host is removed and later assigned again
+ * (round-robin A -> B -> A): removal marks the host's jobs dead with HOST_REMOVED_ERROR,
+ * and enqueueAgentReminders resets those rows to pending instead of inserting new ones.
  */
 
 export type ManageToken = { token: string; hash: string; encrypted: string };
@@ -146,6 +151,26 @@ async function enqueueMerchantSms(db: Db, bookingId: string, startMs: number, of
   }
 }
 
+/** last_error of reminder jobs cancelled because their host was removed from the booking. */
+export const HOST_REMOVED_ERROR = "host removed";
+
+/**
+ * Enqueues one agent reminder job. When the key already exists because the host was
+ * removed earlier (status dead, last_error HOST_REMOVED_ERROR), the row is reset to
+ * pending so the host gets reminders again. Rows that are dead for any other reason, or
+ * pending, running or finished, are left unchanged.
+ */
+async function enqueueAgentReminderJob(db: Db, input: EnqueueInput & { idempotencyKey: string; runAt: Date }): Promise<void> {
+  if (await enqueue(db, input)) return;
+  await db`
+    update app.jobs
+    set status = 'pending', attempts = 0, run_at = ${input.runAt}, last_error = null, result = null,
+        locked_until = null, payload = ${db.json(input.payload as never)}
+    where kind = ${input.kind} and idempotency_key = ${input.idempotencyKey}
+      and status = 'dead' and last_error = ${HOST_REMOVED_ERROR}
+  `;
+}
+
 /** Agent reminders on every enabled channel, for each host and offset. */
 export async function enqueueAgentReminders(
   db: Db,
@@ -157,20 +182,16 @@ export async function enqueueAgentReminders(
   for (const userId of [...new Set(input.userIds)]) {
     for (const { offset, runAt } of due) {
       if (settings.agentChannels.includes("email")) {
-        await enqueueEmail(
-          db,
-          { template: "host_booking_reminder", bookingId, recipient: { userId }, offsetMin: offset },
-          `${bookingId}:host_reminder:${userId}:${offset}`,
-          runAt,
-        );
+        const payload: EmailPayload = { template: "host_booking_reminder", bookingId, recipient: { userId }, offsetMin: offset };
+        await enqueueAgentReminderJob(db, { kind: "email_send", payload, idempotencyKey: `${bookingId}:host_reminder:${userId}:${offset}`, bookingId, runAt });
       }
       if (settings.agentChannels.includes("slack")) {
         const payload: JobPayloads["slack_dm_send"] = { template: "booking_reminder", bookingId, userId, offsetMin: offset };
-        await enqueue(db, { kind: "slack_dm_send", payload, idempotencyKey: `${bookingId}:slack_dm:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+        await enqueueAgentReminderJob(db, { kind: "slack_dm_send", payload, idempotencyKey: `${bookingId}:slack_dm:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
       }
       if (settings.agentChannels.includes("sms")) {
         const payload: JobPayloads["sms_send"] = { template: "booking_reminder", bookingId, recipient: { userId }, offsetMin: offset };
-        await enqueue(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+        await enqueueAgentReminderJob(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
       }
     }
   }
@@ -198,14 +219,16 @@ export async function enqueueAllReminders(
 
 /**
  * Marks pending reminder jobs for a booking as dead, on every channel (used on cancel,
- * reschedule and host reassignment). With `userId`, only that host's reminders.
+ * reschedule and host reassignment). With `userId`, only that host's reminders, marked
+ * with HOST_REMOVED_ERROR so they are revived if the host is assigned again.
  */
 export async function cancelPendingReminders(db: Db, bookingId: string, opts: { userId?: string } = {}): Promise<number> {
   const userFilter = opts.userId
     ? db`and (payload ->> 'userId' = ${opts.userId} or payload -> 'recipient' ->> 'userId' = ${opts.userId})`
     : db``;
+  const lastError = opts.userId ? HOST_REMOVED_ERROR : "booking cancelled";
   const rows = await db`
-    update app.jobs set status = 'dead', last_error = 'booking cancelled', locked_until = null
+    update app.jobs set status = 'dead', last_error = ${lastError}, locked_until = null
     where booking_id = ${bookingId}
       and status in ('pending', 'failed')
       and (

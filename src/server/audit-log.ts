@@ -44,12 +44,24 @@ type HistoryRow = {
  */
 export async function loadBookingHistory(tx: Tx, bookingId: string, limit = 200): Promise<BookingHistoryEntry[]> {
   if (!z.uuid().safeParse(bookingId).success) return [];
+  // Read under the caller's row-level security: an unreadable booking has no history.
+  const [booking] = await tx<{ rescheduled_from_id: string | null }[]>`
+    select rescheduled_from_id from app.bookings where id = ${bookingId}
+  `;
+  if (!booking) return [];
+  // Only leakproof equality conditions, so Postgres can use audit_log_entity_idx before it
+  // applies the audit_log policies. A condition on the after jsonb would make it check the
+  // policy on every reschedule entry in the log first.
+  const fromId = booking.rescheduled_from_id;
   const rows = await tx<HistoryRow[]>`
     select a.id, a.created_at, a.action, a.via, u.name as actor_name, a.entity_id, a.before, a.after
     from app.audit_log a
     left join app.users u on u.id = a.actor_user_id
     where a.entity_type = 'booking'
-      and (a.entity_id = ${bookingId} or (a.action = 'booking.reschedule' and a.after ->> 'newBookingId' = ${bookingId}))
+      and (
+        a.entity_id = ${bookingId}
+        ${fromId ? tx`or (a.action = 'booking.reschedule' and a.entity_id = ${fromId})` : tx``}
+      )
     order by a.created_at, a.id
     limit ${limit}
   `;

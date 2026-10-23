@@ -73,8 +73,19 @@ export async function writeAuditDiff<T extends Record<string, unknown>>(
 const SECRET_KEY = /(secret|password|passphrase|private_?key|access_?token|refresh_?token|manage_?token|token_?(hash|enc)|bearer|authorization|api_?key_?value|signing)/i;
 
 /**
+ * Keys that are data rather than field names: email addresses (team hosts are keyed by
+ * member email) and anything with whitespace. These are never treated as secret names.
+ */
+const DATA_KEY = /[@\s]/;
+
+/**
  * Replaces the values of secret-looking keys with "[redacted]". A safety net only: callers
  * must not pass secrets in the first place.
+ *
+ * Only scalar and array values are redacted. When a secret-looking key holds an object, the
+ * object is searched instead, because some snapshots key maps by data (question keys,
+ * member emails, dates) and a key such as "signing_authority" must not hide the settings
+ * stored under it.
  */
 export function redactSecrets(value: unknown, depth = 0): unknown {
   if (depth > 8 || value === null || typeof value !== "object") return value;
@@ -82,7 +93,9 @@ export function redactSecrets(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = SECRET_KEY.test(k) && v !== null && v !== undefined ? "[redacted]" : redactSecrets(v, depth + 1);
+    const isRecord = v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+    const redact = v !== null && v !== undefined && !isRecord && !DATA_KEY.test(k) && SECRET_KEY.test(k);
+    out[k] = redact ? "[redacted]" : redactSecrets(v, depth + 1);
   }
   return out;
 }

@@ -172,8 +172,9 @@ export async function reassignBooking(
       });
       return { result: { reassignedTo: to.userId } };
     }
-    // Nobody free: restore the original host and flag for a human.
-    await tx`update app.booking_hosts set active = true where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Nobody free: restore the original host and flag for a human. Clearing reassigned_at
+    // keeps the booking visible to that host (app.can_read_booking).
+    await tx`update app.booking_hosts set active = true, reassigned_at = null where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     return flag("no eligible host is free");
   }) as Promise<JobResult>;
 }

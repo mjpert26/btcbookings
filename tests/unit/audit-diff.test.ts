@@ -78,4 +78,18 @@ describe("audit write helpers", () => {
       redactSecrets({ name: "Hook", secret: "s3cr3t", nested: { access_token: "a", refreshToken: "r", manage_token_enc: "x", tokens: 3 }, list: [{ client_secret: "c" }] }),
     ).toEqual({ name: "Hook", secret: "[redacted]", nested: { access_token: "[redacted]", refreshToken: "[redacted]", manage_token_enc: "[redacted]", tokens: 3 }, list: [{ client_secret: "[redacted]" }] });
   });
+
+  it("does not redact maps keyed by data such as member emails and question keys", () => {
+    const hosts = {
+      "signing.desk@example.com": { required: true, weightOverride: 2, priorityTierOverride: null },
+      "secretary@example.com": { required: false, weightOverride: null, priorityTierOverride: 1 },
+    };
+    const questions = { signing_authority: { type: "text", label: "Who signs?", required: true, options: null, position: 0 } };
+    expect(redactSecrets({ hosts, questions })).toEqual({ hosts, questions });
+    // Secret-named keys inside those objects are still redacted.
+    expect(redactSecrets({ "signing.desk@example.com": { required: true, api_key_value: "k" } })).toEqual({
+      "signing.desk@example.com": { required: true, api_key_value: "[redacted]" },
+    });
+    expect(redactSecrets({ password: ["a", "b"], signing_secret: 42 })).toEqual({ password: "[redacted]", signing_secret: "[redacted]" });
+  });
 });

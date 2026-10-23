@@ -35,7 +35,7 @@ Settings changes record only the fields that changed. `writeAuditDiff()` compare
 
 Existing event-style entries (team admins added or removed, queues linked, API keys, OAuth clients, callback URLs, imports) are unchanged.
 
-**Secrets.** Tokens, keys and secrets are never passed to the audit log. As a safety net, `writeAudit()` replaces the values of secret-looking keys (`secret`, `password`, `access_token`, `refresh_token`, `manage_token`, `token_hash`, `token_enc` and similar) with `[redacted]`. Phone numbers are stored only masked to the last four digits (`maskPhone()`, for example `***-4567`).
+**Secrets.** Tokens, keys and secrets are never passed to the audit log. As a safety net, `writeAudit()` replaces the values of secret-looking keys (`secret`, `password`, `access_token`, `refresh_token`, `manage_token`, `token_hash`, `token_enc` and similar) with `[redacted]`. Only scalar and array values are redacted: when such a key holds an object, the object is searched instead, and keys containing `@` or whitespace are never treated as secret names. This keeps maps keyed by data (team hosts by member email, booking questions by question key, overrides by date) readable, for example a host `signing.desk@...` or a question `signing_authority`. Phone numbers are stored only masked to the last four digits (`maskPhone()`, for example `***-4567`).
 
 ## Booking history (BTCSCHED-47)
 
@@ -55,12 +55,14 @@ The REST and MCP booking services no longer write their own booking entries; the
 
 ### Who can read a booking's history
 
-Row-level security on `app.audit_log` (migration `20261023080000_audit_history.sql`):
+Row-level security on `app.audit_log` (migrations `20261023080000_audit_history.sql` and `20261023080100_audit_history_reschedule_lookup.sql`):
 
 - `audit_log_select`: managers and admins read every entry.
-- `audit_log_booking_select`: everyone reads the entries of bookings they can read (`app.can_read_booking`), plus the `booking.reschedule` entry whose `after.newBookingId` is a booking they can read, so a new booking's timeline shows where it came from. Entity ids are cast with `app.try_uuid()`, which returns null for malformed values instead of failing.
+- `audit_log_booking_select`: everyone reads the entries of bookings they can read (`app.can_read_booking`), plus the `booking.reschedule` entry of the booking that a booking they can read replaced, so a new booking's timeline shows where it came from. The new booking must be named in `after.newBookingId` and must record the entry's booking as its `rescheduled_from_id`. Entity ids are cast with `app.try_uuid()`, which returns null for malformed values instead of failing.
 
-Agents therefore see the history of bookings in their name only (bookings they host, pages they own, and teams they are team admin of), the same rule that decides which bookings they see.
+Agents therefore see the history of bookings in their name only (bookings they host, pages they own, and teams they are team admin of), the same rule that decides which bookings they see. A host removed by a reassignment loses the booking and its history, and the new host gains both. When a reassignment finds no free host, the original host is restored (`active = true`, `reassigned_at = null`) and keeps the booking and its `booking.flag` entry.
+
+`loadBookingHistory()` first reads the booking under row-level security (no booking, no history), then selects the booking's own entries and the reschedule entry of `rescheduled_from_id` by `entity_id`. It uses only leakproof equality conditions, so Postgres can use `audit_log_entity_idx` before it applies the policies. A condition on the `after` jsonb is not leakproof and would make Postgres check the policy on every reschedule entry in the log first.
 
 The host booking detail page (`/bookings/{id}`) shows a **History** timeline: time, action, who (the user's name, "Invitee" or "System"), channel and the changed fields. REST `GET /api/v1/bookings/{id}` and MCP `get_booking` return the same history (`history[]` with `at`, `action`, `actor`, `actorLabel`, `via`, `changes`), read under the caller's row-level security.
 

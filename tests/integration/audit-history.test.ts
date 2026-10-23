@@ -191,6 +191,23 @@ describe("booking history: exactly one entry per lifecycle event", () => {
     ]);
   });
 
+  it("records an MCP cancel once with channel mcp, and a repeat cancel records nothing", async () => {
+    const host = await makeHost(sql);
+    const ev = await makeEvent(sql, { userId: host.id });
+    const tok = await mcpToken(host.id);
+    const booked = await tool(tok, "schedule_meeting", { eventTypeId: ev.id, start: futureSlot(2, 14), invitee: invitee() });
+    expect(booked.isError).toBe(false);
+    const id = booked.structuredContent.id as string;
+    expect((await tool(tok, "cancel_booking", { bookingId: id, reason: "Merchant asked" })).isError).toBe(false);
+    await tool(tok, "cancel_booking", { bookingId: id, reason: "Merchant asked" });
+    const all = await bookingAudits();
+    expect(all.map((a) => [a.entity_id, a.action, a.actor_user_id, a.via])).toEqual([
+      [id, "booking.create", host.id, "mcp"],
+      [id, "booking.cancel", host.id, "mcp"],
+    ]);
+    expect(all[1]).toMatchObject({ before: { status: "confirmed" }, after: { status: "cancelled", cancelledBy: "host", reason: "Merchant asked" } });
+  });
+
   it("records Outlook conflict auto-cancel and flag as system", async () => {
     const host = await makeHost(sql);
     const ev = await makeEvent(sql, { userId: host.id });
@@ -230,6 +247,12 @@ describe("booking history: exactly one entry per lifecycle event", () => {
       after: { hosts: [from === a.id ? "Ben" : "Ana"], hostUserId: to, reason: "removed_from_queue" },
     });
 
+    // The removed host loses the booking and its history; the new host gains both.
+    expect(await withUser(from, (tx) => tx`select id from app.bookings where id = ${r.bookingId}`)).toHaveLength(0);
+    expect(await withUser(from, (tx) => loadBookingHistory(tx, r.bookingId))).toEqual([]);
+    expect(await withUser(to, (tx) => tx`select id from app.bookings where id = ${r.bookingId}`)).toHaveLength(1);
+    expect((await withUser(to, (tx) => loadBookingHistory(tx, r.bookingId))).map((h) => h.action)).toEqual(["booking.create", "booking.reassign"]);
+
     // Both members busy at the same time: the second booking cannot move and is flagged.
     await sql`update app.team_members set status = 'active'`;
     const start = futureSlot(3, 13);
@@ -240,6 +263,14 @@ describe("booking history: exactly one entry per lifecycle event", () => {
     const xs = await bookingAudits(x.bookingId);
     expect(xs.map((e) => e.action)).toEqual(["booking.create", "booking.flag"]);
     expect(xs[1]).toMatchObject({ via: "system", after: { status: "flagged", source: "reassign" } });
+
+    // The restored host keeps the booking, still in their name, and sees the flag.
+    const [restored] = await sql<{ active: boolean; reassigned_at: Date | null }[]>`
+      select active, reassigned_at from app.booking_hosts where booking_id = ${x.bookingId} and user_id = ${xHost}
+    `;
+    expect(restored).toEqual({ active: true, reassigned_at: null });
+    expect(await withUser(xHost, (tx) => tx`select id from app.bookings where id = ${x.bookingId}`)).toHaveLength(1);
+    expect((await withUser(xHost, (tx) => loadBookingHistory(tx, x.bookingId))).map((h) => h.action)).toEqual(["booking.create", "booking.flag"]);
   });
 
   it("writes no per-booking entries for imported Calendly bookings", async () => {
@@ -304,6 +335,7 @@ describe("who can read bookings and their history", () => {
     const { agentA, agentB, bookingB } = await scene();
     const evA = await makeEvent(sql, { userId: agentA.id });
     const rA = await createBooking(input({ kind: "user", slug: agentA.slug }, evA.slug, futureSlot(4, 15)));
+    await sql`update app.bookings set rescheduled_from_id = ${bookingB} where id = ${rA.bookingId}`;
     await sql`
       insert into app.audit_log (action, entity_type, entity_id, after, via) values
         ('booking.reschedule', 'booking', ${bookingB}, ${sql.json({ newBookingId: rA.bookingId })}, 'public'),
@@ -322,6 +354,42 @@ describe("who can read bookings and their history", () => {
     expect(history.map((h) => h.action)).toEqual(["booking.create", "booking.reschedule"]);
     expect(await withUser(agentB.id, (tx) => tx`select 1 from app.audit_log where entity_id = ${rA.bookingId}`)).toHaveLength(0);
   });
+
+  it("does not expose a reschedule entry that names a booking which was not created from it", async () => {
+    const { agentA, agentB, bookingB } = await scene();
+    const evA = await makeEvent(sql, { userId: agentA.id });
+    const rA = await createBooking(input({ kind: "user", slug: agentA.slug }, evA.slug, futureSlot(4, 15)));
+    // rA.rescheduled_from_id is null, so naming rA in B's entry grants agent A nothing.
+    await sql`
+      insert into app.audit_log (action, entity_type, entity_id, after, via)
+      values ('booking.reschedule', 'booking', ${bookingB}, ${sql.json({ newBookingId: rA.bookingId })}, 'public')
+    `;
+    expect(await withUser(agentA.id, (tx) => tx`select 1 from app.audit_log where entity_id = ${bookingB}`)).toHaveLength(0);
+    expect((await withUser(agentA.id, (tx) => loadBookingHistory(tx, rA.bookingId))).map((h) => h.action)).toEqual(["booking.create"]);
+    expect(await withUser(agentB.id, (tx) => tx`select 1 from app.audit_log where entity_id = ${bookingB}`)).toHaveLength(2);
+  });
+
+  it("loads an agent's booking history without checking unrelated reschedule entries", async () => {
+    const host = await makeHost(sql, { name: "Hannah Host" });
+    const ev = await makeEvent(sql, { userId: host.id });
+    const r1 = await createBooking(input({ kind: "user", slug: host.slug }, ev.slug, futureSlot(2, 15)));
+    const r2 = await rescheduleByInvitee(r1.token, { start: futureSlot(2, 17) });
+    // Many reschedule entries for other bookings. Before the fix, each one went through the
+    // row-level security check on every history read (about 18 seconds for 50,000 rows).
+    await sql`
+      insert into app.audit_log (action, entity_type, entity_id, after, via)
+      select 'booking.reschedule', 'booking', gen_random_uuid()::text,
+             jsonb_build_object('newBookingId', gen_random_uuid()::text), 'public'
+      from generate_series(1, 50000)
+    `;
+    await sql`analyze app.audit_log`;
+    const started = performance.now();
+    const history = await withUser(host.id, (tx) => loadBookingHistory(tx, r2.bookingId));
+    const elapsed = performance.now() - started;
+    expect(history.map((h) => h.action)).toEqual(["booking.reschedule"]);
+    expect(history[0].rescheduledFromId).toBe(r1.bookingId);
+    expect(elapsed).toBeLessThan(1500);
+  }, 30_000);
 });
 
 describe("audit viewer data loader", () => {

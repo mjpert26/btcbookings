@@ -44,3 +44,11 @@ export async function makeTeam(
 export async function linkTestQueue(sql: Sql, teamId: string, queueId: string): Promise<void> {
   await sql`insert into app.team_sf_queues (team_id, queue_id) values (${teamId}, ${queueId})`;
 }
+
+/** Links a dry-run Slack channel so membership changes on the team enqueue Slack jobs. */
+export async function linkTestSlackChannel(sql: Sql, teamId: string, channelId = "C0TEST0001"): Promise<string> {
+  const [c] = await sql<{ id: string }[]>`
+    insert into app.team_slack_channels (team_id, channel_id) values (${teamId}, ${channelId}) returning id
+  `;
+  return c.id;
+}

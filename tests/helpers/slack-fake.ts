@@ -26,6 +26,12 @@ export function createFakeSlack() {
   const forced = new Map<string, ForcedResponse[]>();
   const calls: FakeCall[] = [];
   const settings = { restrictKicks: false, postMessageError: null as string | null, membersPageSize: 2 };
+  /** Workspace owners and admins (users.info reports is_admin / is_owner). */
+  const admins = new Set<string>();
+  /** Bot users other than the app's own bot. */
+  const bots = new Set<string>([BOT_USER_ID]);
+  /** User groups: id -> member ids. */
+  const usergroups = new Map<string, string[]>();
 
   const ok = (body: Record<string, unknown> = {}) => ({ ok: true, ...body });
   const err = (error: string) => ({ ok: false, error });
@@ -97,6 +103,22 @@ export function createFakeSlack() {
         visible.members.delete(a.user);
         return ok();
       }
+      case "users.info": {
+        const id = a.user ?? "";
+        if (!id) return err("user_not_found");
+        return ok({ user: { id, deleted: false, is_bot: bots.has(id), is_admin: admins.has(id), is_owner: false, is_primary_owner: false } });
+      }
+      case "usergroups.users.list": {
+        const g = usergroups.get(a.usergroup ?? "");
+        return g ? ok({ users: [...g] }) : err("no_such_subteam");
+      }
+      case "usergroups.users.update": {
+        if (!usergroups.has(a.usergroup ?? "")) return err("no_such_subteam");
+        const list = (a.users ?? "").split(",").filter(Boolean);
+        if (list.length === 0) return err("no_users_provided");
+        usergroups.set(a.usergroup, list);
+        return ok({ usergroup: { id: a.usergroup, users: list } });
+      }
       case "chat.postMessage":
         if (settings.postMessageError) return err(settings.postMessageError);
         return ok({ ts: "1700000000.000100" });
@@ -131,6 +153,9 @@ export function createFakeSlack() {
     fetch: fetchImpl,
     channels,
     users,
+    admins,
+    bots,
+    usergroups,
     calls,
     settings,
     addChannel,

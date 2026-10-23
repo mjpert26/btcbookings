@@ -11,6 +11,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Environment variables](#environment-variables)
 - [Microsoft Entra app registration](#microsoft-entra-app-registration)
 - [Slack app](#slack-app)
+- [Queue to booking page to Slack sync](#queue-to-booking-page-to-slack-sync)
 - [Reminders and SMS](#reminders-and-sms)
 - [Salesforce and n8n](#salesforce-and-n8n)
 - [Deploying to Vercel](#deploying-to-vercel)
@@ -97,7 +98,13 @@ Step-by-step instructions: [`docs/entra-setup.md`](docs/entra-setup.md). In shor
 
 ## Slack app
 
-Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel configurations start in dry-run mode.
+Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel and user group links start in dry-run mode with mode `add only`, which never removes anyone; set the mode to `add and remove` for reps who leave the queue to be taken out. A Slack user group can be linked to one team only.
+
+The manifest now includes `usergroups:read` and `usergroups:write` (for a team's linked Slack user group). An app installed before this change must be updated from the manifest and reinstalled before a user group link is turned live; channel sync keeps working without them. Without `SLACK_BOT_TOKEN`, Slack jobs succeed with a `slack_not_configured` result and change nothing.
+
+## Queue to booking page to Slack sync
+
+When a rep leaves a partner's Salesforce Queue, the next snapshot (or push) pauses their team membership, which takes them off every booking page of that team at once, including pages with their own host list. Their upcoming bookings follow the team's removal policy (`reassign` queues a reassignment; `keep_bookings` keeps them and lists them for review), and Slack jobs remove them from the partner's linked channels and user group. Adding a rep to the queue reverses it. Manual members are never changed by the sync, and teams without a linked queue or Slack link (such as the teams imported from Calendly) get no sync or Slack work. Status per team: **Admin > Sync status** (`/admin/sync`). Details: [`docs/queue-slack-sync.md`](docs/queue-slack-sync.md).
 
 ## Reminders and SMS
 
@@ -220,8 +227,8 @@ src/server/auth         Entra OIDC, sessions, first-login provisioning
 src/server/graph        Graph client, busy cache, subscriptions, delta, event writes
 src/server/scheduling   pure slot engine, round-robin, variant resolution
 src/server/booking      booking transaction, manage links, reassignment
-src/server/sync         Salesforce Queue snapshot diffing and safety rail
-src/server/slack        Slack channel sync and agent reminder direct messages
+src/server/sync         Salesforce Queue snapshot diffing, safety rail, run history and sync status
+src/server/slack        Slack channel and user group sync, agent reminder direct messages
 src/server/sms          SendBlue client, SMS reminders, opt-outs
 src/server/teams        partner page branding and logos
 src/server/webhooks     outbound booking webhooks (dispatch, signed delivery, admin)

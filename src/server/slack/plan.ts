@@ -155,3 +155,88 @@ export function noticeText(
   const prep = action === "invite" ? "to" : "from";
   return `BTC Scheduler ${verb} <@${slackUserId}> ${prep} <#${channelId}> (team: ${teamName}, reason: ${reason})`;
 }
+
+// ---------------------------------------------------------------------------
+// Removal protection
+// ---------------------------------------------------------------------------
+
+/** The users.info fields that decide whether the app may remove someone. */
+export type SlackUserFlags = {
+  id: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_admin?: boolean;
+  is_owner?: boolean;
+  is_primary_owner?: boolean;
+};
+
+export type RemovalCheck = { removable: true } | { removable: false; code: "workspace_admin" | "bot_user"; reason: string };
+
+/**
+ * Workspace owners, workspace admins and bot users (the app's own bot included) are never
+ * removed from a channel or user group by sync, whatever the mode.
+ */
+export function removalProtection(user: SlackUserFlags): RemovalCheck {
+  if (user.is_bot) return { removable: false, code: "bot_user", reason: "Bot users, including this app, are never removed" };
+  if (user.is_primary_owner || user.is_owner || user.is_admin) {
+    return { removable: false, code: "workspace_admin", reason: "Slack workspace owners and admins are never removed" };
+  }
+  return { removable: true };
+}
+
+// ---------------------------------------------------------------------------
+// User groups
+// ---------------------------------------------------------------------------
+
+export type UsergroupConfig = { mode: SlackMode; protected_slack_user_ids: string[] };
+
+export type UsergroupPlan =
+  | { action: "add" | "remove"; reason: string; next: string[] }
+  | { action: "skip"; code: string; reason: string }
+  | { action: "none"; reason: string };
+
+/**
+ * Decides the user group change for one member, given the group's current member list.
+ * Only this member is added or removed; everyone else in the group is kept as is. Slack
+ * rejects an empty member list, so removing the last member is skipped.
+ */
+export function planUsergroupMember(
+  cfg: UsergroupConfig,
+  state: MemberState,
+  slackUserId: string | null,
+  current: readonly string[],
+): UsergroupPlan {
+  const intended = intendedAction(cfg.mode, state);
+  if (intended === "none") {
+    if (state === "pending_onboarding") return { action: "none", reason: "Member is pending onboarding" };
+    return { action: "none", reason: "User group is add-only; members are never removed" };
+  }
+  if (!slackUserId) return { action: "skip", reason: "No Slack account found for this member", code: "users_not_found" };
+  const present = current.includes(slackUserId);
+  if (intended === "invite") {
+    if (present) return { action: "none", reason: "Already in the user group" };
+    return { action: "add", reason: "Member is active", next: [...current, slackUserId] };
+  }
+  if (!present) return { action: "none", reason: "Not in the user group" };
+  if (cfg.protected_slack_user_ids.includes(slackUserId)) {
+    return { action: "skip", reason: "User is protected from removal in this user group", code: "protected_user" };
+  }
+  const next = current.filter((u) => u !== slackUserId);
+  if (next.length === 0) {
+    return { action: "skip", reason: "Slack does not allow an empty user group; disable the group in Slack instead", code: "empty_group" };
+  }
+  return { action: "remove", reason: state === "removed" ? "Member removed from team" : "Member paused", next };
+}
+
+/** Slack user group ids. Matches the DB check constraint. */
+export const USERGROUP_ID_RE = /^S[A-Z0-9]{6,}$/;
+
+/**
+ * The confirmation shown after an admin turns dry run on or off for a channel or user group.
+ * In add-only mode only additions apply; removed members stay until the mode is changed.
+ */
+export function dryRunChangedMessage(target: "channel" | "user group", dryRun: boolean, mode: SlackMode): string {
+  if (dryRun) return "Dry run is on. Changes are recorded but not applied.";
+  if (mode === "add_and_remove") return `Dry run is off. Members are now added to and removed from the Slack ${target}.`;
+  return `Dry run is off. New members are now added to the Slack ${target}. The mode is add only, so members who leave the team stay in the ${target} until you set the mode to add and remove.`;
+}

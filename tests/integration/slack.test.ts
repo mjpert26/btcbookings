@@ -4,7 +4,7 @@ import { createFakeSlack, type FakeSlack } from "../helpers/slack-fake";
 import { withUser, type Sql } from "@/server/db/client";
 import { enqueue } from "@/server/jobs/queue";
 import { runJobs } from "@/server/jobs/worker";
-import { createSlackClient, type SlackClient } from "@/server/slack/client";
+import { createSlackClient, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
 import { createSlackHandlers } from "@/server/slack/jobs";
 import { IDENTITY_TTL_DAYS } from "@/server/slack/sync";
 import {
@@ -313,7 +313,8 @@ describe("slack_membership_sync", () => {
     await sync(team, p.id, "C9999999");
     expect(await actionsFor(a.id)).toMatchObject([{ action: "invite", outcome: "would_do", dry_run: true }]);
     expect(await actionsFor(p.id)).toMatchObject([{ action: "kick", outcome: "would_do", dry_run: true }]);
-    expect(fake.calls.map((c) => c.method).filter((x) => x !== "users.lookupByEmail")).toEqual([]);
+    // Only reads: the identity lookup and the users.info removal check.
+    expect(fake.calls.map((c) => c.method).filter((x) => x !== "users.lookupByEmail" && x !== "users.info")).toEqual([]);
     expect(ch.members.has("UDRY00001")).toBe(false);
     expect(ch.members.has("UDRY00002")).toBe(true);
   });
@@ -374,6 +375,60 @@ describe("slack_membership_sync", () => {
     expect(ch.members.has("UDEL00001")).toBe(false);
     const [row] = await sql`select action, outcome, team_member_id from app.slack_channel_actions where action = 'kick'`;
     expect(row).toMatchObject({ action: "kick", outcome: "done", team_member_id: null });
+  });
+
+  it("never removes workspace owners, admins or bot users, even in add-and-remove mode", async () => {
+    const team = await makeTeam();
+    const ch = fake.addChannel({ id: "C1000020" });
+    await makeConfig(team, "C1000020");
+    const admin = await makeMember(team, "paused", "UADM00001");
+    const bot = await makeMember(team, "paused", "UBOTX0001");
+    fake.admins.add("UADM00001");
+    fake.bots.add("UBOTX0001");
+    ch.members.add("UADM00001");
+    ch.members.add("UBOTX0001");
+    await sync(team, admin.id);
+    await sync(team, bot.id);
+    expect(ch.members.has("UADM00001")).toBe(true);
+    expect(ch.members.has("UBOTX0001")).toBe(true);
+    expect(fake.callsTo("conversations.kick")).toHaveLength(0);
+    expect(await actionsFor(admin.id)).toMatchObject([{ action: "skip", outcome: "skipped", error_code: "workspace_admin" }]);
+    expect(await actionsFor(bot.id)).toMatchObject([{ action: "skip", outcome: "skipped", error_code: "bot_user" }]);
+  });
+
+  it("does not remove anyone Slack cannot confirm with users.info", async () => {
+    const team = await makeTeam();
+    const ch = fake.addChannel({ id: "C1000021" });
+    await makeConfig(team, "C1000021");
+    const m = await makeMember(team, "paused", "UUNK00001");
+    ch.members.add("UUNK00001");
+    fake.force("users.info", { body: { ok: false, error: "user_not_visible" } });
+    expect(await sync(team, m.id)).toMatchObject({ succeeded: 1 });
+    expect(ch.members.has("UUNK00001")).toBe(true);
+    expect(await actionsFor(m.id)).toMatchObject([{ action: "skip", error_code: "user_not_visible" }]);
+  });
+
+  it("succeeds with a skipped result and no Slack calls when SLACK_BOT_TOKEN is not set", async () => {
+    const team = await makeTeam();
+    fake.addChannel({ id: "C1000022" });
+    await makeConfig(team, "C1000022");
+    const m = await makeMember(team, "active", "UNCF00001");
+    const unconfigured = createSlackHandlers({
+      client: () => {
+        throw new SlackNotConfiguredError();
+      },
+    });
+    for (const kind of ["slack_membership_sync", "slack_usergroup_sync"]) {
+      await enqueue(sql, { kind, payload: { teamId: team, teamMemberId: m.id }, idempotencyKey: `nc:${kind}` });
+    }
+    await sql`insert into app.team_slack_usergroups (team_id, usergroup_id) values (${team}, 'S1000022')`;
+    expect(await runJobs(unconfigured, { sql, deadlineMs: 5000 })).toMatchObject({ succeeded: 2, dead: 0 });
+    const jobs = await sql`select kind, status, result from app.jobs order by kind`;
+    expect(jobs).toEqual([
+      { kind: "slack_membership_sync", status: "succeeded", result: { skipped: "slack_not_configured" } },
+      { kind: "slack_usergroup_sync", status: "succeeded", result: { skipped: "slack_not_configured" } },
+    ]);
+    expect(fake.calls).toHaveLength(0);
   });
 
   it("is a no-op for teams without channels and rejects bad payloads", async () => {

@@ -9,6 +9,7 @@ import { can, type Capability, type Role } from "@/lib/permissions";
 const ITEMS: { href: string; label: string; exact?: boolean; capability?: Capability }[] = [
   { href: "/admin", label: "Overview", exact: true },
   { href: "/admin/users", label: "Users" },
+  { href: "/admin/sync", label: "Sync status" },
   { href: "/admin/salesforce/lead-routing", label: "Lead routing (ISO)" },
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
   { href: "/admin/integrations", label: "Integrations" },

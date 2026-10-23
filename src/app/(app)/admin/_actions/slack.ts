@@ -4,10 +4,19 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireAdmin } from "@/server/auth/session";
 import { addChannel, checkChannelHealth, fullResync, removeChannel, setDryRun, updateChannel } from "@/server/slack/admin";
+import {
+  checkUsergroupHealth,
+  linkUsergroup,
+  resyncUsergroup,
+  setUsergroupDryRun,
+  unlinkUsergroup,
+  updateUsergroup,
+} from "@/server/slack/usergroup-admin";
 import type { ActionState } from "@/lib/form-state";
 import { bool, fail, invalid, isUuid, ok, str } from "@/server/ui/form";
 import { adminError, audited } from "@/server/ui/admin";
-import { SLACK_CHANNEL_RE, SLACK_USER_RE } from "@/lib/ids";
+import { SLACK_CHANNEL_RE, SLACK_USER_RE, SLACK_USERGROUP_RE } from "@/lib/ids";
+import { dryRunChangedMessage, type SlackMode } from "@/server/slack/plan";
 
 /**
  * Admin actions for Slack channel sync. Each action parses the form and delegates to
@@ -83,13 +92,14 @@ export async function setDryRunAction(configId: string, _prev: ActionState, fd: 
   const user = await requireAdmin();
   if (!isUuid(configId)) return fail("Channel not found.");
   const dryRun = bool(fd, "dryRun");
+  let mode: SlackMode;
   try {
-    await audited(() => setDryRun(user.id, configId, dryRun));
+    mode = (await audited(() => setDryRun(user.id, configId, dryRun))).mode;
   } catch (err) {
     return adminError(err);
   }
   revalidatePath(SLACK_PAGE, "page");
-  return ok(dryRun ? "Dry run is on. Changes are recorded but not applied." : "Dry run is off. Membership changes now apply to the Slack channel.");
+  return ok(dryRunChangedMessage("channel", dryRun, mode));
 }
 
 export async function removeChannelAction(configId: string): Promise<ActionState> {
@@ -129,4 +139,103 @@ export async function fullResyncAction(configId: string): Promise<ActionState> {
   }
   revalidatePath(SLACK_PAGE, "page");
   return ok(`Full resync queued for ${res.enqueued} member${res.enqueued === 1 ? "" : "s"}.`);
+}
+
+// ---------------------------------------------------------------------------
+// Slack user group
+// ---------------------------------------------------------------------------
+
+const usergroupSchema = z.object({
+  mode: z.enum(["add_only", "add_and_remove"]),
+  handle: z.string().trim().max(80),
+  protectedSlackUserIds: userIdList,
+});
+
+const linkUsergroupSchema = usergroupSchema.extend({
+  usergroupId: z.string().trim().toUpperCase().regex(SLACK_USERGROUP_RE, "User group IDs start with S, for example S012ABCDEF."),
+});
+
+function readUsergroup(fd: FormData) {
+  return { mode: str(fd, "mode"), handle: str(fd, "handle"), protectedSlackUserIds: str(fd, "protectedSlackUserIds") };
+}
+
+export async function linkUsergroupAction(teamId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(teamId)) return fail("Team not found.");
+  const parsed = linkUsergroupSchema.safeParse({ ...readUsergroup(fd), usergroupId: str(fd, "usergroupId") });
+  if (!parsed.success) return invalid(parsed.error);
+  let row;
+  try {
+    row = await audited(() => linkUsergroup(user.id, teamId, parsed.data));
+  } catch (err) {
+    return adminError(err, { usergroupId: "Check this user group ID." });
+  }
+  revalidatePath(`/admin/teams/${teamId}/slack`);
+  return ok(`User group linked in dry-run mode (health: ${row.health.replace(/_/g, " ")}). Review the recent actions before turning dry run off.`);
+}
+
+export async function updateUsergroupAction(configId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(configId)) return fail("User group link not found.");
+  const parsed = usergroupSchema.safeParse(readUsergroup(fd));
+  if (!parsed.success) return invalid(parsed.error);
+  try {
+    await audited(() => updateUsergroup(user.id, configId, parsed.data));
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(SLACK_PAGE, "page");
+  return ok("User group saved.");
+}
+
+export async function setUsergroupDryRunAction(configId: string, _prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(configId)) return fail("User group link not found.");
+  const dryRun = bool(fd, "dryRun");
+  let mode: SlackMode;
+  try {
+    mode = (await audited(() => setUsergroupDryRun(user.id, configId, dryRun))).mode;
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(SLACK_PAGE, "page");
+  return ok(dryRunChangedMessage("user group", dryRun, mode));
+}
+
+export async function unlinkUsergroupAction(configId: string): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(configId)) return fail("User group link not found.");
+  try {
+    await audited(() => unlinkUsergroup(user.id, configId));
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(SLACK_PAGE, "page");
+  return ok("User group unlinked. Existing Slack members were not changed.");
+}
+
+export async function checkUsergroupHealthAction(configId: string): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(configId)) return fail("User group link not found.");
+  let row;
+  try {
+    row = await audited(() => checkUsergroupHealth(user.id, configId));
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(SLACK_PAGE, "page");
+  return row.health === "ok" ? ok("User group is reachable.") : fail(row.last_error ?? `Health: ${row.health}.`);
+}
+
+export async function resyncUsergroupAction(configId: string): Promise<ActionState> {
+  const user = await requireAdmin();
+  if (!isUuid(configId)) return fail("User group link not found.");
+  let res;
+  try {
+    res = await audited(() => resyncUsergroup(user.id, configId));
+  } catch (err) {
+    return adminError(err);
+  }
+  revalidatePath(SLACK_PAGE, "page");
+  return ok(`User group resync queued for ${res.enqueued} member${res.enqueued === 1 ? "" : "s"}.`);
 }

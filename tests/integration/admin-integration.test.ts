@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
 import { graphError, installGraphMock, json, resetGraph, type GraphMock } from "../helpers/graph-mock";
-import { makeTeam } from "../helpers/sync";
+import { linkTestSlackChannel, makeTeam } from "../helpers/sync";
 import { withUser, type Sql } from "@/server/db/client";
 import { withAuditContext } from "@/server/audit";
 import { addManualMember, createTeam, manualMemberOverride, removeManualMember } from "@/server/sync/admin";
@@ -75,6 +75,7 @@ describe("manualMemberOverride from the team page", () => {
     const { teamAdmin, outsider } = await actors();
     const team = await makeTeam(sql, { membershipSource: "manual" });
     await sql`insert into app.team_admins (team_id, user_id) values (${team}, ${teamAdmin.id})`;
+    await linkTestSlackChannel(sql, team);
     const rep = await makeUser(sql);
     const tm = await member(team, rep.email, rep.id);
 
@@ -122,15 +123,18 @@ describe("manualMemberOverride from the team page", () => {
     const later = await booking(reassign, host.id, 96);
     await booking(reassign, host.id, -48); // past
     await booking(reassign, host.id, 72, { status: "cancelled" });
-    await booking(reassign, host.id, 80, { role: "collective" });
+    // Collective (non-primary) hosts are reassigned too: the handler removes them from the booking.
+    const collective = await booking(reassign, host.id, 80, { role: "collective" });
+    const imported = await booking(reassign, host.id, 90);
+    await sql`update app.bookings set import_source = 'calendly', import_ref = 'ext-1' where id = ${imported}`;
     await booking(keep, host.id, 50); // other team
 
     const res = await manualMemberOverride(teamAdmin, tmR, "paused");
-    expect(res.reassignJobs).toBe(2);
+    expect(res.reassignJobs).toBe(3);
     const jobs = await sql<{ payload: Record<string, string>; booking_id: string; team_id: string; idempotency_key: string }[]>`
       select payload, booking_id, team_id, idempotency_key from app.jobs where kind = 'booking_reassign' order by created_at, booking_id
     `;
-    expect(jobs.map((j) => j.booking_id).sort()).toEqual([future, later].sort());
+    expect(jobs.map((j) => j.booking_id).sort()).toEqual([future, later, collective].sort());
     for (const j of jobs) {
       expect(j.payload).toEqual({ bookingId: j.booking_id, fromUserId: host.id, reason: "paused_by_admin" });
       expect(j.team_id).toBe(reassign);
@@ -138,10 +142,12 @@ describe("manualMemberOverride from the team page", () => {
     }
 
     expect((await manualMemberOverride(teamAdmin, tmK, "paused")).reassignJobs).toBe(0);
-    expect(await count("select count(*) as n from app.jobs where kind = 'booking_reassign'")).toBe(2);
+    expect(await count("select count(*) as n from app.jobs where kind = 'booking_reassign'")).toBe(3);
     // Unpausing never reassigns.
     await manualMemberOverride(teamAdmin, tmR, "active");
-    expect(await count("select count(*) as n from app.jobs where kind = 'booking_reassign'")).toBe(2);
+    expect(await count("select count(*) as n from app.jobs where kind = 'booking_reassign'")).toBe(3);
+    // Neither team has a Slack link, so no Slack jobs were queued.
+    expect(await count("select count(*) as n from app.jobs where kind like 'slack_%'")).toBe(0);
   });
 
   it("refuses to enqueue reassignments for an event the caller did not write", async () => {
@@ -164,6 +170,7 @@ describe("manual members", () => {
     const { teamAdmin, outsider } = await actors();
     const team = await makeTeam(sql, { membershipSource: "queue_plus_manual" });
     await sql`insert into app.team_admins (team_id, user_id) values (${team}, ${teamAdmin.id})`;
+    await linkTestSlackChannel(sql, team);
     const ready = await makeUser(sql, { email: "ready@bigthinkcapital.com" });
 
     await expect(addManualMember(outsider, team, "ready@bigthinkcapital.com")).rejects.toMatchObject({ code: "forbidden" });
@@ -186,6 +193,8 @@ describe("manual members", () => {
     const { teamAdmin, outsider } = await actors();
     const team = await makeTeam(sql, { membershipSource: "queue_plus_manual" });
     await sql`insert into app.team_admins (team_id, user_id) values (${team}, ${teamAdmin.id})`;
+    await linkTestSlackChannel(sql, team);
+    await sql`insert into app.team_slack_usergroups (team_id, usergroup_id) values (${team}, 'S0TEST0001')`;
     const busy = await makeUser(sql);
     const free = await makeUser(sql);
     const queued = await makeUser(sql);
@@ -203,8 +212,11 @@ describe("manual members", () => {
     expect(await sql`select 1 from app.team_members where id = ${tmFree}`).toHaveLength(0);
     const [ev] = await sql`select team_member_id, old_status, new_status, detail from app.membership_events where id = ${res.membershipEventId}`;
     expect(ev).toMatchObject({ team_member_id: null, old_status: "active", new_status: null, detail: { change: "removed", team_member_id: tmFree } });
-    const [job] = await sql`select payload from app.jobs where idempotency_key = ${"membership_event:" + res.membershipEventId}`;
-    expect(job.payload).toEqual({ teamId: team, teamMemberId: tmFree });
+    const jobs = await sql`select kind, payload from app.jobs where idempotency_key = ${"membership_event:" + res.membershipEventId} order by kind`;
+    expect(jobs).toEqual([
+      { kind: "slack_membership_sync", payload: { teamId: team, teamMemberId: tmFree } },
+      { kind: "slack_usergroup_sync", payload: { teamId: team, teamMemberId: tmFree } },
+    ]);
     const [audit] = await sql`select actor_user_id, before from app.audit_log where action = 'team_member.remove'`;
     expect(audit).toMatchObject({ actor_user_id: teamAdmin.id, before: { email: free.email, source: "manual" } });
   });

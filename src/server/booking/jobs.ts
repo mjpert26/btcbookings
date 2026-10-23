@@ -60,6 +60,9 @@ export async function reassignBooking(
   if (booking.status !== "confirmed" || booking.start_at.getTime() <= now) {
     return { result: { skipped: `status_${booking.status}_or_past` } };
   }
+  // Bookings imported from Calendly never produce outbound work (Calendly still owns them).
+  const [origin] = await sql<{ import_source: string | null }[]>`select import_source from app.bookings where id = ${booking.id}`;
+  if (origin?.import_source) return { result: { skipped: "imported_booking" } };
   const loaded = await loadEventTypeById(sql, booking.event_type_id);
   if (!loaded) throw new PermanentJobError("Event type not found");
   const et = loaded.resolved.eventType;

@@ -16,8 +16,21 @@ import { ButtonLink } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { ConfirmAction } from "@/components/app/ConfirmAction";
 import { formatDateTime, formatRelative } from "@/lib/format";
-import { addChannelAction, checkHealthAction, fullResyncAction, removeChannelAction, setDryRunAction, updateChannelAction } from "../../../../_actions/slack";
-import { AddChannelForm, DryRunToggle, EditChannelDialog } from "./SlackForms";
+import {
+  addChannelAction,
+  checkHealthAction,
+  checkUsergroupHealthAction,
+  fullResyncAction,
+  linkUsergroupAction,
+  removeChannelAction,
+  resyncUsergroupAction,
+  setDryRunAction,
+  setUsergroupDryRunAction,
+  unlinkUsergroupAction,
+  updateChannelAction,
+  updateUsergroupAction,
+} from "../../../../_actions/slack";
+import { AddChannelForm, DryRunToggle, EditChannelDialog, EditUsergroupDialog, LinkUsergroupForm } from "./SlackForms";
 
 export const metadata: Metadata = { title: "Slack channels" };
 
@@ -29,6 +42,18 @@ type Channel = {
   dry_run: boolean;
   protected_slack_user_ids: string[];
   notify_channel_id: string | null;
+  health: string;
+  last_error: string | null;
+  last_checked_at: Date | null;
+};
+
+type Usergroup = {
+  id: string;
+  usergroup_id: string;
+  usergroup_handle: string | null;
+  mode: string;
+  dry_run: boolean;
+  protected_slack_user_ids: string[];
   health: string;
   last_error: string | null;
   last_checked_at: Date | null;
@@ -77,10 +102,21 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
       order by a.created_at desc
       limit 25
     `;
-    return { team, channels, actions };
+    const [usergroup] = await tx<Usergroup[]>`
+      select id, usergroup_id, usergroup_handle, mode, dry_run, protected_slack_user_ids, health, last_error, last_checked_at
+      from app.team_slack_usergroups where team_id = ${id}
+    `;
+    const usergroupActions = await tx<ActionRow[]>`
+      select a.id, a.usergroup_config_id as channel_config_id, tm.email, a.action, a.dry_run, a.outcome, a.error_code, a.detail, a.created_at
+      from app.slack_usergroup_actions a left join app.team_members tm on tm.id = a.team_member_id
+      where a.team_id = ${id}
+      order by a.created_at desc
+      limit 25
+    `;
+    return { team, channels, actions, usergroup: usergroup ?? null, usergroupActions };
   });
   if (!data) notFound();
-  const { team, channels, actions } = data;
+  const { team, channels, actions, usergroup, usergroupActions } = data;
   const preview = previewId ? channels.find((c) => c.id === previewId) : undefined;
   const previewData = preview ? await loadPreview(user.id, preview.id) : null;
 
@@ -91,8 +127,8 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
           { href: "/admin", label: "Admin" },
           { href: `/teams/${team.id}`, label: team.name },
         ]}
-        title="Slack channels"
-        description="Active team members are invited to these channels. In add-and-remove mode, paused members are removed."
+        title="Slack channels and user group"
+        description="Active team members are invited to these channels and the team's user group. In add-and-remove mode, paused members are removed."
       />
 
       {channels.length === 0 ? (
@@ -197,12 +233,106 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
         </CardBody>
       </Card>
 
-      <Card aria-labelledby="recent-h">
-        <CardHeader id="recent-h" title="Recent actions" description="What the Slack sync did or, in dry run, would have done." />
+      <UsergroupCard teamId={team.id} usergroup={usergroup} />
+
+      <ActionsTable title="Recent user group actions" caption="Recent Slack user group actions" id="ug-recent-h" actions={usergroupActions} timezone={user.timezone} hidden={!usergroup && usergroupActions.length === 0} />
+
+      <ActionsTable title="Recent channel actions" caption="Recent Slack actions" id="recent-h" actions={actions} timezone={user.timezone} />
+    </>
+  );
+}
+
+function UsergroupCard({ teamId, usergroup }: { teamId: string; usergroup: Usergroup | null }) {
+  if (!usergroup) {
+    return (
+      <Card className="mb-6" aria-labelledby="ug-h">
+        <CardHeader
+          id="ug-h"
+          title="Slack user group"
+          description="Optional. Keeps the partner's Slack user group (for example @partner-team) in step with the roster, the same way as channels."
+        />
+        <CardBody>
+          <LinkUsergroupForm action={linkUsergroupAction.bind(null, teamId)} />
+        </CardBody>
+      </Card>
+    );
+  }
+  const label = usergroup.usergroup_handle ? `@${usergroup.usergroup_handle}` : usergroup.usergroup_id;
+  return (
+    <Card className="mb-6" aria-labelledby="ug-h">
+      <CardHeader
+        id="ug-h"
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            Slack user group {label}
+            <span className="font-mono text-xs font-normal text-muted">{usergroup.usergroup_id}</span>
+            {usergroup.dry_run ? (
+              <Badge tone="navy" className="tracking-wider">
+                DRY RUN
+              </Badge>
+            ) : (
+              <Badge tone="success">LIVE</Badge>
+            )}
+            <StatusBadge status={usergroup.health} />
+          </span>
+        }
+        description={`${usergroup.mode === "add_only" ? "Add only" : "Add and remove"} · checked ${formatRelative(usergroup.last_checked_at)}`}
+        actions={
+          <EditUsergroupDialog
+            action={updateUsergroupAction.bind(null, usergroup.id)}
+            label={label}
+            values={{ mode: usergroup.mode, handle: usergroup.usergroup_handle ?? "", protectedSlackUserIds: usergroup.protected_slack_user_ids.join(", ") }}
+          />
+        }
+      />
+      <CardBody className="grid gap-5 md:grid-cols-2">
+        <div className="space-y-3">
+          <DryRunToggle action={setUsergroupDryRunAction.bind(null, usergroup.id)} dryRun={usergroup.dry_run} label={label} />
+          <p className="text-sm">
+            <span className="text-muted">Protected users: </span>
+            <span className="font-mono text-xs">{usergroup.protected_slack_user_ids.length ? usergroup.protected_slack_user_ids.join(", ") : "None"}</span>
+          </p>
+          <p className="text-xs text-muted">Workspace owners, workspace admins and bots are never removed.</p>
+        </div>
+        <div className="space-y-3">
+          {usergroup.last_error ? (
+            <div role="alert" className="rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-sm">
+              <p className="font-semibold text-danger">Last check failed</p>
+              <p className="mt-1 font-mono text-xs text-ink">{usergroup.last_error}</p>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <ActionButton action={checkUsergroupHealthAction.bind(null, usergroup.id)} size="sm" pendingLabel="Checking…">
+              Check health
+            </ActionButton>
+            <ActionButton action={resyncUsergroupAction.bind(null, usergroup.id)} size="sm" pendingLabel="Queuing…">
+              Full resync
+            </ActionButton>
+            <ConfirmAction
+              action={unlinkUsergroupAction.bind(null, usergroup.id)}
+              trigger="Unlink"
+              triggerSize="sm"
+              triggerVariant="ghost"
+              title={`Unlink ${label}?`}
+              description="Sync stops for this user group. Current Slack members are not changed."
+              confirmLabel="Unlink user group"
+            />
+          </div>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
+function ActionsTable({ title, caption, id, actions, timezone, hidden }: { title: string; caption: string; id: string; actions: ActionRow[]; timezone: string; hidden?: boolean }) {
+  if (hidden) return null;
+  return (
+      <Card className="mb-6" aria-labelledby={id}>
+        <CardHeader id={id} title={title} description="What the Slack sync did or, in dry run, would have done." />
         {actions.length === 0 ? (
           <p className="px-5 py-4 text-sm text-muted">No actions recorded yet.</p>
         ) : (
-          <Table caption="Recent Slack actions">
+          <Table caption={caption}>
             <THead>
               <TR>
                 <TH>When</TH>
@@ -215,7 +345,7 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
             <TBody>
               {actions.map((a) => (
                 <TR key={a.id}>
-                  <TD className="whitespace-nowrap">{formatDateTime(a.created_at, user.timezone)}</TD>
+                  <TD className="whitespace-nowrap">{formatDateTime(a.created_at, timezone)}</TD>
                   <TD>{a.email ?? "—"}</TD>
                   <TD>
                     {a.action} {a.dry_run ? <Badge tone="navy">DRY RUN</Badge> : null}
@@ -230,7 +360,6 @@ export default async function TeamSlackPage({ params, searchParams }: { params: 
           </Table>
         )}
       </Card>
-    </>
   );
 }
 

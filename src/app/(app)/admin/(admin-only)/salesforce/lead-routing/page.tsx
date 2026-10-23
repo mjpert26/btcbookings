@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ButtonLink } from "@/components/ui/Button";
+import { SF_LEAD_MODE_OPTIONS } from "@/lib/salesforce";
 
 export const metadata: Metadata = { title: "Lead routing" };
 
@@ -24,8 +25,11 @@ type Row = {
   create_sf_lead: boolean | null;
   iso: string | null;
   owner_mode: string | null;
+  lead_mode: string | null;
   has_own_settings: boolean;
 };
+
+const LEAD_MODE_LABEL: Record<string, string> = Object.fromEntries(SF_LEAD_MODE_OPTIONS.map((o) => [o.value, o.short]));
 
 const OWNER_MODE_LABEL: Record<string, string> = {
   assigned_host: "Assigned host",
@@ -34,7 +38,7 @@ const OWNER_MODE_LABEL: Record<string, string> = {
 };
 
 /**
- * Every booking page with its Salesforce lead settings (create-lead toggle, ISO, owner mode).
+ * Every booking page with its Salesforce lead settings (on/off, lead handling, ISO, owner mode).
  * Variants without their own settings show the parent's values as inherited.
  */
 export default async function LeadRoutingPage() {
@@ -46,6 +50,7 @@ export default async function LeadRoutingPage() {
            coalesce(own.create_sf_lead, par.create_sf_lead) as create_sf_lead,
            coalesce(own.static_values, par.static_values) ->> ${ISO_FIELD} as iso,
            coalesce(own.owner_mode, par.owner_mode)::text as owner_mode,
+           coalesce(own.lead_mode, par.lead_mode)::text as lead_mode,
            (own.event_type_id is not null) as has_own_settings
     from app.event_types et
     left join app.users u on u.id = et.owner_user_id
@@ -66,12 +71,12 @@ export default async function LeadRoutingPage() {
     <>
       <PageHeader
         title="Lead routing"
-        description="Salesforce Lead creation and the lead source (ISO) for every booking page. Settings are per booking page; Spanish and other variants inherit from their parent unless overridden."
+        description="Salesforce lead handling and the lead source (ISO) for every booking page. Settings are per booking page; Spanish and other variants inherit from their parent unless overridden."
       />
       <div className="mb-4 flex flex-wrap gap-2 text-sm">
         <Badge tone="navy">{rows.length} booking pages</Badge>
-        <Badge tone="success">{enabled} creating leads</Badge>
-        {missingIso ? <Badge tone="warning">{missingIso} creating leads without an ISO</Badge> : null}
+        <Badge tone="success">{enabled} sending to Salesforce</Badge>
+        {missingIso ? <Badge tone="warning">{missingIso} sending to Salesforce without an ISO</Badge> : null}
       </div>
       <Card>
         {rows.length === 0 ? (
@@ -86,7 +91,8 @@ export default async function LeadRoutingPage() {
               <TR>
                 <TH>Booking page</TH>
                 <TH>Owner</TH>
-                <TH>Create lead</TH>
+                <TH>Salesforce</TH>
+                <TH>Lead handling</TH>
                 <TH>Lead source (ISO)</TH>
                 <TH>Lead owner</TH>
                 <TH>
@@ -113,6 +119,7 @@ export default async function LeadRoutingPage() {
                     </TD>
                     <TD>{r.team_name ? `Team: ${r.team_name}` : (r.owner_name ?? "")}</TD>
                     <TD>{r.create_sf_lead ? <Badge tone="success">On</Badge> : <Badge>Off</Badge>}</TD>
+                    <TD>{r.lead_mode ? (LEAD_MODE_LABEL[r.lead_mode] ?? r.lead_mode) : <span className="text-muted">Default</span>}</TD>
                     <TD className="font-mono text-xs">{r.iso ?? <span className="font-sans text-muted">Not set</span>}</TD>
                     <TD>{r.owner_mode ? (OWNER_MODE_LABEL[r.owner_mode] ?? r.owner_mode) : <span className="text-muted">Default</span>}</TD>
                     <TD className="text-right">

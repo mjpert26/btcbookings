@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLeadPayload,
+  buildSourceLabel,
   isSalesforceId,
   isValidFieldApiName,
+  selectNoteText,
   SfSettingsError,
   splitName,
   validateFieldMapping,
   type LeadBuildInput,
+  type NoteQuestion,
 } from "@/server/salesforce/settings";
 
 const ISO = "001Hp00002abcdeIAA";
@@ -38,6 +41,7 @@ function input(over: Partial<LeadBuildInput> = {}, settings: Partial<LeadBuildIn
       create_task: false,
       create_note: false,
       set_meeting_booked_fields: false,
+      lead_mode: "create",
       ...settings,
     },
   };
@@ -196,5 +200,92 @@ describe("id and field name validation", () => {
     expect(isSalesforceId("001Hp00002abcd", ["001"])).toBe(false);
     expect(isSalesforceId("001Hp00002abcdeIA", ["001"])).toBe(false);
     expect(isSalesforceId(USER, ["001"])).toBe(false);
+  });
+});
+
+describe("selectNoteText", () => {
+  const q = (key: string, en: string, position: number, type = "textarea"): NoteQuestion => ({ key, type, label: { en, es: en }, position });
+
+  it("matches the Calendly patterns on the key or the English label", () => {
+    expect(selectNoteText({ notes: "Call after 5" })).toBe("Call after 5");
+    expect(selectNoteText({ additional_info: "Two locations" })).toBe("Two locations");
+    expect(selectNoteText({ prep: "Bring statements" }, [q("prep", "Is there anything that will help us prepare?", 1)])).toBe("Bring statements");
+    expect(selectNoteText({ x: "Seasonal" }, [q("x", "Please share anything that will help prepare for our meeting", 1)])).toBe("Seasonal");
+    expect(selectNoteText({ extra: "Hi" }, [q("extra", "ADDITIONAL comments", 1)])).toBe("Hi");
+    expect(
+      selectNoteText({ company: "Acme", revenue: "50000" }, [q("company", "Business name", 1, "text"), q("revenue", "Monthly revenue", 2, "text")]),
+    ).toBeNull();
+    expect(selectNoteText({})).toBeNull();
+  });
+
+  it("uses question order, skips empty and non-text answers, and matches orphans by key last", () => {
+    const questions = [q("goal", "Additional goals", 2), q("context", "Notes for your advisor", 1), q("consent", "Additional consent", 0, "checkbox")];
+    expect(selectNoteText({ goal: "Grow", context: "Restaurant", consent: "true" }, questions)).toBe("Restaurant");
+    expect(selectNoteText({ goal: "Grow", context: "   ", consent: "true" }, questions)).toBe("Grow");
+    expect(selectNoteText({ consent: "true", old_notes: "From a removed question" }, questions)).toBe("From a removed question");
+    // The Spanish label is not used for matching.
+    expect(selectNoteText({ obs: "Hola" }, [{ key: "obs", type: "textarea", label: { es: "Notas adicionales" }, position: 0 }])).toBeNull();
+    // Keys that exist on Object.prototype are not treated as answers.
+    expect(selectNoteText({}, [q("constructor", "Notes", 0)])).toBeNull();
+  });
+
+  it("caps the note at 5000 characters", () => {
+    expect(selectNoteText({ notes: "a".repeat(6000) })).toHaveLength(5000);
+  });
+});
+
+describe("buildSourceLabel", () => {
+  it("uses the partner display name for team pages, otherwise the event type", () => {
+    expect(buildSourceLabel({ partnerName: "Acme Partners", eventTypeName: "Consult" })).toBe("Acme Partners BTC Scheduler");
+    expect(buildSourceLabel({ partnerName: "  ", eventTypeName: "Consult" })).toBe("BTC Scheduler - Consult");
+    expect(buildSourceLabel({ eventTypeName: "Consulta" })).toBe("BTC Scheduler - Consulta");
+  });
+});
+
+describe("buildLeadPayload: lead modes and Meeting Booked fields", () => {
+  it("passes the mode and the reschedule flag", () => {
+    for (const mode of ["match_or_create", "update_only", "create"] as const) {
+      const p = buildLeadPayload(input({}, { lead_mode: mode }));
+      expect(p.mode).toBe(mode);
+      expect(p.isReschedule).toBe(false);
+      expect(p.meeting.isReschedule).toBe(false);
+    }
+    const r = buildLeadPayload(input({ isReschedule: true }, { lead_mode: "match_or_create" }));
+    expect(r.isReschedule).toBe(true);
+    expect(r.meeting.isReschedule).toBe(true);
+    expect(() => buildLeadPayload(input({}, { lead_mode: "upsert" as never }))).toThrow(/Unknown lead mode/);
+  });
+
+  it("adds note text, source label, mobile phone and ISO name", () => {
+    const p = buildLeadPayload(
+      input(
+        {
+          answers: { company: "Acme LLC", help: "We have two trucks" },
+          questions: [{ key: "help", type: "textarea", label: { en: "Anything that will help us prepare?" }, position: 3 }],
+          partner: { displayName: "Acme Partners" },
+        },
+        { lead_mode: "match_or_create", static_values: { csbs__ISO__c: ISO } },
+      ),
+    );
+    expect(p.noteText).toBe("We have two trucks");
+    expect(p.sourceLabel).toBe("Acme Partners BTC Scheduler");
+    expect(p.mobilePhone).toBe("+1 305 555 0100");
+    expect(p.isoName).toBe("Acme Partners");
+    expect(p.lead.Company).toBe("Acme LLC");
+  });
+
+  it("falls back for individual pages, pages without an ISO and bookings without a phone", () => {
+    const solo = buildLeadPayload(input({ booking: { ...input().booking, inviteePhone: null } }, { static_values: { csbs__ISO__c: ISO } }));
+    expect(solo).toMatchObject({ noteText: null, sourceLabel: "BTC Scheduler - Consulta", mobilePhone: null, isoName: null });
+    const noIso = buildLeadPayload(input({ partner: { displayName: "Acme Partners" } }));
+    expect(noIso.sourceLabel).toBe("Acme Partners BTC Scheduler");
+    expect(noIso.isoName).toBeNull();
+  });
+
+  it("requires an assigned host to update an existing Lead", () => {
+    const fixed = { owner_mode: "fixed" as const, owner_fixed_id: USER };
+    expect(() => buildLeadPayload(input({ host: null }, { ...fixed, lead_mode: "match_or_create" }))).toThrow(/assigned host/);
+    expect(() => buildLeadPayload(input({ host: null }, { ...fixed, lead_mode: "update_only" }))).toThrow(/assigned host/);
+    expect(buildLeadPayload(input({ host: null }, { ...fixed, lead_mode: "create" })).meeting.hostEmail).toBeNull();
   });
 });

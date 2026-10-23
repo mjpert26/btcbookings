@@ -22,7 +22,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Verifies the HMAC signature over \"<timestamp>.<raw body>\" and validates the payload.\n// Fails closed: a missing raw body, a stale timestamp or a bad signature returns 401.\nconst crypto = require('crypto');\nconst SECRET = $env.BTC_SCHEDULER_SIGNING_SECRET;\nconst WINDOW_SECONDS = 300;\nconst item = $input.first();\nconst reject = (httpCode, error, retryable = false) => [{ json: {\n  ok: false, httpCode, response: { status: 'error', leadId: null, error, retryable, problems: [] }\n} }];\n\nif (!SECRET) return reject(503, 'signing secret not configured', true);\n\nconst h = item.json.headers || {};\nconst ts = String(h['x-btc-timestamp'] || '');\nconst sig = String(h['x-btc-signature'] || '');\n\nlet raw = null;\ntry {\n  if (item.binary && item.binary.data) {\n    raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n  }\n} catch (e) {\n  raw = null;\n}\nif (raw === null) return reject(401, 'unauthorized');\n\nconst now = Math.floor(Date.now() / 1000);\nif (!/^\\d{9,11}$/.test(ts) || Math.abs(now - Number(ts)) > WINDOW_SECONDS) return reject(401, 'unauthorized');\nconst expected = Buffer.from('sha256=' + crypto.createHmac('sha256', SECRET).update(ts + '.' + raw, 'utf8').digest('hex'));\nconst given = Buffer.from(sig);\nif (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return reject(401, 'unauthorized');\n\nlet p;\ntry { p = JSON.parse(raw); } catch (e) { return reject(422, 'invalid JSON body'); }\n\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst FIELD = /^[A-Za-z][A-Za-z0-9_]*(__c)?$/;\nconst sfId = (v, prefixes) => typeof v === 'string' && /^[A-Za-z0-9]{15}([A-Za-z0-9]{3})?$/.test(v) && prefixes.some(x => v.startsWith(x));\nconst problems = [];\nif (!p || typeof p !== 'object') problems.push('body');\nelse {\n  if (p.source !== 'btc-scheduler') problems.push('source');\n  if (!UUID.test(String(p.bookingId || ''))) problems.push('bookingId');\n  if (p.idempotencyKey !== p.bookingId) problems.push('idempotencyKey');\n  if (String(h['idempotency-key'] || '') !== String(p.bookingId)) problems.push('Idempotency-Key header');\n  const lead = p.lead;\n  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) problems.push('lead');\n  else {\n    for (const [k, v] of Object.entries(lead)) {\n      if (!FIELD.test(k) || ['id', 'ownerid'].includes(k.toLowerCase())) problems.push('lead.' + k);\n      if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) problems.push('lead.' + k);\n    }\n    if (!String(lead.LastName || '').trim()) problems.push('lead.LastName');\n    if (!String(lead.Company || '').trim()) problems.push('lead.Company');\n  }\n  const o = p.owner || {};\n  if (o.mode === 'assigned_host') {\n    if (!/^[^\\s@\\\\]+@[^\\s@'\\\\]+\\.[^\\s@'\\\\]+$/.test(String(o.ownerEmail || ''))) problems.push('owner.ownerEmail');\n  } else if (o.mode === 'fixed') {\n    if (!sfId(o.ownerId, ['005', '00G'])) problems.push('owner.ownerId');\n  } else if (o.mode !== 'assignment_rules') problems.push('owner.mode');\n  if (typeof p.autoAssign !== 'boolean') problems.push('autoAssign');\n  if (p.campaignId != null && !sfId(p.campaignId, ['701'])) problems.push('campaignId');\n  if (!p.meeting || Number.isNaN(Date.parse(p.meeting.startUtc))) problems.push('meeting.startUtc');\n  if (!p.options || typeof p.options !== 'object') p.options = {};\n}\nif (problems.length) return reject(422, 'invalid payload: ' + [...new Set(problems)].join(', '));\n\nconst esc = s => String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\nreturn [{ json: {\n  ok: true,\n  bookingId: p.bookingId,\n  redisKey: 'btc-scheduler:lead:' + p.bookingId,\n  ownerEmailEsc: p.owner.mode === 'assigned_host' ? esc(p.owner.ownerEmail) : null,\n  sf_base: 'https://bigthink.my.salesforce.com/services/data/v60.0',\n  payload: p\n} }];\n"
+        "jsCode": "// Verifies the HMAC signature over \"<timestamp>.<raw body>\" and validates the payload.\n// Fails closed: a missing raw body, a stale timestamp or a bad signature returns 401.\nconst crypto = require('crypto');\nconst SECRET = $env.BTC_SCHEDULER_SIGNING_SECRET;\nconst WINDOW_SECONDS = 300;\nconst item = $input.first();\nconst reject = (httpCode, error, retryable = false) => [{ json: {\n  ok: false, httpCode, response: { status: 'error', leadId: null, error, retryable, problems: [] }\n} }];\n\nif (!SECRET) return reject(503, 'signing secret not configured', true);\n\nconst h = item.json.headers || {};\nconst ts = String(h['x-btc-timestamp'] || '');\nconst sig = String(h['x-btc-signature'] || '');\n\nlet raw = null;\ntry {\n  if (item.binary && item.binary.data) {\n    raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n  }\n} catch (e) {\n  raw = null;\n}\nif (raw === null) return reject(401, 'unauthorized');\n\nconst now = Math.floor(Date.now() / 1000);\nif (!/^\\d{9,11}$/.test(ts) || Math.abs(now - Number(ts)) > WINDOW_SECONDS) return reject(401, 'unauthorized');\nconst expected = Buffer.from('sha256=' + crypto.createHmac('sha256', SECRET).update(ts + '.' + raw, 'utf8').digest('hex'));\nconst given = Buffer.from(sig);\nif (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return reject(401, 'unauthorized');\n\nlet p;\ntry { p = JSON.parse(raw); } catch (e) { return reject(422, 'invalid JSON body'); }\n\nconst UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\nconst FIELD = /^[A-Za-z][A-Za-z0-9_]*(__c)?$/;\nconst EMAIL = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst MODES = ['create', 'match_or_create', 'update_only'];\nconst sfId = (v, prefixes) => typeof v === 'string' && /^[A-Za-z0-9]{15}([A-Za-z0-9]{3})?$/.test(v) && prefixes.some(x => v.startsWith(x));\nconst optText = (v, max) => v === undefined || v === null || (typeof v === 'string' && v.length <= max);\nconst problems = [];\nif (!p || typeof p !== 'object') problems.push('body');\nelse {\n  if (p.source !== 'btc-scheduler') problems.push('source');\n  if (!UUID.test(String(p.bookingId || ''))) problems.push('bookingId');\n  if (p.idempotencyKey !== p.bookingId) problems.push('idempotencyKey');\n  if (String(h['idempotency-key'] || '') !== String(p.bookingId)) problems.push('Idempotency-Key header');\n  const lead = p.lead;\n  if (!lead || typeof lead !== 'object' || Array.isArray(lead)) problems.push('lead');\n  else {\n    for (const [k, v] of Object.entries(lead)) {\n      if (!FIELD.test(k) || ['id', 'ownerid'].includes(k.toLowerCase())) problems.push('lead.' + k);\n      if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) problems.push('lead.' + k);\n    }\n    if (!String(lead.LastName || '').trim()) problems.push('lead.LastName');\n    if (!String(lead.Company || '').trim()) problems.push('lead.Company');\n  }\n  const o = p.owner || {};\n  if (o.mode === 'assigned_host') {\n    if (!/^[^\\s@\\\\]+@[^\\s@'\\\\]+\\.[^\\s@'\\\\]+$/.test(String(o.ownerEmail || ''))) problems.push('owner.ownerEmail');\n  } else if (o.mode === 'fixed') {\n    if (!sfId(o.ownerId, ['005', '00G'])) problems.push('owner.ownerId');\n  } else if (o.mode !== 'assignment_rules') problems.push('owner.mode');\n  if (typeof p.autoAssign !== 'boolean') problems.push('autoAssign');\n  if (p.campaignId != null && !sfId(p.campaignId, ['701'])) problems.push('campaignId');\n  if (!p.meeting || Number.isNaN(Date.parse(p.meeting.startUtc))) problems.push('meeting.startUtc');\n  if (!p.options || typeof p.options !== 'object') p.options = {};\n\n  // Lead handling. A payload without a mode comes from an app version before lead modes.\n  if (p.mode === undefined || p.mode === null) p.mode = 'create';\n  if (!MODES.includes(p.mode)) problems.push('mode');\n  if (p.isReschedule != null && typeof p.isReschedule !== 'boolean') problems.push('isReschedule');\n  p.isReschedule = p.isReschedule === true;\n  if (!optText(p.noteText, 5000)) problems.push('noteText');\n  if (!optText(p.sourceLabel, 255)) problems.push('sourceLabel');\n  if (!optText(p.mobilePhone, 40)) problems.push('mobilePhone');\n  if (!optText(p.isoName, 255)) problems.push('isoName');\n  if (p.mode !== 'create') {\n    // Matching needs the invitee's email; the Meeting Booked writer needs the rep's email.\n    if (!lead || !EMAIL.test(String(lead.Email || '').trim())) problems.push('lead.Email');\n    if (!p.meeting || !EMAIL.test(String(p.meeting.hostEmail || '').trim())) problems.push('meeting.hostEmail');\n  }\n}\nif (problems.length) return reject(422, 'invalid payload: ' + [...new Set(problems)].join(', '));\n\n// SOQL string escaping, the same as the Calendly lead flow: backslash first, then quote.\nconst esc = s => String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\nconst inviteeEmail = p.mode === 'create' ? null : String(p.lead.Email).trim().toLowerCase();\nreturn [{ json: {\n  ok: true,\n  bookingId: p.bookingId,\n  redisKey: 'btc-scheduler:lead:' + p.bookingId,\n  ownerEmailEsc: p.owner.mode === 'assigned_host' ? esc(p.owner.ownerEmail) : null,\n  inviteeEmail,\n  inviteeEmailEsc: inviteeEmail === null ? null : esc(inviteeEmail),\n  sf_base: 'https://bigthink.my.salesforce.com/services/data/v60.0',\n  payload: p\n} }];"
       },
       "id": "aee6bc8d-e042-5a0e-8942-81195f262628",
       "name": "Verify Signature",
@@ -130,7 +130,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// A result for this booking is already stored: answer without touching Salesforce.\nconst raw = $input.first().json.cached;\nlet c = null;\ntry { c = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { c = null; }\nif (!c || !c.status) {\n  return [{ json: { httpCode: 422, response: {\n    status: 'error', leadId: null, error: 'unreadable idempotency record in Redis', retryable: false, problems: []\n  } } }];\n}\nconst duplicate = c.status === 'duplicate';\nreturn [{ json: { httpCode: 200, response: {\n  status: duplicate ? 'duplicate' : 'existing',\n  leadId: c.leadId || null,\n  matchedRecordId: c.matchedRecordId || null,\n  error: duplicate ? (c.error || 'duplicate') : null,\n  retryable: false,\n  problems: []\n} } }];\n"
+        "jsCode": "// A result for this booking is already stored: answer without touching Salesforce.\n// Stored statuses: created (answered as existing), updated and duplicate.\nconst raw = $input.first().json.cached;\nlet c = null;\ntry { c = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { c = null; }\nif (!c || !c.status) {\n  return [{ json: { httpCode: 422, response: {\n    status: 'error', leadId: null, error: 'unreadable idempotency record in Redis', retryable: false, problems: []\n  } } }];\n}\nconst duplicate = c.status === 'duplicate';\nreturn [{ json: { httpCode: 200, response: {\n  status: duplicate ? 'duplicate' : c.status === 'updated' ? 'updated' : 'existing',\n  leadId: c.leadId || null,\n  matchedRecordId: c.matchedRecordId || null,\n  error: duplicate ? (c.error || 'duplicate') : null,\n  retryable: false,\n  problems: []\n} } }];"
       },
       "id": "29f84f41-9f76-5e8b-a638-b69e359870a7",
       "name": "Replay Stored Result",
@@ -196,7 +196,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1320,
+        1540,
         300
       ]
     },
@@ -225,7 +225,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        1540,
+        1760,
         200
       ],
       "retryOnFail": true,
@@ -243,7 +243,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1760,
+        1980,
         300
       ]
     },
@@ -286,7 +286,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        1980,
+        2200,
         300
       ],
       "alwaysOutputData": true,
@@ -301,7 +301,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
+        2420,
         300
       ]
     },
@@ -336,7 +336,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2420,
+        2640,
         300
       ]
     },
@@ -354,7 +354,7 @@
       "type": "n8n-nodes-base.redis",
       "typeVersion": 1,
       "position": [
-        2640,
+        2860,
         200
       ],
       "credentials": {
@@ -396,7 +396,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2860,
+        3080,
         200
       ]
     },
@@ -431,7 +431,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3080,
+        3300,
         100
       ]
     },
@@ -470,7 +470,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        3300,
+        3520,
         0
       ],
       "alwaysOutputData": true,
@@ -488,7 +488,7 @@
           "conditions": [
             {
               "id": "04f2113b-a10b-5a9a-af80-b59c40692970",
-              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createNote === true }}",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createNote === true && $('Verify Signature').first().json.payload.mode === 'create' }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -507,7 +507,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        3520,
+        3740,
         100
       ]
     },
@@ -520,7 +520,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3740,
+        3960,
         0
       ]
     },
@@ -559,7 +559,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        3960,
+        4180,
         0
       ],
       "alwaysOutputData": true,
@@ -600,7 +600,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        4180,
+        4400,
         0
       ],
       "alwaysOutputData": true,
@@ -618,7 +618,7 @@
           "conditions": [
             {
               "id": "18c561fa-f3ee-5127-a9e0-6c03d9b95b48",
-              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createTask === true }}",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.options.createTask === true && $('Verify Signature').first().json.payload.mode === 'create' }}",
               "operator": {
                 "type": "boolean",
                 "operation": "true",
@@ -637,7 +637,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4400,
+        4620,
         100
       ]
     },
@@ -680,7 +680,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        4620,
+        4840,
         0
       ],
       "alwaysOutputData": true,
@@ -688,14 +688,14 @@
     },
     {
       "parameters": {
-        "jsCode": "// Inspects every Salesforce and Redis write after the Lead insert. Follow-up failures do\n// not change the status (the Lead exists) but are always reported in problems[].\nconst c = $('Classify Lead Response').first().json;\nconst p = $('Verify Signature').first().json.payload;\nconst ran = n => { try { return $(n).first().json; } catch (e) { return null; } };\nconst ok = r => !!r && !r.error && Number(r.statusCode) >= 200 && Number(r.statusCode) < 300;\nconst problems = [...(c.problems || [])];\n\nconst lookup = ran('Idempotency Lookup');\nif (lookup && lookup.error) problems.push('Redis idempotency lookup failed; continued without it');\n\nif (c.status === 'created' || c.status === 'duplicate') {\n  const saved = ran('Remember Result');\n  if (!saved || saved.error) problems.push('Redis idempotency record not saved');\n}\nif (c.status === 'created') {\n  if (p.campaignId && !ok(ran('Add Campaign Member'))) problems.push('Campaign member create failed');\n  if (p.options.createNote === true) {\n    if (!ok(ran('Create ContentNote'))) problems.push('Note create failed');\n    else if (!ok(ran('Link Note To Lead'))) problems.push('Note link failed');\n  }\n  if (p.options.createTask === true && !ok(ran('Create Task'))) problems.push('Task create failed');\n}\n\nconst httpCode = c.status === 'error' ? (c.retryable ? 503 : 422) : 200;\nreturn [{ json: { httpCode, response: {\n  status: c.status,\n  leadId: c.leadId || null,\n  matchedRecordId: c.matchedRecordId || null,\n  error: c.error || null,\n  retryable: c.status === 'error' ? c.retryable === true : false,\n  problems\n} } }];\n"
+        "jsCode": "// Inspects every Salesforce and Redis write and builds the response. Follow-up failures do\n// not change the status (the Lead exists) but are always reported in problems[].\nconst p = $('Verify Signature').first().json.payload;\nconst ran = n => { try { return $(n).first().json; } catch (e) { return null; } };\nconst ok = r => !!r && !r.error && Number(r.statusCode) >= 200 && Number(r.statusCode) < 300;\nconst mode = p.mode || 'create';\nconst d = mode === 'create' ? null : ran('Decide Action');\nconst lookup = ran('Idempotency Lookup');\nconst lookupProblem = lookup && lookup.error ? 'Redis idempotency lookup failed; continued without it' : null;\n\n// Result of \"Calendly - SF Meeting Booked (shared)\". Its problems[] are passed on.\nconst writer = () => {\n  const r = ran('Write Meeting Booked');\n  const text = x => String(typeof x === 'string' ? x : JSON.stringify(x)).slice(0, 300);\n  if (!r) return { failed: true, retryable: true, error: 'Meeting Booked writer did not run' };\n  if (r.error) return { failed: true, retryable: true, error: 'Meeting Booked writer failed: ' + text(r.error.message || r.error) };\n  if (r.skipped === true) {\n    return { failed: true, retryable: false, error: 'Meeting Booked writer skipped the update' + (r.reason ? ': ' + text(r.reason) : '') };\n  }\n  if (typeof r.ok !== 'boolean') return { failed: true, retryable: false, error: 'Meeting Booked writer returned an unexpected result' };\n  const list = (Array.isArray(r.problems) ? r.problems : []).map(text);\n  const add = m => { if (!list.includes(m)) list.push(m); };\n  if (r.patch_ok === false) add('Lead update (status and Meeting Booked fields) failed');\n  if (r.note_ok === false) add('Note create failed');\n  if (r.task_ok === false) add('Task create failed');\n  if (r.rep_resolved === false) add('Assigned host is not an active Salesforce user; Lead owner not changed');\n  return { failed: false, problems: list };\n};\n\nlet out;\nlet problems;\nif (d && d.action !== 'create') {\n  // An existing Lead was looked up: update, skip or lookup error.\n  problems = lookupProblem ? [lookupProblem] : [];\n  if (d.action === 'update') {\n    const w = writer();\n    if (w.failed) {\n      out = { status: 'error', leadId: null, matchedRecordId: null, error: w.error, retryable: w.retryable };\n    } else {\n      out = { status: 'updated', leadId: d.leadId, matchedRecordId: null, error: null, retryable: false };\n      problems.push(...w.problems);\n      const saved = ran('Remember Update');\n      if (!saved || saved.error) problems.push('Redis idempotency record not saved');\n    }\n  } else if (d.action === 'skip') {\n    out = {\n      status: 'skipped', leadId: null, matchedRecordId: null,\n      matchedConvertedId: d.matchedConvertedId || null, reason: d.reason || null,\n      error: null, retryable: false\n    };\n  } else {\n    out = { status: 'error', leadId: null, matchedRecordId: null, error: d.error || 'Lead lookup failed', retryable: d.retryable === true };\n  }\n} else {\n  // A Lead insert was attempted: 'create' mode, or no Lead matched in 'match_or_create' mode.\n  const c = $('Classify Lead Response').first().json;\n  problems = [...(c.problems || [])];\n  if (lookupProblem) problems.push(lookupProblem);\n\n  if (c.status === 'created' || c.status === 'duplicate') {\n    const saved = ran('Remember Result');\n    if (!saved || saved.error) problems.push('Redis idempotency record not saved');\n  }\n  if (c.status === 'created') {\n    if (p.campaignId && !ok(ran('Add Campaign Member'))) problems.push('Campaign member create failed');\n    if (mode === 'create') {\n      if (p.options.createNote === true) {\n        if (!ok(ran('Create ContentNote'))) problems.push('Note create failed');\n        else if (!ok(ran('Link Note To Lead'))) problems.push('Note link failed');\n      }\n      if (p.options.createTask === true && !ok(ran('Create Task'))) problems.push('Task create failed');\n    } else {\n      const w = writer();\n      if (w.failed) problems.push(w.error);\n      else problems.push(...w.problems);\n    }\n  }\n  out = { status: c.status, leadId: c.leadId || null, matchedRecordId: c.matchedRecordId || null, error: c.error || null, retryable: c.retryable };\n}\n\nconst httpCode = out.status === 'error' ? (out.retryable ? 503 : 422) : 200;\nreturn [{ json: { httpCode, response: {\n  ...out,\n  retryable: out.status === 'error' ? out.retryable === true : false,\n  problems\n} } }];"
       },
       "id": "ac96b1d6-397d-57ea-b624-8dcf7d55c2c0",
       "name": "Final Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4840,
+        6380,
         300
       ]
     },
@@ -712,15 +712,309 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        5060,
+        6600,
         300
       ]
     },
     {
       "parameters": {
-        "content": "## BTC Scheduler - Salesforce lead create\n\nCalled only by BTC Scheduler's sf_lead_create job. Contract: docs/n8n-workflows.md.\n\n- Auth: HMAC-SHA256 over `<X-BTC-Timestamp>.<raw body>` with $env.BTC_SCHEDULER_SIGNING_SECRET, 5 minute window. Fails closed (401).\n- Idempotency: Redis `btc-scheduler:lead:<bookingId>` (30 days). Hit returns existing/duplicate without calling Salesforce.\n- Sforce-Auto-Assign is ALWAYS sent: TRUE only for owner mode assignment_rules, FALSE otherwise.\n- Create Lead is never retried here (could double insert). The app retries the whole request.\n- Duplicates: DUPLICATES_DETECTED and DuplicateCheckHandler addError() map to status duplicate.\n- Every write after the insert is inspected and reported in problems[].\n- Optional steps mirror 'Calendly - SF Meeting Booked (shared)'. Do not point both at the same booking.",
-        "height": 360,
-        "width": 620
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e49ceb7b-c743-5aaf-8c96-d6cbf802d812",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.mode !== 'create' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "d24735b6-d18b-51cf-bee7-999b5db7ab17",
+      "name": "Match Existing Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Verify Signature').first().json.sf_base }}/query?q={{ encodeURIComponent(`SELECT Id, Email, IsConverted, Status, OwnerId, csbs__ISO__c, CreatedDate FROM Lead WHERE Email = '${$('Verify Signature').first().json.inviteeEmailEsc}' ORDER BY CreatedDate DESC LIMIT 5`) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "4b1b6f7d-c409-5cc8-9e10-a0a389cefc1e",
+      "name": "Find Existing Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1540,
+        620
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Applies the rules of the Calendly lead flow to the Find Existing Lead result:\n//   effective mode: update for a reschedule, otherwise update for update_only and create\n//   for match_or_create.\n//   1. An open (IsConverted = false) Lead with the invitee's email: update it (created = false).\n//   2. Otherwise a converted Lead: skip (\"Existing CONVERTED lead found - not creating a duplicate\").\n//   3. Otherwise effective mode create: create the Lead (created = true).\n//   4. Otherwise skip (update only and no Lead, or a reschedule with no Lead).\n// Records are ordered by CreatedDate descending, so the newest open Lead wins.\nconst p = $('Verify Signature').first().json.payload;\nconst r = $input.first().json || {};\nconst code = Number(r.statusCode || 0);\nconst body = r.body;\nconst isReschedule = p.isReschedule === true;\nconst effectiveMode = isReschedule || p.mode === 'update_only' ? 'update' : 'create';\nconst base = { effective_mode: effectiveMode, is_reschedule: isReschedule };\nconst RETRYABLE = ['UNABLE_TO_LOCK_ROW', 'REQUEST_LIMIT_EXCEEDED', 'SERVER_UNAVAILABLE', 'INVALID_SESSION_ID'];\n\nif (!(code >= 200 && code < 300) || !body || !Array.isArray(body.records)) {\n  const errs = Array.isArray(body) ? body : (body && body.errorCode ? [body] : []);\n  const first = errs[0] || {};\n  const errorCode = first.errorCode || (code ? 'HTTP_' + code : 'NO_RESPONSE');\n  const detail = first.message || (r.error && (r.error.message || r.error)) || r.statusMessage || '';\n  return [{ json: { ...base,\n    action: 'error',\n    error: ('Lead lookup failed: ' + errorCode + (detail ? ': ' + String(detail) : '')).slice(0, 500),\n    retryable: !code || code >= 500 || code === 429 || RETRYABLE.includes(errorCode)\n  } }];\n}\n\nconst records = body.records.filter(x => x && typeof x.Id === 'string');\nconst open = records.find(x => x.IsConverted === false);\nconst converted = records.find(x => x.IsConverted === true);\n\nif (open) {\n  return [{ json: { ...base, action: 'update', created: false, leadId: open.Id, existingIso: open.csbs__ISO__c || '' } }];\n}\nif (converted) {\n  return [{ json: { ...base, action: 'skip', reason: 'converted_lead', matchedConvertedId: converted.Id,\n    message: 'Existing CONVERTED lead found - not creating a duplicate' } }];\n}\nif (effectiveMode === 'create') {\n  return [{ json: { ...base, action: 'create', created: true } }];\n}\nreturn [{ json: { ...base, action: 'skip',\n  reason: isReschedule ? 'reschedule_no_open_lead' : 'no_open_lead',\n  matchedConvertedId: null,\n  message: isReschedule ? 'Reschedule and no existing lead - nothing to update' : 'Update-only mapping and no existing lead'\n} }];"
+      },
+      "id": "3f9d4fee-4ac3-5672-9f7a-241a07161d7f",
+      "name": "Decide Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7fddd616-878c-50bf-939f-80a1aa88e345",
+              "leftValue": "={{ $('Decide Action').first().json.action === 'update' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "66a448f9-ecc4-559a-a514-bad4790c5e37",
+      "name": "Use Existing Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8c35dc9a-410e-54b8-8de0-80b7348f7059",
+              "leftValue": "={{ $('Decide Action').first().json.action === 'create' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "708f2250-e1d6-59f5-8ea1-1b25f7563293",
+      "name": "Create New Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "60c95057-57f6-5b02-8dc2-cba625930e69",
+              "leftValue": "={{ $('Verify Signature').first().json.payload.mode !== 'create' && $('Classify Lead Response').first().json.status === 'created' }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "0fd029eb-d24e-538a-998d-d8853b1cb885",
+      "name": "Write Meeting Booked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5060,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Maps the BTC Scheduler payload to the input of \"Calendly - SF Meeting Booked (shared)\"\n// (yVjvBOx5E3Zc36rX). The writer requires lead_id, rep_email and start_time. Missing\n// values are sent as empty strings, like the Calendly lead flow.\nconst v = $('Verify Signature').first().json;\nconst p = v.payload;\nconst d = $('Decide Action').first().json;\nconst created = d.action === 'create';\nconst lead = p.lead || {};\nconst s = x => (x === null || x === undefined ? '' : String(x).trim());\nconst leadId = created ? $('Classify Lead Response').first().json.leadId : d.leadId;\n\nreturn [{ json: {\n  lead_id: s(leadId),\n  rep_email: s(p.meeting.hostEmail).toLowerCase(),\n  rep_name: s(p.meeting.hostName),\n  iso_id: s(lead.csbs__ISO__c),\n  iso_name: s(p.isoName),\n  source_label: s(p.sourceLabel) || 'BTC Scheduler - ' + s(p.meeting.eventTypeName),\n  // Only the assigned host owner mode moves the Lead to the rep; fixed and assignment\n  // rule owners keep the matched Lead's owner.\n  set_owner: p.owner.mode === 'assigned_host',\n  start_time: s(p.meeting.startUtc),\n  end_time: s(p.meeting.endUtc),\n  event_type: s(p.meeting.eventTypeName),\n  calendly_uri: 'btc-scheduler:' + p.bookingId,\n  invitee_name: [lead.FirstName, lead.LastName].map(s).filter(Boolean).join(' '),\n  invitee_email: v.inviteeEmail,\n  invitee_phone: s(lead.Phone),\n  invitee_company: s(lead.Company) || 'Unknown',\n  mobile_phone: s(p.mobilePhone),\n  note_text: s(p.noteText),\n  write_calendar_event: false,\n  unmapped: false,\n  effective_mode: d.effective_mode,\n  existing_iso: created ? '' : s(d.existingIso),\n  is_reschedule: p.isReschedule === true,\n  created\n} }];"
+      },
+      "id": "faabb83e-2e60-5abd-aa6f-4b648880b21a",
+      "name": "Build Writer Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5280,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "yVjvBOx5E3Zc36rX",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "d107cee2-038a-5087-95a1-b270b031e676",
+      "name": "Write Meeting Booked",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        5500,
+        620
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "91510553-e726-50f0-911e-816f8e460b9a",
+              "leftValue": "={{ $('Decide Action').first().json.action === 'update' && !$json.error && typeof $json.ok === 'boolean' && $json.skipped !== true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "e7cc8e65-fd16-5745-a465-521ad3e60dc8",
+      "name": "Remember Update?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5720,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "={{ $('Verify Signature').first().json.redisKey }}",
+        "value": "={{ JSON.stringify({ status: 'updated', leadId: $('Decide Action').first().json.leadId, matchedRecordId: null, error: null }) }}",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 2592000
+      },
+      "id": "8c17c345-c5b7-5d41-a7a3-b3a53f421b5a",
+      "name": "Remember Update",
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        5940,
+        520
+      ],
+      "credentials": {
+        "redis": {
+          "id": "4i3m00SkLAc8SzwE",
+          "name": "api n8n redis"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## BTC Scheduler - Salesforce lead create\n\nCalled only by BTC Scheduler's sf_lead_create job. Contract: docs/n8n-workflows.md.\n\n- Auth: HMAC-SHA256 over `<X-BTC-Timestamp>.<raw body>` with $env.BTC_SCHEDULER_SIGNING_SECRET, 5 minute window. Fails closed (401).\n- Idempotency: Redis `btc-scheduler:lead:<bookingId>` (30 days). Hit returns existing/updated/duplicate without calling Salesforce.\n- mode `create`: always inserts a Lead (original path, unchanged).\n- mode `match_or_create` / `update_only`: Find Existing Lead by email, Decide Action (Calendly rules), then the shared writer 'Calendly - SF Meeting Booked (shared)' (yVjvBOx5E3Zc36rX) marks the Lead Meeting Booked. Converted Leads are skipped. A reschedule (isReschedule) is update only.\n- Sforce-Auto-Assign is ALWAYS sent: TRUE only for owner mode assignment_rules, FALSE otherwise.\n- Create Lead is never retried here (could double insert). The app retries the whole request.\n- Duplicates: DUPLICATES_DETECTED and DuplicateCheckHandler addError() map to status duplicate.\n- Every write after the insert or match is inspected and reported in problems[].\n- The shared writer and the SF Token Broker must allow calls from this workflow's owner.",
+        "height": 460,
+        "width": 680
       },
       "id": "98510378-1e67-51b1-b9d3-70661a5831ee",
       "name": "Sticky Contract",
@@ -728,7 +1022,7 @@
       "typeVersion": 1,
       "position": [
         0,
-        -260
+        -360
       ]
     }
   ],
@@ -817,7 +1111,7 @@
       "main": [
         [
           {
-            "node": "Owner By Email?",
+            "node": "Match Existing Lead?",
             "type": "main",
             "index": 0
           }
@@ -1024,7 +1318,7 @@
         ],
         [
           {
-            "node": "Final Result",
+            "node": "Write Meeting Booked?",
             "type": "main",
             "index": 0
           }
@@ -1035,7 +1329,7 @@
       "main": [
         [
           {
-            "node": "Final Result",
+            "node": "Write Meeting Booked?",
             "type": "main",
             "index": 0
           }
@@ -1047,6 +1341,151 @@
         [
           {
             "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Existing Lead?": {
+      "main": [
+        [
+          {
+            "node": "Find Existing Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Owner By Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Existing Lead": {
+      "main": [
+        [
+          {
+            "node": "Decide Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide Action": {
+      "main": [
+        [
+          {
+            "node": "Use Existing Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Use Existing Lead?": {
+      "main": [
+        [
+          {
+            "node": "Build Writer Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Lead?": {
+      "main": [
+        [
+          {
+            "node": "Owner By Email?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Meeting Booked?": {
+      "main": [
+        [
+          {
+            "node": "Build Writer Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Writer Input": {
+      "main": [
+        [
+          {
+            "node": "Write Meeting Booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Meeting Booked": {
+      "main": [
+        [
+          {
+            "node": "Remember Update?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Update?": {
+      "main": [
+        [
+          {
+            "node": "Remember Update",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember Update": {
+      "main": [
+        [
+          {
+            "node": "Final Result",
             "type": "main",
             "index": 0
           }

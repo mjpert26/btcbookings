@@ -59,6 +59,7 @@ const parent: EventTypeBundle<string> = {
     campaign_id: "701xx",
     owner_mode: "assigned_host",
     owner_fixed_id: null,
+    lead_mode: "match_or_create",
   },
   hosts: ["tm-en-1", "tm-en-2"],
 };

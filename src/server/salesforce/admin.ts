@@ -8,17 +8,20 @@ import {
   ID_PREFIX,
   isSalesforceId,
   ISO_FIELD,
+  SF_LEAD_MODES,
   SF_SETTINGS_COLUMNS,
   SF_SETTINGS_OVERRIDE_KEY,
   SfSettingsError,
   validateFieldMapping,
   validateOwner,
   validateStaticValues,
+  type SfLeadMode,
   type SfOwnerMode,
   type SfSettingsProvenance,
   type SfSettingsRow,
   type StaticValue,
 } from "@/server/salesforce/settings";
+import { DEFAULT_SF_LEAD_MODE } from "@/lib/salesforce";
 
 /**
  * Admin server functions for Salesforce lead settings and the lead outbox. Every function
@@ -54,6 +57,8 @@ async function assertAdmin(tx: Tx): Promise<void> {
 export type SfSettingsDto = {
   eventTypeId: string;
   createSfLead: boolean;
+  /** What n8n does with a booking: match_or_create, update_only or create. */
+  leadMode: SfLeadMode;
   /** Lead source in BTC terms: the ISO Account (csbs__ISO__c). */
   isoAccountId: string | null;
   fieldMapping: Record<string, string>;
@@ -87,6 +92,7 @@ function toDto(row: SfSettingsRow | null | undefined): SfSettingsDto | null {
   return {
     eventTypeId: row.event_type_id,
     createSfLead: row.create_sf_lead,
+    leadMode: row.lead_mode,
     isoAccountId: typeof iso === "string" ? iso : null,
     fieldMapping: row.field_mapping ?? {},
     staticValues: rest,
@@ -151,6 +157,8 @@ const optionalId = z
 export const sfSettingsInputSchema = z
   .object({
     createSfLead: z.boolean(),
+    /** Omitted: an existing row keeps its mode and a new row gets the column default (match_or_create). */
+    leadMode: z.enum(SF_LEAD_MODES).optional(),
     isoAccountId: optionalId.refine((v) => v === null || isSalesforceId(v, [ID_PREFIX.account]), {
       message: "ISO must be an Account Id (001...)",
     }),
@@ -203,6 +211,31 @@ function normalizeInput(raw: SfSettingsInput) {
 }
 
 /**
+ * Flat snapshot of a settings view for field-level audit diffs. Own-row fields are null when
+ * the event type has no own row (a variant that inherits, or no settings yet).
+ */
+function auditSnapshot(v: SfSettingsView): Record<string, unknown> {
+  const own = v.own;
+  return {
+    overridesParent: v.overridesParent,
+    provenance: v.provenance,
+    effectiveCreateSfLead: v.effective?.createSfLead ?? false,
+    hasOwnSettings: own !== null,
+    createSfLead: own?.createSfLead ?? null,
+    leadMode: own?.leadMode ?? null,
+    isoAccountId: own?.isoAccountId ?? null,
+    fieldMapping: own?.fieldMapping ?? null,
+    staticValues: own?.staticValues ?? null,
+    campaignId: own?.campaignId ?? null,
+    ownerMode: own?.ownerMode ?? null,
+    ownerFixedId: own?.ownerFixedId ?? null,
+    createTask: own?.createTask ?? null,
+    createNote: own?.createNote ?? null,
+    setMeetingBookedFields: own?.setMeetingBookedFields ?? null,
+  };
+}
+
+/**
  * Saves the Salesforce settings of an event type.
  *
  * For a variant, overrideParent decides inheritance: true writes the variant's own row and
@@ -230,15 +263,18 @@ export async function saveSfSettings(actor: Actor, eventTypeId: string, raw: SfS
     }
 
     if (!inherit) {
+      const leadMode = input.leadMode ?? null;
       await tx`
-        insert into app.event_type_sf_settings
-          (event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id,
+        insert into app.event_type_sf_settings as s
+          (event_type_id, create_sf_lead, lead_mode, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id,
            create_task, create_note, set_meeting_booked_fields, updated_by)
-        values (${eventTypeId}, ${input.createSfLead}, ${tx.json(input.fieldMapping)}, ${tx.json(input.staticValues as never)},
+        values (${eventTypeId}, ${input.createSfLead}, coalesce(${leadMode}::app.sf_lead_mode, ${DEFAULT_SF_LEAD_MODE}::app.sf_lead_mode),
+                ${tx.json(input.fieldMapping)}, ${tx.json(input.staticValues as never)},
                 ${input.campaignId}, ${input.ownerMode}, ${input.ownerFixedId},
                 ${input.createTask}, ${input.createNote}, ${input.setMeetingBookedFields}, ${actor.id})
         on conflict (event_type_id) do update set
           create_sf_lead = excluded.create_sf_lead,
+          lead_mode = coalesce(${leadMode}::app.sf_lead_mode, s.lead_mode),
           field_mapping = excluded.field_mapping,
           static_values = excluded.static_values,
           campaign_id = excluded.campaign_id,
@@ -252,28 +288,15 @@ export async function saveSfSettings(actor: Actor, eventTypeId: string, raw: SfS
     }
 
     const after = await readView(tx, eventTypeId);
-    // Only the settings that changed. Bookkeeping fields (updatedBy, updatedAt) are left out.
-    const snapshot = (v: SfSettingsView): Record<string, unknown> => ({
-      createSfLead: v.own?.createSfLead ?? null,
-      isoAccountId: v.own?.isoAccountId ?? null,
-      fieldMapping: v.own?.fieldMapping ?? null,
-      staticValues: v.own?.staticValues ?? null,
-      campaignId: v.own?.campaignId ?? null,
-      ownerMode: v.own?.ownerMode ?? null,
-      ownerFixedId: v.own?.ownerFixedId ?? null,
-      createTask: v.own?.createTask ?? null,
-      createNote: v.own?.createNote ?? null,
-      setMeetingBookedFields: v.own?.setMeetingBookedFields ?? null,
-      overridesParent: v.overridesParent,
-      provenance: v.provenance,
-    });
+    // Field-level diff: only the settings that changed are recorded. A save that changes
+    // nothing writes no update entry.
     await writeAuditDiff(tx, {
       actorUserId: actor.id,
       action: "sf_settings.update",
       entityType: "event_type_sf_settings",
       entityId: eventTypeId,
-      before: snapshot(before),
-      after: snapshot(after),
+      before: auditSnapshot(before),
+      after: auditSnapshot(after),
     });
     const wasOn = before.effective?.createSfLead ?? false;
     const isOn = after.effective?.createSfLead ?? false;
@@ -324,7 +347,7 @@ export type SfLeadJobView = {
 export const sfLeadJobFiltersSchema = z
   .object({
     status: z.array(z.enum(["pending", "running", "succeeded", "failed", "dead"])).optional(),
-    sfLeadStatus: z.array(z.enum(["pending", "created", "duplicate", "failed", "skipped"])).optional(),
+    sfLeadStatus: z.array(z.enum(["pending", "created", "updated", "duplicate", "failed", "skipped"])).optional(),
     eventTypeId: z.string().uuid().optional(),
     bookingId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(200).default(50),

@@ -9,7 +9,7 @@
  * | graph_subscription_ensure | graph                | sign-in, renewal cron               |
  * | graph_delta_sync          | graph                | notifications, delta cron           |
  * | email_send                | email                | booking, graph conflict detection   |
- * | sf_lead_create            | salesforce           | booking (on confirm, if enabled)    |
+ * | sf_lead_create            | salesforce           | booking (confirm, reschedule; if on)|
  * | slack_membership_sync     | slack                | membership changes (any source)     |
  * | slack_usergroup_sync      | slack                | membership changes (any source)     |
  * | booking_reassign          | booking              | queue sync (removal_policy=reassign)|
@@ -38,7 +38,8 @@ export type JobPayloads = {
     /** Reminder offset in minutes, for booking_reminder and host_booking_reminder. */
     offsetMin?: number;
   };
-  sf_lead_create: { bookingId: string };
+  /** isReschedule: the job of a rescheduled booking, which only updates an existing Lead. */
+  sf_lead_create: { bookingId: string; isReschedule?: boolean };
   slack_membership_sync: { teamId: string; teamMemberId: string };
   /** Applies one member's status to the team's Slack user group (when one is linked). */
   slack_usergroup_sync: { teamId: string; teamMemberId: string };

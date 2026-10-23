@@ -135,7 +135,7 @@ async function loadBundle(db: Db, row: EventTypeRow): Promise<EventTypeBundle<Ev
       from app.event_type_questions where event_type_id = ${row.id} order by position, key
     `,
     db<EventTypeSfSettingsRow[]>`
-      select event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id
+      select event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id, lead_mode
       from app.event_type_sf_settings where event_type_id = ${row.id}
     `,
     db<EventHostRow[]>`

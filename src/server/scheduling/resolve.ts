@@ -53,6 +53,7 @@ export type EventTypeSfSettingsRow = {
   campaign_id: string | null;
   owner_mode: "assigned_host" | "fixed" | "assignment_rules";
   owner_fixed_id: string | null;
+  lead_mode: "match_or_create" | "update_only" | "create";
 };
 
 /** An event type row together with its child rows. `hosts` is routing and never inherited. */

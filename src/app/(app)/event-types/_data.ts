@@ -36,7 +36,7 @@ export async function loadBundle(tx: Tx, id: string): Promise<EventTypeBundle<Ho
   `;
   // RLS returns no row for non-admins, so sfSettings is null for them.
   const [sfSettings] = await tx<EventTypeSfSettingsRow[]>`
-    select event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id
+    select event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id, lead_mode
     from app.event_type_sf_settings where event_type_id = ${id}
   `;
   const hosts = await tx<HostRow[]>`

@@ -433,9 +433,9 @@ export async function toggleOverrideAction(childId: string, _prev: ActionState, 
       } else if (group === "sf_settings") {
         await tx`
           insert into app.event_type_sf_settings (event_type_id, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id,
-                                                  create_task, create_note, set_meeting_booked_fields, updated_by)
+                                                  create_task, create_note, set_meeting_booked_fields, lead_mode, updated_by)
           select ${childId}, create_sf_lead, field_mapping, static_values, campaign_id, owner_mode, owner_fixed_id,
-                 create_task, create_note, set_meeting_booked_fields, ${user.id}
+                 create_task, create_note, set_meeting_booked_fields, lead_mode, ${user.id}
           from app.event_type_sf_settings where event_type_id = ${parentId}
           on conflict (event_type_id) do nothing
         `;

@@ -126,7 +126,10 @@ export async function rescheduleSlots(
  * Moves a booking to a new time in one transaction: the old booking becomes
  * 'rescheduled' with inactive hosts, and a new linked booking is confirmed. Round-robin
  * prefers the original host when free. The Salesforce lead is carried over (sf_lead_id
- * and sf_lead_status are copied) and no new sf_lead_create job is enqueued.
+ * and sf_lead_status are copied). When the event type's lead mode is not 'create', one
+ * sf_lead_create job for the new booking updates the Lead with the new time (see
+ * enqueueSfLeadOnReschedule); in 'create' mode Salesforce is not called. The REST and MCP
+ * reschedule (src/server/api/services/bookings.ts) goes through this function too.
  */
 export async function rescheduleByInvitee(
   token: string,
@@ -248,6 +251,7 @@ export async function rescheduleByInvitee(
           oldHosts: oldHosts.map((h) => ({ userId: h.user_id, graphEventId: h.graph_event_id })),
           newStartMs: startMs,
           hostUserIds: hosts.map((h) => h.userId),
+          resolved: loaded.resolved,
           now,
         });
         return { newId: bookingId, newToken: issued.token };

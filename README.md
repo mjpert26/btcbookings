@@ -16,6 +16,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Cron jobs](#cron-jobs)
 - [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
+- [Partner page branding](#partner-page-branding)
 - [Testing](#testing)
 - [Project layout](#project-layout)
 - [Future work](#future-work)
@@ -143,6 +144,10 @@ Admins are global (`users.role = 'admin'`). Any of these works:
 
 Team admins (manage one team's members and settings, but not Salesforce, Slack or queue links) are assigned on the team page.
 
+## Partner page branding
+
+Admins and a team's team admins can customize the team's public pages at **Teams > {team} > Branding** (`/teams/{id}/branding`): display name, logo (PNG, JPEG or WebP up to 512 KB; no SVG), accent color (falls back to BTC blue below 4.5:1 contrast with white), heading, intro, and whether to show the partner logo, BTC logo, host photo, host name, meeting length and description. Logos are served from `/api/public/team-logo/{teamId}`. Changes are audited. No new environment variables. Details: [`docs/partner-branding.md`](docs/partner-branding.md).
+
 ## Testing
 
 ```bash
@@ -176,6 +181,7 @@ src/server/scheduling   pure slot engine, round-robin, variant resolution
 src/server/booking      booking transaction, manage links, reassignment
 src/server/sync         Salesforce Queue snapshot diffing and safety rail
 src/server/slack        Slack channel sync
+src/server/teams        partner page branding and logos
 src/server/salesforce   Lead payload mapping and outbox handler
 src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts

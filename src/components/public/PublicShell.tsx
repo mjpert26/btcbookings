@@ -7,6 +7,7 @@ import en from "../../../messages/en.json";
 import es from "../../../messages/es.json";
 import { LOCALE_LABELS, type Locale } from "@/i18n/locales";
 import { brand } from "@/theme/brand";
+import { accentStyle, headerParts, type PartnerDisplay } from "./branding";
 
 const CATALOGS = { en, es } as const;
 
@@ -18,18 +19,27 @@ function clientMessages(locale: Locale) {
 
 /**
  * Frame for every public page: locale provider, lang attribute, brand header and footer.
- * The variant's language decides the locale (not the browser's).
+ * The variant's language decides the locale (not the browser's). Team pages pass the
+ * partner's branding, which adds the partner logo and name to the header, may hide the BTC
+ * logo, and replaces the primary color tokens with the partner's accent.
  */
 export async function PublicShell(props: {
   locale: Locale;
   children: ReactNode;
   alternates?: { language: Locale; path: string }[];
+  partner?: PartnerDisplay | null;
 }) {
   const t = await getTranslations({ locale: props.locale, namespace: "public" });
   const tc = await getTranslations({ locale: props.locale, namespace: "common" });
+  const header = headerParts(props.partner);
+  const btcLogo = (
+    <a href={brand.websiteUrl} className="inline-flex shrink-0 items-center" rel="noopener">
+      <Image src={brand.logo.light.src} alt={brand.logo.alt} width={120} height={50} priority className={props.partner ? "h-7 w-auto" : "h-9 w-auto"} />
+    </a>
+  );
   return (
     <NextIntlClientProvider locale={props.locale} messages={clientMessages(props.locale)}>
-      <div lang={props.locale} className="relative isolate flex min-h-full flex-1 flex-col overflow-hidden">
+      <div lang={props.locale} className="relative isolate flex min-h-full flex-1 flex-col overflow-hidden" style={accentStyle(props.partner)}>
         {/* Decorative brand blobs (CSS only, so public pages stay fast on phones). */}
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
           <div className="btc-blob -left-32 top-24 size-[28rem] bg-sky/40" />
@@ -38,9 +48,27 @@ export async function PublicShell(props: {
         </div>
         <header className="border-b border-border/70 bg-white/80 backdrop-blur-md">
           <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-            <a href={brand.websiteUrl} className="inline-flex shrink-0 items-center" rel="noopener">
-              <Image src={brand.logo.light.src} alt={brand.logo.alt} width={120} height={50} priority className="h-9 w-auto" />
-            </a>
+            {header.partnerName ? (
+              <div className="flex min-w-0 items-center gap-3">
+                {header.partnerLogo ? (
+                  // Partner logos are served by /api/public/team-logo with fixed dimensions. The
+                  // partner name is always shown next to the logo, so the image is decorative.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={header.partnerLogo.src}
+                    alt=""
+                    width={header.partnerLogo.width}
+                    height={header.partnerLogo.height}
+                    className="shrink-0 object-contain"
+                    style={{ width: header.partnerLogo.width, height: header.partnerLogo.height }}
+                  />
+                ) : null}
+                <span className="truncate font-heading text-base font-semibold text-navy sm:text-lg">{header.partnerName}</span>
+                {header.btcLogo ? <span className="flex shrink-0 items-center border-l border-border pl-3">{btcLogo}</span> : null}
+              </div>
+            ) : (
+              btcLogo
+            )}
             {props.alternates?.length ? (
               <nav aria-label={t("languageSwitcher")} className="flex items-center gap-1 text-sm">
                 <span className="rounded-full bg-primary/10 px-3 py-1.5 font-semibold text-primary" aria-current="page">

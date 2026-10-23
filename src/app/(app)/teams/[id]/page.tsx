@@ -135,9 +135,14 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
         actions={
           <>
             {team.is_team_admin ? (
-              <ButtonLink href={`/event-types/new?team=${team.id}`} variant="secondary" size="sm">
-                New team event type
-              </ButtonLink>
+              <>
+                <ButtonLink href={`/event-types/new?team=${team.id}`} variant="secondary" size="sm">
+                  New team event type
+                </ButtonLink>
+                <ButtonLink href={`/teams/${team.id}/branding`} variant="subtle" size="sm">
+                  Branding
+                </ButtonLink>
+              </>
             ) : null}
             {isAdmin ? (
               <>

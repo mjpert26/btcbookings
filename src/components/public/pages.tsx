@@ -9,10 +9,12 @@ import type { Metadata } from "next";
 import { service } from "@/server/db/client";
 import { env } from "@/server/env";
 import { isLocale, type Locale } from "@/i18n/locales";
-import { listPublicEventTypes, loadPublicEventType, toPublicEventType } from "@/server/booking/load";
+import { findOwner, listPublicEventTypes, loadPublicEventType, toPublicEventType } from "@/server/booking/load";
 import { slugSchema } from "@/server/booking/validation";
 import type { OwnerRef } from "@/server/booking/types";
 import { brand } from "@/theme/brand";
+import { getPartnerBranding } from "@/server/teams/branding";
+import { eventDetails } from "./branding";
 import { PublicShell } from "./PublicShell";
 import { BookingFlow } from "./BookingFlow";
 import { Avatar, Card, IconClock, IconLocation } from "./bits";
@@ -30,14 +32,27 @@ const loadEvent = cache(async function loadEvent(kind: "user" | "team", ownerSlu
   const loaded = await loadPublicEventType(db, ref, eventSlug, language);
   if (!loaded) return null;
   const windowEnd = new Date(Date.now() + (loaded.resolved.eventType.booking_window_days + 1) * 86_400_000).toISOString();
-  return { loaded, windowEnd, event: await toPublicEventType(db, loaded) };
+  const [event, partner] = await Promise.all([
+    toPublicEventType(db, loaded),
+    loaded.owner.kind === "team" ? getPartnerBranding(loaded.owner.id, db) : Promise.resolve(null),
+  ]);
+  return { loaded, windowEnd, event, partner };
 });
 
 export async function eventMetadata(kind: "user" | "team", ownerSlug: string, eventSlug: string, language: Locale): Promise<Metadata> {
   const found = await loadEvent(kind, ownerSlug, eventSlug, language);
   if (!found) return { title: "404" };
-  const who = found.event.host?.name ?? found.event.team?.name ?? "";
+  const who = found.event.host?.name ?? found.partner?.displayName ?? found.event.team?.name ?? "";
   return { title: who ? `${found.event.name} · ${who}` : found.event.name };
+}
+
+/** Title for a team's listing page: the partner display name when set. */
+export async function teamListingMetadata(teamSlug: string): Promise<Metadata> {
+  const ref = validRef("team", teamSlug);
+  const owner = ref ? await findOwner(service(), ref) : null;
+  if (!owner) return { title: "404" };
+  const partner = await getPartnerBranding(owner.id);
+  return { title: partner?.displayName ?? owner.name };
 }
 
 function durationText(durations: number[], minutes: (n: number) => string): string {
@@ -47,12 +62,13 @@ function durationText(durations: number[], minutes: (n: number) => string): stri
 export async function EventBookingPage(props: { kind: "user" | "team"; ownerSlug: string; eventSlug: string; language: Locale }) {
   const found = await loadEvent(props.kind, props.ownerSlug, props.eventSlug, props.language);
   if (!found) notFound();
-  const { event, windowEnd } = found;
+  const { event, windowEnd, partner } = found;
   const t = await getTranslations({ locale: event.language, namespace: "public" });
   const siteKey = env().TURNSTILE_SITE_KEY || null;
+  const show = eventDetails(partner);
 
   return (
-    <PublicShell locale={event.language} alternates={event.alternates}>
+    <PublicShell locale={event.language} alternates={event.alternates} partner={partner}>
       <Card className="overflow-hidden md:grid md:grid-cols-[18rem_minmax(0,1fr)]">
         <aside className="border-b border-border bg-surface-alt/60 p-5 sm:p-6 md:border-b-0 md:border-r">
           {event.host ? (
@@ -61,14 +77,18 @@ export async function EventBookingPage(props: { kind: "user" | "team"; ownerSlug
               <p className="text-sm font-medium text-muted">{event.host.name}</p>
             </div>
           ) : event.team ? (
-            <p className="mb-3 text-sm font-medium uppercase tracking-wide text-muted">{t("teamMeeting", { team: event.team.name })}</p>
+            <p className="mb-3 text-sm font-medium uppercase tracking-wide text-muted">
+              {partner?.heading ?? t("teamMeeting", { team: partner?.displayName ?? event.team.name })}
+            </p>
           ) : null}
           <h1 className="text-2xl font-bold leading-tight">{event.name}</h1>
           <ul className="mt-4 flex flex-col gap-2 text-sm text-ink">
-            <li className="flex items-center gap-2">
-              <IconClock />
-              {durationText(event.durations, (n) => t("minutes", { count: n }))}
-            </li>
+            {show.duration ? (
+              <li className="flex items-center gap-2">
+                <IconClock />
+                {durationText(event.durations, (n) => t("minutes", { count: n }))}
+              </li>
+            ) : null}
             <li className="flex items-start gap-2">
               <span className="mt-0.5">
                 <IconLocation type={event.locationType} />
@@ -79,7 +99,10 @@ export async function EventBookingPage(props: { kind: "user" | "team"; ownerSlug
               </span>
             </li>
           </ul>
-          {event.description ? <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-muted">{event.description}</p> : null}
+          {show.description && event.description ? <p className="mt-4 whitespace-pre-line text-sm leading-relaxed text-muted">{event.description}</p> : null}
+          {partner?.intro ? (
+            <p className="mt-4 whitespace-pre-line border-t border-border pt-4 text-sm leading-relaxed text-ink">{partner.intro}</p>
+          ) : null}
         </aside>
         <div className="p-5 sm:p-6">
           <BookingFlow event={event} windowEnd={windowEnd} turnstileSiteKey={siteKey} />
@@ -95,6 +118,8 @@ export async function OwnerListingPage(props: { kind: "user" | "team"; ownerSlug
   const language: Locale = typeof props.lang === "string" && isLocale(props.lang) ? props.lang : "en";
   const listing = await listPublicEventTypes(service(), ref, language);
   if (!listing) notFound();
+  const partner = listing.owner.kind === "team" ? await getPartnerBranding(listing.owner.id) : null;
+  const show = eventDetails(partner);
   const t = await getTranslations({ locale: language, namespace: "public" });
   const owner = listing.owner;
   const other: Locale = language === "en" ? "es" : "en";
@@ -102,14 +127,20 @@ export async function OwnerListingPage(props: { kind: "user" | "team"; ownerSlug
   const base = props.kind === "user" ? `/${owner.slug}` : `/t/${owner.slug}`;
 
   return (
-    <PublicShell locale={language} alternates={hasOther ? [{ language: other, path: other === "en" ? base : `${base}?lang=${other}` }] : []}>
+    <PublicShell
+      locale={language}
+      alternates={hasOther ? [{ language: other, path: other === "en" ? base : `${base}?lang=${other}` }] : []}
+      partner={partner}
+    >
       <div className="mx-auto max-w-3xl">
         <div className="mb-8 flex flex-col items-center text-center">
           {owner.kind === "user" ? (
             <Avatar name={owner.name} photoUrl={owner.photoUrl} size={80} alt={t("hostPhotoAlt", { name: owner.name })} />
           ) : null}
-          <h1 className="mt-3 text-2xl font-bold">{owner.name}</h1>
-          {owner.kind === "team" && owner.description ? <p className="mt-2 max-w-xl text-muted">{owner.description}</p> : null}
+          <h1 className="mt-3 text-2xl font-bold">{owner.kind === "team" && partner ? (partner.heading ?? partner.displayName) : owner.name}</h1>
+          {owner.kind === "team" && (partner?.intro ?? owner.description) ? (
+            <p className="mt-2 max-w-xl whitespace-pre-line text-muted">{partner?.intro ?? owner.description}</p>
+          ) : null}
           <p className="mt-4 text-sm font-semibold uppercase tracking-wide text-muted">{t("eventsHeading")}</p>
         </div>
         {listing.events.length ? (
@@ -123,16 +154,18 @@ export async function OwnerListingPage(props: { kind: "user" | "team"; ownerSlug
                 >
                   <h2 className="text-lg font-semibold group-hover:text-primary">{e.name}</h2>
                   <p className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
-                    <span className="inline-flex items-center gap-1.5">
-                      <IconClock />
-                      {durationText(e.durations, (n) => t("minutes", { count: n }))}
-                    </span>
+                    {show.duration ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <IconClock />
+                        {durationText(e.durations, (n) => t("minutes", { count: n }))}
+                      </span>
+                    ) : null}
                     <span className="inline-flex items-center gap-1.5">
                       <IconLocation type={e.locationType} />
                       {t(`location.${e.locationType}`)}
                     </span>
                   </p>
-                  {e.description ? <p className="mt-3 line-clamp-3 text-sm text-ink/80">{e.description}</p> : null}
+                  {show.description && e.description ? <p className="mt-3 line-clamp-3 text-sm text-ink/80">{e.description}</p> : null}
                 </Link>
               </li>
             ))}

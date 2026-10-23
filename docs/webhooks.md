@@ -69,7 +69,7 @@ The secret is shown once, when the endpoint is added or its secret is rotated. R
 ## Delivery and retries
 
 - Delivery runs through the jobs outbox, usually within a minute of the change.
-- A `2xx` response is a success. Respond quickly; the request times out after 10 seconds. Redirects are not followed.
+- A `2xx` response is a success. Respond quickly; the request times out after 10 seconds. Redirects are not followed: a `3xx` response fails the delivery without retrying.
 - `408`, `409`, `425`, `429` and `5xx` responses, timeouts and connection errors are retried with exponential backoff, up to 8 attempts. `429` with `Retry-After` is honored, up to one hour.
 - Any other `4xx` stops retrying.
 - Only public HTTPS destinations on port 443 are allowed. Host names that resolve to private, loopback, link-local or reserved addresses are refused at every attempt.

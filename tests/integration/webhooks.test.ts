@@ -145,6 +145,9 @@ describe("webhook events", () => {
     expect((await sql`select status from app.webhook_deliveries`)[0].status).toBe("pending");
     await expect(deliver(404)).rejects.toBeInstanceOf(PermanentJobError);
     expect((await sql`select status from app.webhook_deliveries`)[0].status).toBe("failed");
+    await sql`update app.webhook_deliveries set status = 'pending'`;
+    await expect(deliver(302)).rejects.toBeInstanceOf(PermanentJobError);
+    expect((await sql`select error from app.webhook_deliveries`)[0].error).toBe("HTTP 302 (redirects are not followed)");
 
     let fetched = false;
     await sql`update app.webhook_deliveries set status = 'pending'`;
@@ -159,7 +162,7 @@ describe("webhook events", () => {
     const [row] = await sql<{ status: string; error: string }[]>`select status, error from app.webhook_deliveries`;
     expect(row).toEqual({ status: "failed", error: "URL resolves to a private or reserved address" });
     const [ep] = await sql<{ consecutive_failures: number }[]>`select consecutive_failures from app.webhook_endpoints`;
-    expect(ep.consecutive_failures).toBe(3);
+    expect(ep.consecutive_failures).toBe(4);
   });
 });
 

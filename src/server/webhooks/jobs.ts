@@ -15,8 +15,8 @@ import { resolvePublicUrl, type LookupFn } from "@/server/webhooks/url";
  * when the endpoint is limited to one) and enqueues its webhook_deliver job.
  *
  * webhook_deliver: POSTs one delivery, signed with the endpoint's secret. 2xx succeeds;
- * 4xx other than 408, 409, 425 and 429 fails without retrying; anything else is retried
- * with the outbox backoff.
+ * redirects (not followed) and 4xx other than 408, 409, 425 and 429 fail without retrying;
+ * anything else is retried with the outbox backoff.
  */
 
 const DELIVERY_TIMEOUT_MS = 10_000;
@@ -171,8 +171,13 @@ export async function handleWebhookDeliver(
     await recordAttempt(sql, d, { status: "succeeded", code: res.status, error: null });
     return { result: { status: res.status } };
   }
-  const permanent = res.status >= 400 && res.status < 500 && !RETRYABLE_4XX.has(res.status);
-  await recordAttempt(sql, d, { status: permanent || isLastAttempt ? "failed" : "pending", code: res.status, error: `HTTP ${res.status}` });
+  const redirected = res.status >= 300 && res.status < 400;
+  const permanent = redirected || (res.status >= 400 && res.status < 500 && !RETRYABLE_4XX.has(res.status));
+  await recordAttempt(sql, d, {
+    status: permanent || isLastAttempt ? "failed" : "pending",
+    code: res.status,
+    error: redirected ? `HTTP ${res.status} (redirects are not followed)` : `HTTP ${res.status}`,
+  });
   if (permanent) throw new PermanentJobError(`Webhook endpoint answered ${res.status}`);
   const retryAfter = Number(res.headers.get("retry-after"));
   if (res.status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {

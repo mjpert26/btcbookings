@@ -6,6 +6,8 @@ import { salesforceHandlers } from "@/server/salesforce/jobs";
 import { emailHandlers } from "@/server/email/jobs";
 import { bookingHandlers } from "@/server/booking/jobs";
 import { syncHandlers } from "@/server/sync/jobs";
+import { smsHandlers } from "@/server/sms/jobs";
+import { slackDmHandlers } from "@/server/slack/dm-jobs";
 
 export const jobHandlers: Record<string, JobHandler> = {
   ...graphHandlers,
@@ -14,4 +16,6 @@ export const jobHandlers: Record<string, JobHandler> = {
   ...emailHandlers,
   ...bookingHandlers,
   ...syncHandlers,
+  ...smsHandlers,
+  ...slackDmHandlers,
 };

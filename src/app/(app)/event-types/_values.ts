@@ -1,10 +1,19 @@
 import type { EventTypeQuestionRow, EventTypeRow } from "@/server/scheduling/resolve";
 import type { EventTypeValues } from "./EventTypeForm";
 import type { HostRow } from "./_data";
+import { DEFAULT_AGENT_CHANNELS, DEFAULT_AGENT_OFFSETS, DEFAULT_MERCHANT_CHANNELS } from "@/lib/reminders";
+
+/** Reminder columns loaded with the event type row (see ET_COLUMNS in _data.ts). */
+type ReminderColumns = {
+  merchant_reminder_channels?: string[];
+  agent_reminder_channels?: string[];
+  agent_reminder_offsets_min?: number[];
+};
 
 type Localized = { en?: string; es?: string };
 
 export function toFormValues(et: EventTypeRow, questions: EventTypeQuestionRow[], hosts: HostRow[]): EventTypeValues {
+  const rem = et as EventTypeRow & ReminderColumns;
   return {
     name: et.name,
     slug: et.slug,
@@ -22,6 +31,9 @@ export function toFormValues(et: EventTypeRow, questions: EventTypeQuestionRow[]
     bookingWindowDays: et.booking_window_days,
     slotInterval: et.slot_interval_min,
     reminders: et.reminder_offsets_min,
+    merchantReminderChannels: rem.merchant_reminder_channels ?? [...DEFAULT_MERCHANT_CHANNELS],
+    agentReminderChannels: rem.agent_reminder_channels ?? [...DEFAULT_AGENT_CHANNELS],
+    agentReminders: rem.agent_reminder_offsets_min ?? [...DEFAULT_AGENT_OFFSETS],
     isActive: et.is_active,
     isListed: et.is_listed,
     brandAccent: et.brand_accent ?? "",
@@ -59,6 +71,9 @@ export const NEW_EVENT_TYPE: EventTypeValues = {
   bookingWindowDays: 30,
   slotInterval: null,
   reminders: [1440, 60],
+  merchantReminderChannels: [...DEFAULT_MERCHANT_CHANNELS],
+  agentReminderChannels: [...DEFAULT_AGENT_CHANNELS],
+  agentReminders: [...DEFAULT_AGENT_OFFSETS],
   isActive: true,
   isListed: true,
   brandAccent: "",

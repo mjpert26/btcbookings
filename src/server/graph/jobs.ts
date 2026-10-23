@@ -13,6 +13,7 @@ import {
   type GraphPage,
 } from "@/server/graph/client";
 import { CalendarConnectionBroken } from "@/server/graph/tokens";
+import { partnerDisplayName } from "@/server/email/partner";
 import { buildCreatePayload, buildUpdatePayload, type EventPayloadInput, type LocationType } from "@/server/graph/event-payload";
 import { ensureSubscription } from "@/server/graph/subscriptions";
 import { syncDelta } from "@/server/graph/delta";
@@ -71,6 +72,7 @@ type BookingRow = {
   location_type: LocationType;
   location_detail: string | null;
   event_type_name: string;
+  team_name: string | null;
 };
 type HostRow = { user_id: string; role: "primary" | "collective"; active: boolean; graph_event_id: string | null; email: string; name: string };
 
@@ -78,8 +80,9 @@ async function loadBooking(bookingId: string) {
   const sql = service();
   const [booking] = await sql<BookingRow[]>`
     select b.id, b.status, b.language, b.start_at, b.end_at, b.invitee_name, b.invitee_email, b.invitee_phone,
-           b.invitee_timezone, b.location_type, b.location_detail, et.name as event_type_name
+           b.invitee_timezone, b.location_type, b.location_detail, et.name as event_type_name, t.name as team_name
     from app.bookings b join app.event_types et on et.id = b.event_type_id
+    left join app.teams t on t.id = et.team_id
     where b.id = ${bookingId}
   `;
   if (!booking) return null;
@@ -102,6 +105,7 @@ export function payloadInput(data: NonNullable<Awaited<ReturnType<typeof loadBoo
   return {
     bookingId: booking.id,
     eventTypeName: booking.event_type_name,
+    partnerName: partnerDisplayName(booking.team_name ? { name: booking.team_name } : null),
     startAt: booking.start_at,
     endAt: booking.end_at,
     invitee: { name: booking.invitee_name, email: booking.invitee_email, phone: booking.invitee_phone, timezone: booking.invitee_timezone },

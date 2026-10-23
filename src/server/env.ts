@@ -44,6 +44,13 @@ const schema = z.object({
   SLACK_BOT_TOKEN: z.string().optional(),
   SLACK_ADMIN_NOTIFY_CHANNEL: z.string().optional(),
 
+  // SendBlue SMS. Without the key and secret, text messages are logged and not sent.
+  SENDBLUE_API_KEY: z.string().optional(),
+  SENDBLUE_API_SECRET: z.string().optional(),
+  SENDBLUE_FROM_NUMBER: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^\+[1-9]\d{7,14}$/).optional()),
+  // Shared secret SendBlue sends in the sb-signing-secret header of inbound webhooks.
+  SENDBLUE_WEBHOOK_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
+
   N8N_BASE_URL: z.string().url().default("https://api.bigthinkcapital.com"),
   N8N_LEAD_WEBHOOK_PATH: z.string().default("/webhook/btc-scheduler/lead"),
   N8N_SIGNING_SECRET: z.string().optional(),

@@ -152,6 +152,14 @@
       "preview": "Your meeting starts on {date} at {time}.",
       "heading": "Your meeting is coming up",
       "body": "This is a reminder about your upcoming meeting."
-    }
+    },
+    "partner": "Partner"
+  },
+  "sms": {
+    "reminder": "Reminder from {brand}: {event} on {date} at {time} {zone}.",
+    "partner": "Partner: {partner}.",
+    "join": "Join: {url}",
+    "manage": "Reschedule or cancel: {url}",
+    "optOut": "Reply STOP to opt out."
   }
 }

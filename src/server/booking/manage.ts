@@ -218,7 +218,6 @@ export async function rescheduleByInvitee(
           newBookingId: bookingId,
           oldHosts: oldHosts.map((h) => ({ userId: h.user_id, graphEventId: h.graph_event_id })),
           newStartMs: startMs,
-          reminderOffsetsMin: et.reminder_offsets_min,
           hostUserIds: hosts.map((h) => h.userId),
           now,
         });

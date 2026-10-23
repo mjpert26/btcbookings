@@ -11,6 +11,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Environment variables](#environment-variables)
 - [Microsoft Entra app registration](#microsoft-entra-app-registration)
 - [Slack app](#slack-app)
+- [Reminders and SMS](#reminders-and-sms)
 - [Salesforce and n8n](#salesforce-and-n8n)
 - [Deploying to Vercel](#deploying-to-vercel)
 - [Cron jobs](#cron-jobs)
@@ -78,7 +79,10 @@ Every variable is documented in [`.env.example`](.env.example). Summary:
 | `CRON_SECRET` | yes | Vercel Cron bearer secret |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | production | Cloudflare Turnstile on public forms |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | Transactional email; without a key, emails are logged instead of sent |
-| `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | Slack channel sync |
+| `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | Slack channel sync and agent reminder direct messages |
+| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | SendBlue text reminders; without them, texts are logged instead of sent |
+| `SENDBLUE_FROM_NUMBER` | optional | SendBlue sending line in E.164; required on shared-line plans |
+| `SENDBLUE_WEBHOOK_SECRET` | with SMS | Secret SendBlue sends in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
 | `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH`, `N8N_SIGNING_SECRET` | for SF | Outbound requests to n8n |
 | `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | Inbound queue snapshot and push authentication |
 | `SF_LEAD_MAX_ATTEMPTS`, `QUEUE_POLL_STALE_MINUTES` | no | Tuning (defaults 8 and 10) |
@@ -92,6 +96,15 @@ Step-by-step instructions: [`docs/entra-setup.md`](docs/entra-setup.md). In shor
 ## Slack app
 
 Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel configurations start in dry-run mode.
+
+## Reminders and SMS
+
+Each booking page sets its own reminders in the editor (**Reminders** section):
+
+- Merchant (invitee) reminders by email and/or text message at the chosen times. Default: email at 1 day and 1 hour before, as before.
+- Agent (host) reminders by email, Slack direct message and/or text message, at 5, 15, 30, 60 minutes or 1 day before. Default: off.
+
+Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through SendBlue; merchants can reply STOP to opt out and START to opt back in. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
 
 ## Salesforce and n8n
 
@@ -123,7 +136,7 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 | `/api/cron/jobs` | every minute | Drain the jobs outbox (Graph writes, email, Slack, Salesforce) |
 | `/api/cron/graph-subscriptions` | every 6 hours | Renew Graph subscriptions expiring within 48 hours; create missing ones |
 | `/api/cron/graph-delta` | every 15 minutes | Delta reconciliation for every healthy calendar connection |
-| `/api/cron/reminders` | every 5 minutes | Safety net for reminder emails |
+| `/api/cron/reminders` | every 5 minutes | Safety net for reminders (email, SMS and Slack direct messages) |
 | `/api/cron/queue-sync-health` | every 10 minutes | Flag teams whose queue snapshot is stale |
 | `/api/cron/maintenance` | daily 04:17 UTC | Purge expired sessions, OAuth state, nonces, rate-limit windows, old job rows and old error log entries |
 
@@ -194,7 +207,8 @@ src/server/graph        Graph client, busy cache, subscriptions, delta, event wr
 src/server/scheduling   pure slot engine, round-robin, variant resolution
 src/server/booking      booking transaction, manage links, reassignment
 src/server/sync         Salesforce Queue snapshot diffing and safety rail
-src/server/slack        Slack channel sync
+src/server/slack        Slack channel sync and agent reminder direct messages
+src/server/sms          SendBlue client, SMS reminders, opt-outs
 src/server/salesforce   Lead payload mapping and outbox handler
 src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts
@@ -206,4 +220,4 @@ docs/                   plan, setup guides, runbook
 
 ## Future work
 
-Not in v1: payments, Google Calendar, SMS reminders (possibly via SendBlue), routing forms and pre-booking qualification, languages beyond English and Spanish (adding one is configuration plus a message catalog).
+Not in v1: payments, Google Calendar, routing forms and pre-booking qualification, languages beyond English and Spanish (adding one is configuration plus a message catalog).

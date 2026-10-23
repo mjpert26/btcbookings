@@ -9,7 +9,9 @@ import { bookingById, bookingHosts, chainRoot, eventInfo, type BookingRow } from
 import { eventPath } from "@/server/booking/load";
 import { buildIcs } from "@/server/booking/ics";
 import { redactEmail, sendEmail, type OutgoingEmail } from "@/server/email/send";
-import { renderHostConflict, renderHostNotice, renderInviteeEmail, type RenderedEmail } from "@/server/email/render";
+import { renderHostConflict, renderHostNotice, renderHostReminder, renderInviteeEmail, type RenderedEmail } from "@/server/email/render";
+import { partnerNameForEventType } from "@/server/email/partner";
+import { loadAgentReminderData, reminderSkipReason } from "@/server/email/reminders";
 import { locationText, type InviteeEmailData, type InviteeKind } from "@/server/email/templates/invitee";
 
 const payloadSchema = z.object({
@@ -20,6 +22,7 @@ const payloadSchema = z.object({
     "booking_reminder",
     "host_conflict_flagged",
     "host_booking_notice",
+    "host_booking_reminder",
   ]),
   bookingId: z.uuid(),
   recipient: z.union([z.literal("invitee"), z.object({ userId: z.uuid() })]),
@@ -34,9 +37,6 @@ const INVITEE_KIND: Record<string, InviteeKind> = {
   booking_cancelled: "cancelled",
   booking_reminder: "reminder",
 };
-
-/** Reminders that would arrive this early (start moved later) are skipped. */
-const REMINDER_EARLY_TOLERANCE_MS = 10 * 60_000;
 
 function skip(reason: string): JobResult {
   return { result: { skipped: reason } };
@@ -54,15 +54,10 @@ export function skipReason(p: Payload, b: BookingRow, now: number): string | nul
     case "booking_confirmed":
     case "booking_rescheduled":
       return live ? null : `status_${b.status}`;
-    case "booking_reminder": {
-      if (b.status !== "confirmed") return `status_${b.status}`;
-      const start = b.start_at.getTime();
-      if (now >= start) return "started";
-      if (!p.offsetMin) return "no_offset";
-      const due = start - p.offsetMin * 60_000;
-      if (now < due - REMINDER_EARLY_TOLERANCE_MS) return "start_moved";
-      return null;
-    }
+    case "booking_reminder":
+      return reminderSkipReason("merchant", b, p.offsetMin, now);
+    case "host_booking_reminder":
+      return reminderSkipReason("agent", b, p.offsetMin, now);
     case "host_booking_notice":
       return null;
     case "host_conflict_flagged":
@@ -87,11 +82,12 @@ function logoUrl(): string {
 }
 
 export async function buildInviteeData(sql: Sql, b: BookingRow): Promise<InviteeEmailData> {
-  const [info, active, all, manage] = await Promise.all([
+  const [info, active, all, manage, partnerName] = await Promise.all([
     eventInfo(sql, b.event_type_id),
     bookingHosts(sql, b.id, true),
     bookingHosts(sql, b.id, false),
     manageUrl(sql, b.id),
+    partnerNameForEventType(sql, b.event_type_id),
   ]);
   const hosts = active.length ? active : all;
   const base = env().APP_BASE_URL;
@@ -104,6 +100,7 @@ export async function buildInviteeData(sql: Sql, b: BookingRow): Promise<Invitee
     end: b.end_at,
     timezone: b.invitee_timezone,
     hostNames: hosts.map((h) => h.name),
+    partnerName,
     locationType: b.location_type,
     locationDetail: b.location_type === "teams" ? null : b.location_detail,
     onlineMeetingUrl: b.online_meeting_url,
@@ -126,7 +123,7 @@ async function inviteeEmail(sql: Sql, p: Payload, b: BookingRow): Promise<{ rend
     start: b.start_at,
     end: b.end_at,
     title: data.eventName,
-    description: [data.hostNames.join(", "), data.manageUrl].filter(Boolean).join("\n"),
+    description: [data.hostNames.join(", "), data.partnerName, data.manageUrl].filter(Boolean).join("\n"),
     location: loc.url ?? loc.text,
     url: data.manageUrl ?? undefined,
     organizerName: data.hostNames[0],
@@ -135,6 +132,11 @@ async function inviteeEmail(sql: Sql, p: Payload, b: BookingRow): Promise<{ rend
 }
 
 async function hostEmail(sql: Sql, p: Payload, b: BookingRow, userId: string): Promise<{ rendered: RenderedEmail; to: string } | null> {
+  if (p.template === "host_booking_reminder") {
+    const data = await loadAgentReminderData(sql, b, userId, p.offsetMin ?? 0);
+    if (!data) return null;
+    return { to: data.hostEmail, rendered: await renderHostReminder({ ...data, logoUrl: logoUrl() }) };
+  }
   const hosts = await bookingHosts(sql, b.id, false);
   const host = hosts.find((h) => h.user_id === userId);
   if (!host) return null;
@@ -201,7 +203,7 @@ export async function handleEmailSend(
   let email: OutgoingEmail;
   const idempotencyKey = `email_send:${job.idempotency_key ?? job.id}`;
   if (p.recipient === "invitee") {
-    if (p.template === "host_booking_notice" || p.template === "host_conflict_flagged") {
+    if (p.template === "host_booking_notice" || p.template === "host_conflict_flagged" || p.template === "host_booking_reminder") {
       throw new PermanentJobError("Host template addressed to the invitee");
     }
     const { rendered, ics } = await inviteeEmail(sql, p, booking);

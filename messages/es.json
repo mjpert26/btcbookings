@@ -152,6 +152,14 @@
       "preview": "Su reunión comienza el {date} a las {time}.",
       "heading": "Su reunión se acerca",
       "body": "Le recordamos su próxima reunión."
-    }
+    },
+    "partner": "Socio comercial"
+  },
+  "sms": {
+    "reminder": "Recordatorio de {brand}: {event} el {date} a las {time} {zone}.",
+    "partner": "Socio comercial: {partner}.",
+    "join": "Unirse: {url}",
+    "manage": "Reprogramar o cancelar: {url}",
+    "optOut": "Responda STOP para no recibir más mensajes."
   }
 }

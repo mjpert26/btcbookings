@@ -15,9 +15,15 @@ import type { ResolvedEventType } from "@/server/scheduling";
  *   graph_event_upsert  <bookingId>:upsert[:<suffix>]
  *   graph_event_delete  <bookingId>:delete:<userId>
  *   email_send          <bookingId>:confirmed | :rescheduled[:<suffix>] | :cancelled
- *                       <bookingId>:reminder:<offsetMin>
+ *                       <bookingId>:reminder:<offsetMin>                 (merchant reminder)
+ *                       <bookingId>:host_reminder:<userId>:<offsetMin>   (agent reminder)
  *                       <bookingId>:host_notice:<event>:<userId>
+ *   sms_send            <bookingId>:sms:invitee:<offsetMin> | <bookingId>:sms:<userId>:<offsetMin>
+ *   slack_dm_send       <bookingId>:slack_dm:<userId>:<offsetMin>
  *   sf_lead_create      <bookingId>
+ *
+ * Every reminder job carries payload.bookingId and booking_id, so the
+ * jobs_skip_imported_bookings trigger drops them for imported bookings.
  */
 
 export type ManageToken = { token: string; hash: string; encrypted: string };
@@ -58,7 +64,62 @@ export async function enqueueGraphDelete(
   });
 }
 
-/** One reminder per offset at start - offset. Offsets whose time has passed are skipped. */
+export type MerchantReminderChannel = "email" | "sms";
+export type AgentReminderChannel = "email" | "slack" | "sms";
+
+/** Per booking page reminder settings (app.event_types reminder columns). */
+export type ReminderSettings = {
+  /** reminder_offsets_min */
+  merchantOffsetsMin: number[];
+  /** merchant_reminder_channels */
+  merchantChannels: MerchantReminderChannel[];
+  /** agent_reminder_channels */
+  agentChannels: AgentReminderChannel[];
+  /** agent_reminder_offsets_min */
+  agentOffsetsMin: number[];
+};
+
+/** Column defaults: merchant email reminders only, as before agent and SMS reminders existed. */
+export const DEFAULT_REMINDER_SETTINGS: ReminderSettings = {
+  merchantOffsetsMin: [1440, 60],
+  merchantChannels: ["email"],
+  agentChannels: [],
+  agentOffsetsMin: [15],
+};
+
+/** Reminder settings of the booking's own event type row. */
+export async function loadReminderSettings(db: Db, bookingId: string): Promise<ReminderSettings> {
+  const [row] = await db<
+    {
+      reminder_offsets_min: number[];
+      merchant_reminder_channels: string[];
+      agent_reminder_channels: string[];
+      agent_reminder_offsets_min: number[];
+    }[]
+  >`
+    select e.reminder_offsets_min, e.merchant_reminder_channels, e.agent_reminder_channels, e.agent_reminder_offsets_min
+    from app.bookings b join app.event_types e on e.id = b.event_type_id
+    where b.id = ${bookingId}
+  `;
+  if (!row) return { ...DEFAULT_REMINDER_SETTINGS, merchantChannels: [], agentChannels: [] };
+  return {
+    merchantOffsetsMin: row.reminder_offsets_min,
+    merchantChannels: row.merchant_reminder_channels.filter((c): c is MerchantReminderChannel => c === "email" || c === "sms"),
+    agentChannels: row.agent_reminder_channels.filter((c): c is AgentReminderChannel => c === "email" || c === "slack" || c === "sms"),
+    agentOffsetsMin: row.agent_reminder_offsets_min,
+  };
+}
+
+/** Distinct positive offsets whose send time (start - offset) is still in the future. */
+function dueOffsets(startMs: number, offsetsMin: number[], now: number): { offset: number; runAt: Date }[] {
+  return [...new Set(offsetsMin)]
+    .filter((o) => Number.isInteger(o) && o > 0)
+    .map((offset) => ({ offset, runAt: startMs - offset * 60_000 }))
+    .filter((r) => r.runAt > now)
+    .map((r) => ({ offset: r.offset, runAt: new Date(r.runAt) }));
+}
+
+/** One merchant email reminder per offset at start - offset. Offsets whose time has passed are skipped. */
 export async function enqueueReminders(
   db: Db,
   bookingId: string,
@@ -66,25 +127,91 @@ export async function enqueueReminders(
   offsetsMin: number[],
   now = Date.now(),
 ): Promise<void> {
-  for (const offset of [...new Set(offsetsMin)].filter((o) => Number.isInteger(o) && o > 0)) {
-    const runAt = startMs - offset * 60_000;
-    if (runAt <= now) continue;
+  for (const { offset, runAt } of dueOffsets(startMs, offsetsMin, now)) {
     await enqueueEmail(
       db,
       { template: "booking_reminder", bookingId, recipient: "invitee", offsetMin: offset },
       `${bookingId}:reminder:${offset}`,
-      new Date(runAt),
+      runAt,
     );
   }
 }
 
-/** Marks pending reminder jobs for a booking as dead (used on cancel and reschedule). */
-export async function cancelPendingReminders(db: Db, bookingId: string): Promise<number> {
+/** Merchant text reminders at the merchant offsets. */
+async function enqueueMerchantSms(db: Db, bookingId: string, startMs: number, offsetsMin: number[], now: number): Promise<void> {
+  for (const { offset, runAt } of dueOffsets(startMs, offsetsMin, now)) {
+    const payload: JobPayloads["sms_send"] = { template: "booking_reminder", bookingId, recipient: "invitee", offsetMin: offset };
+    await enqueue(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:invitee:${offset}`, bookingId, runAt, maxAttempts: 5 });
+  }
+}
+
+/** Agent reminders on every enabled channel, for each host and offset. */
+export async function enqueueAgentReminders(
+  db: Db,
+  input: { bookingId: string; startMs: number; settings: ReminderSettings; userIds: string[]; now?: number },
+): Promise<void> {
+  const { bookingId, settings } = input;
+  if (!settings.agentChannels.length || !input.userIds.length) return;
+  const due = dueOffsets(input.startMs, settings.agentOffsetsMin, input.now ?? Date.now());
+  for (const userId of [...new Set(input.userIds)]) {
+    for (const { offset, runAt } of due) {
+      if (settings.agentChannels.includes("email")) {
+        await enqueueEmail(
+          db,
+          { template: "host_booking_reminder", bookingId, recipient: { userId }, offsetMin: offset },
+          `${bookingId}:host_reminder:${userId}:${offset}`,
+          runAt,
+        );
+      }
+      if (settings.agentChannels.includes("slack")) {
+        const payload: JobPayloads["slack_dm_send"] = { template: "booking_reminder", bookingId, userId, offsetMin: offset };
+        await enqueue(db, { kind: "slack_dm_send", payload, idempotencyKey: `${bookingId}:slack_dm:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+      }
+      if (settings.agentChannels.includes("sms")) {
+        const payload: JobPayloads["sms_send"] = { template: "booking_reminder", bookingId, recipient: { userId }, offsetMin: offset };
+        await enqueue(db, { kind: "sms_send", payload, idempotencyKey: `${bookingId}:sms:${userId}:${offset}`, bookingId, runAt, maxAttempts: 5 });
+      }
+    }
+  }
+}
+
+/**
+ * Every reminder for a booking: merchant email and SMS at the merchant offsets, and agent
+ * reminders on the enabled channels. With the default settings this enqueues exactly the
+ * merchant email reminders.
+ */
+export async function enqueueAllReminders(
+  db: Db,
+  input: { bookingId: string; startMs: number; hostUserIds: string[]; settings?: ReminderSettings; now?: number },
+): Promise<void> {
+  const settings = input.settings ?? (await loadReminderSettings(db, input.bookingId));
+  const now = input.now ?? Date.now();
+  if (settings.merchantChannels.includes("email")) {
+    await enqueueReminders(db, input.bookingId, input.startMs, settings.merchantOffsetsMin, now);
+  }
+  if (settings.merchantChannels.includes("sms")) {
+    await enqueueMerchantSms(db, input.bookingId, input.startMs, settings.merchantOffsetsMin, now);
+  }
+  await enqueueAgentReminders(db, { bookingId: input.bookingId, startMs: input.startMs, settings, userIds: input.hostUserIds, now });
+}
+
+/**
+ * Marks pending reminder jobs for a booking as dead, on every channel (used on cancel,
+ * reschedule and host reassignment). With `userId`, only that host's reminders.
+ */
+export async function cancelPendingReminders(db: Db, bookingId: string, opts: { userId?: string } = {}): Promise<number> {
+  const userFilter = opts.userId
+    ? db`and (payload ->> 'userId' = ${opts.userId} or payload -> 'recipient' ->> 'userId' = ${opts.userId})`
+    : db``;
   const rows = await db`
     update app.jobs set status = 'dead', last_error = 'booking cancelled', locked_until = null
-    where booking_id = ${bookingId} and kind = 'email_send'
+    where booking_id = ${bookingId}
       and status in ('pending', 'failed')
-      and payload ->> 'template' = 'booking_reminder'
+      and (
+        (kind = 'email_send' and payload ->> 'template' in ('booking_reminder', 'host_booking_reminder'))
+        or (kind in ('sms_send', 'slack_dm_send') and payload ->> 'template' = 'booking_reminder')
+      )
+      ${userFilter}
     returning id
   `;
   return rows.length;
@@ -136,16 +263,23 @@ export async function enqueueBookingCreated(
   input: {
     bookingId: string;
     startMs: number;
-    reminderOffsetsMin: number[];
     hostUserIds: string[];
     resolved: Pick<ResolvedEventType, "sfSettings">;
+    /** Defaults to the booking's event type settings. */
+    reminders?: ReminderSettings;
     now?: number;
   },
 ): Promise<void> {
   const { bookingId } = input;
   await enqueueGraphUpsert(db, bookingId);
   await enqueueEmail(db, { template: "booking_confirmed", bookingId, recipient: "invitee" }, `${bookingId}:confirmed`);
-  await enqueueReminders(db, bookingId, input.startMs, input.reminderOffsetsMin, input.now);
+  await enqueueAllReminders(db, {
+    bookingId,
+    startMs: input.startMs,
+    hostUserIds: input.hostUserIds,
+    settings: input.reminders,
+    now: input.now,
+  });
   await enqueueHostNotices(db, bookingId, input.hostUserIds, "created");
   await enqueueSfLeadIfEnabled(db, bookingId, input.resolved);
 }
@@ -158,8 +292,9 @@ export async function enqueueBookingRescheduled(
     newBookingId: string;
     oldHosts: { userId: string; graphEventId: string | null }[];
     newStartMs: number;
-    reminderOffsetsMin: number[];
     hostUserIds: string[];
+    /** Defaults to the new booking's event type settings. */
+    reminders?: ReminderSettings;
     now?: number;
   },
 ): Promise<void> {
@@ -171,7 +306,13 @@ export async function enqueueBookingRescheduled(
     { template: "booking_rescheduled", bookingId: input.newBookingId, recipient: "invitee" },
     `${input.newBookingId}:rescheduled`,
   );
-  await enqueueReminders(db, input.newBookingId, input.newStartMs, input.reminderOffsetsMin, input.now);
+  await enqueueAllReminders(db, {
+    bookingId: input.newBookingId,
+    startMs: input.newStartMs,
+    hostUserIds: input.hostUserIds,
+    settings: input.reminders,
+    now: input.now,
+  });
   await enqueueHostNotices(db, input.newBookingId, input.hostUserIds, "rescheduled");
 }
 

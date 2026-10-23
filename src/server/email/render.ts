@@ -5,6 +5,7 @@ import { BookingConfirmedEmail } from "@/server/email/templates/booking-confirme
 import { BookingReminderEmail } from "@/server/email/templates/booking-reminder";
 import { BookingRescheduledEmail } from "@/server/email/templates/booking-rescheduled";
 import { HostBookingNoticeEmail, hostNoticeSubject, type HostNoticeData } from "@/server/email/templates/host-booking-notice";
+import { HostBookingReminderEmail, hostReminderSubject, type HostReminderData } from "@/server/email/templates/host-booking-reminder";
 import {
   HostConflictFlaggedEmail,
   hostConflictSubject,
@@ -36,4 +37,8 @@ export function renderHostNotice(data: HostNoticeData): Promise<RenderedEmail> {
 
 export function renderHostConflict(data: HostConflictData): Promise<RenderedEmail> {
   return finish(hostConflictSubject(data).subject, HostConflictFlaggedEmail(data));
+}
+
+export function renderHostReminder(data: HostReminderData): Promise<RenderedEmail> {
+  return finish(hostReminderSubject(data).subject, HostBookingReminderEmail(data));
 }

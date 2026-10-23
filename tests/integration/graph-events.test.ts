@@ -57,7 +57,9 @@ describe("graph_event_upsert", () => {
 
     const [post] = mock.callsTo("POST", /\/me\/events$/);
     const body = post.body as EventPayload;
-    expect(body.subject).toBe("Strategy Session: Jane <Invitee>");
+    // Team pages carry the partner (team) name in the subject and body.
+    expect(body.subject).toBe("Strategy Session (Sales): Jane <Invitee>");
+    expect(body.body.content).toContain("<strong>Partner</strong></td><td>Sales</td>");
     expect(body.start).toEqual({ dateTime: "2026-10-20T15:00:00", timeZone: "UTC" });
     expect(body.end).toEqual({ dateTime: "2026-10-20T15:30:00", timeZone: "UTC" });
     expect(body.isOnlineMeeting).toBe(true);

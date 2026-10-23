@@ -23,6 +23,8 @@ const ET_COLUMNS = [
   "durations", "default_duration", "location_type", "location_detail", "schedule_id", "buffer_before_min",
   "buffer_after_min", "min_notice_min", "max_per_day", "booking_window_days", "slot_interval_min", "scheduling_mode",
   "rr_strategy", "rr_sticky_returning_invitee", "reminder_offsets_min", "is_active", "is_listed", "brand_accent",
+  // Reminder settings (read by toFormValues; not part of EventTypeRow).
+  "merchant_reminder_channels", "agent_reminder_channels", "agent_reminder_offsets_min",
 ] as const;
 
 export async function loadBundle(tx: Tx, id: string): Promise<EventTypeBundle<HostRow> | null> {

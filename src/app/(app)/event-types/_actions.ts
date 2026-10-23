@@ -6,11 +6,12 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
 import { withUser, type Tx } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { changedFields, writeAudit } from "@/server/audit";
 import type { ActionState } from "@/lib/form-state";
 import { bool, fail, invalid, isUuid, json, ok, pgCode, pgConstraint, str } from "@/server/ui/form";
 import { HEX_COLOR_RE, hostSchema, questionsSchema, REMINDER_CHOICES, SLUG_RE, VARIANT_GROUPS, type VariantGroupKey } from "@/lib/event-types";
 import { isReservedSlug } from "@/server/auth/slug";
+import { AGENT_REMINDER_CHANNELS, AGENT_REMINDER_CHOICES, MERCHANT_REMINDER_CHANNELS } from "@/lib/reminders";
 import { canWrite, loadBundle } from "./_data";
 
 const optionalInt = (min: number, max: number) =>
@@ -41,6 +42,18 @@ const formSchema = z
     bookingWindowDays: requiredInt(1, 365),
     slotInterval: optionalInt(5, 240),
     reminders: z.array(z.coerce.number().refine((n) => REMINDER_CHOICES.some((r) => r.value === n), "Unknown reminder.")).max(8),
+    merchantReminderChannels: z
+      .array(z.enum(MERCHANT_REMINDER_CHANNELS.map((c) => c.value) as ["email", "sms"], "Unknown channel."))
+      .max(2)
+      .transform((v) => [...new Set(v)]),
+    agentReminderChannels: z
+      .array(z.enum(AGENT_REMINDER_CHANNELS.map((c) => c.value) as ["email", "slack", "sms"], "Unknown channel."))
+      .max(3)
+      .transform((v) => [...new Set(v)]),
+    agentReminders: z
+      .array(z.coerce.number().refine((n) => AGENT_REMINDER_CHOICES.some((r) => r.value === n), "Unknown reminder."))
+      .max(8)
+      .transform((v) => [...new Set(v)].sort((a, b) => b - a)),
     isActive: z.boolean(),
     isListed: z.boolean(),
     brandAccent: z.union([z.literal(""), z.string().regex(HEX_COLOR_RE, "Use a hex color like #0D66A5.")]).transform((v) => (v === "" ? null : v)),
@@ -51,6 +64,9 @@ const formSchema = z
     hosts: z.array(hostSchema).max(200),
   })
   .superRefine((v, ctx) => {
+    if (v.agentReminderChannels.length && !v.agentReminders.length) {
+      ctx.addIssue({ code: "custom", path: ["agentReminders"], message: "Choose when agents are reminded." });
+    }
     if (!v.durations.includes(v.defaultDuration)) {
       ctx.addIssue({ code: "custom", path: ["defaultDuration"], message: "The default must be one of the selected durations." });
     }
@@ -60,6 +76,14 @@ const formSchema = z
   });
 
 type FormValues = z.output<typeof formSchema>;
+
+/** Reminder columns of app.event_types, as loaded by loadBundle. */
+type ReminderColumns = {
+  reminder_offsets_min: number[];
+  merchant_reminder_channels?: string[];
+  agent_reminder_channels?: string[];
+  agent_reminder_offsets_min?: number[];
+};
 
 function readForm(fd: FormData) {
   return formSchema.safeParse({
@@ -79,6 +103,9 @@ function readForm(fd: FormData) {
     bookingWindowDays: str(fd, "bookingWindowDays"),
     slotInterval: str(fd, "slotInterval"),
     reminders: fd.getAll("reminders").map(String),
+    merchantReminderChannels: fd.getAll("merchantReminderChannels").map(String),
+    agentReminderChannels: fd.getAll("agentReminderChannels").map(String),
+    agentReminders: fd.getAll("agentReminders").map(String),
     isActive: bool(fd, "isActive"),
     isListed: bool(fd, "isListed"),
     brandAccent: str(fd, "brandAccent"),
@@ -157,13 +184,15 @@ export async function createEventTypeAction(_prev: ActionState, fd: FormData): P
           id, owner_user_id, team_id, slug, language, name, description, durations, default_duration,
           location_type, location_detail, schedule_id, buffer_before_min, buffer_after_min, min_notice_min,
           max_per_day, booking_window_days, slot_interval_min, scheduling_mode, rr_strategy,
-          rr_sticky_returning_invitee, reminder_offsets_min, is_active, is_listed, brand_accent
+          rr_sticky_returning_invitee, reminder_offsets_min, is_active, is_listed, brand_accent,
+          merchant_reminder_channels, agent_reminder_channels, agent_reminder_offsets_min
         ) values (
           ${row.id}, ${teamId ? null : user.id}, ${teamId}, ${v.slug}, ${language}, ${v.name}, ${tx.json(description(v))},
           ${v.durations}, ${v.defaultDuration}, ${v.locationType}, ${v.locationDetail || null}, ${v.scheduleId},
           ${v.bufferBefore}, ${v.bufferAfter}, ${v.minNotice}, ${v.maxPerDay}, ${v.bookingWindowDays}, ${v.slotInterval},
           ${teamId ? (v.schedulingMode ?? "round_robin") : "individual"}, ${v.rrStrategy ?? "fairness"},
-          ${teamId ? v.rrSticky : false}, ${v.reminders}, ${v.isActive}, ${v.isListed}, ${v.brandAccent}
+          ${teamId ? v.rrSticky : false}, ${v.reminders}, ${v.isActive}, ${v.isListed}, ${v.brandAccent},
+          ${v.merchantReminderChannels}, ${v.agentReminderChannels}, ${v.agentReminders}
         )
       `;
       await saveQuestions(tx, row.id, v.questions);
@@ -225,6 +254,9 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
           rr_strategy = ${v.rrStrategy ?? et.rr_strategy},
           rr_sticky_returning_invitee = ${et.team_id ? v.rrSticky : false},
           reminder_offsets_min = ${v.reminders},
+          merchant_reminder_channels = ${v.merchantReminderChannels},
+          agent_reminder_channels = ${v.agentReminderChannels},
+          agent_reminder_offsets_min = ${v.agentReminders},
           is_active = ${v.isActive},
           is_listed = ${v.isListed}
         where id = ${id}
@@ -245,6 +277,30 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
         before: { name: et.name, slug: et.slug, is_active: et.is_active },
         after: { name: v.name, slug: isChild ? et.slug : v.slug, is_active: v.isActive },
       });
+      const rem = et as typeof et & ReminderColumns;
+      const reminderChanges = changedFields<ReminderColumns>(
+        {
+          reminder_offsets_min: et.reminder_offsets_min,
+          merchant_reminder_channels: rem.merchant_reminder_channels,
+          agent_reminder_channels: rem.agent_reminder_channels,
+          agent_reminder_offsets_min: rem.agent_reminder_offsets_min,
+        },
+        {
+          reminder_offsets_min: v.reminders,
+          merchant_reminder_channels: v.merchantReminderChannels,
+          agent_reminder_channels: v.agentReminderChannels,
+          agent_reminder_offsets_min: v.agentReminders,
+        },
+      );
+      if (reminderChanges) {
+        await writeAudit(tx, {
+          actorUserId: user.id,
+          action: "event_type.update_reminders",
+          entityType: "event_type",
+          entityId: id,
+          ...reminderChanges,
+        });
+      }
       return "ok" as const;
     });
     if (res === "not_found") return fail("Event type not found or you cannot edit it.");
@@ -304,12 +360,14 @@ export async function createSpanishVariantAction(parentId: string): Promise<Acti
           id, owner_user_id, team_id, slug, language, parent_event_type_id, overrides, name, description, durations,
           default_duration, location_type, location_detail, schedule_id, buffer_before_min, buffer_after_min,
           min_notice_min, max_per_day, booking_window_days, slot_interval_min, scheduling_mode, rr_strategy,
-          rr_sticky_returning_invitee, reminder_offsets_min, is_active, is_listed, brand_accent
+          rr_sticky_returning_invitee, reminder_offsets_min, is_active, is_listed, brand_accent,
+          merchant_reminder_channels, agent_reminder_channels, agent_reminder_offsets_min
         )
         select ${row.id}, owner_user_id, team_id, slug, 'es', id, '{}', name, description, durations,
                default_duration, location_type, location_detail, schedule_id, buffer_before_min, buffer_after_min,
                min_notice_min, max_per_day, booking_window_days, slot_interval_min, scheduling_mode, rr_strategy,
-               rr_sticky_returning_invitee, reminder_offsets_min, false, is_listed, brand_accent
+               rr_sticky_returning_invitee, reminder_offsets_min, false, is_listed, brand_accent,
+               merchant_reminder_channels, agent_reminder_channels, agent_reminder_offsets_min
         from app.event_types where id = ${parentId}
       `;
       await writeAudit(tx, { actorUserId: user.id, action: "event_type.create_variant", entityType: "event_type", entityId: row.id, after: { parentId, language: "es" } });

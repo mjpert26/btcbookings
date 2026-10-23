@@ -13,7 +13,14 @@ import {
   pgCode,
   recordRoundRobin,
 } from "@/server/booking/engine";
-import { enqueueGraphDelete, enqueueGraphUpsert, enqueueHostNotices } from "@/server/booking/side-effects";
+import {
+  cancelPendingReminders,
+  enqueueAgentReminders,
+  enqueueGraphDelete,
+  enqueueGraphUpsert,
+  enqueueHostNotices,
+  loadReminderSettings,
+} from "@/server/booking/side-effects";
 import { enqueue } from "@/server/jobs/queue";
 import { bookingById, bookingHosts } from "@/server/booking/view";
 
@@ -86,6 +93,7 @@ export async function reassignBooking(
       }
       await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id });
       await enqueueGraphUpsert(tx, booking.id, `reassign:${from.user_id}`);
+      await cancelPendingReminders(tx, booking.id, { userId: from.user_id });
       return { result: { removed: from.user_id } };
     }
 
@@ -126,6 +134,14 @@ export async function reassignBooking(
         bookingId: booking.id,
       });
       await enqueueHostNotices(tx, booking.id, [to.userId], `reassigned`);
+      await cancelPendingReminders(tx, booking.id, { userId: from.user_id });
+      await enqueueAgentReminders(tx, {
+        bookingId: booking.id,
+        startMs,
+        settings: await loadReminderSettings(tx, booking.id),
+        userIds: [to.userId],
+        now,
+      });
       return { result: { reassignedTo: to.userId } };
     }
     // Nobody free: restore the original host and flag for a human.

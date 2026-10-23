@@ -14,6 +14,8 @@ export type InviteeEmailData = {
   end: Date;
   timezone: string;
   hostNames: string[];
+  /** Partner (ISO) name for team booking pages; null for individual pages. */
+  partnerName?: string | null;
   locationType: "teams" | "phone" | "in_person" | "custom";
   locationDetail: string | null;
   onlineMeetingUrl: string | null;
@@ -53,6 +55,7 @@ export function InviteeEmail({ kind, data }: { kind: InviteeKind; data: InviteeE
   const rows: DetailRow[] = [
     { label: t("when"), value: `${when.date}, ${when.range}` },
     ...(data.hostNames.length ? [{ label: t("with"), value: data.hostNames.join(", ") }] : []),
+    ...(data.partnerName ? [{ label: t("partner"), value: data.partnerName }] : []),
     ...(!cancelled
       ? [{ label: t("where"), value: loc.url ? <TextLink href={loc.url}>{loc.text}</TextLink> : loc.text }]
       : []),

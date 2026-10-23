@@ -30,6 +30,12 @@ features:
     # manifest validation rejects this value, use "btc-scheduler" instead.
     display_name: BTC Scheduler
     always_online: false
+  # Agent reminders are posted to the app's Messages tab (a direct message from the bot).
+  # Agents cannot reply there; the tab is read-only.
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: true
 
 oauth_config:
   scopes:
@@ -41,7 +47,7 @@ oauth_config:
       - channels:join       # conversations.join so the bot can join public channels itself
       - users:read          # companion of users:read.email
       - users:read.email    # users.lookupByEmail
-      - chat:write          # admin notices via chat.postMessage (bot must be in the notice channel)
+      - chat:write          # admin notices and agent reminder DMs via chat.postMessage
 
 settings:
   org_deploy_enabled: false

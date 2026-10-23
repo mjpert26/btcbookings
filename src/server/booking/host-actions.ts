@@ -3,6 +3,7 @@ import { service, withUser } from "@/server/db/client";
 import { enqueue } from "@/server/jobs/queue";
 import { writeAudit } from "@/server/audit";
 import type { JobPayloads } from "@/server/jobs/kinds";
+import { cancelPendingReminders } from "@/server/booking/side-effects";
 
 export type HostCancelResult =
   | { ok: true; alreadyCancelled: boolean }
@@ -75,6 +76,7 @@ export async function cancelBookingAsHost(actorUserId: string, bookingId: string
         bookingId,
       });
     }
+    await cancelPendingReminders(tx, bookingId);
     const email: JobPayloads["email_send"] = { template: "booking_cancelled", bookingId, recipient: "invitee" };
     await enqueue(tx, {
       kind: "email_send",

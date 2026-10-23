@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/Badge";
 import { DURATION_CHOICES, LOCATION_TYPES, REMINDER_CHOICES, RR_STRATEGIES, type VariantGroupKey } from "@/lib/event-types";
 import type { FormAction } from "@/lib/form-state";
 import { formatMinutes } from "@/lib/format";
+import { AGENT_REMINDER_CHANNELS, AGENT_REMINDER_CHOICES, MERCHANT_REMINDER_CHANNELS } from "@/lib/reminders";
 import { QuestionsEditor, type EditorQuestion } from "./QuestionsEditor";
 import { HostsEditor, type HostValue, type MemberOption } from "./HostsEditor";
 
@@ -30,6 +31,11 @@ export type EventTypeValues = {
   bookingWindowDays: number;
   slotInterval: number | null;
   reminders: number[];
+  /** Merchant (invitee) reminder channels: email, sms. */
+  merchantReminderChannels: string[];
+  /** Agent (host) reminder channels: email, slack, sms. */
+  agentReminderChannels: string[];
+  agentReminders: number[];
   isActive: boolean;
   isListed: boolean;
   brandAccent: string;
@@ -303,12 +309,60 @@ export function EventTypeForm({
         <QuestionsEditor initial={values.questions} disabled={isChild && inh("questions")} />
       </Section>
 
-      <Section title="Reminders" description="Email reminders sent to the invitee before the meeting.">
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {REMINDER_CHOICES.map((r) => (
-            <Checkbox key={r.value} name="reminders" value={r.value} label={r.label} defaultChecked={values.reminders.includes(r.value)} errorKey="reminders" />
-          ))}
-        </div>
+      <Section title="Reminders" description="Reminders sent before the meeting. Nothing is sent on a channel that is turned off.">
+        <Fieldset legend="Merchant reminders" description="Sent to the person who booked. Texts go to the phone number they enter and include opt-out instructions." errorKey="merchantReminderChannels">
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {MERCHANT_REMINDER_CHANNELS.map((c) => (
+              <Checkbox
+                key={c.value}
+                name="merchantReminderChannels"
+                value={c.value}
+                label={<><span className="sr-only">Merchant reminder by </span>{c.label}</>}
+                defaultChecked={values.merchantReminderChannels.includes(c.value)}
+                errorKey="merchantReminderChannels"
+              />
+            ))}
+          </div>
+        </Fieldset>
+        <Fieldset legend="Merchant reminder times" errorKey="reminders">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            {REMINDER_CHOICES.map((r) => (
+              <Checkbox key={r.value} name="reminders" value={r.value} label={r.label} defaultChecked={values.reminders.includes(r.value)} errorKey="reminders" />
+            ))}
+          </div>
+        </Fieldset>
+        <Fieldset
+          legend="Agent reminders"
+          description="Sent to each assigned host. Slack messages arrive as a direct message from the BTC Scheduler Slack app. Texts go to each host's mobile number on file; hosts without one are skipped."
+          errorKey="agentReminderChannels"
+        >
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {AGENT_REMINDER_CHANNELS.map((c) => (
+              <Checkbox
+                key={c.value}
+                name="agentReminderChannels"
+                value={c.value}
+                label={<><span className="sr-only">Agent reminder by </span>{c.label}</>}
+                defaultChecked={values.agentReminderChannels.includes(c.value)}
+                errorKey="agentReminderChannels"
+              />
+            ))}
+          </div>
+        </Fieldset>
+        <Fieldset legend="Agent reminder times" errorKey="agentReminders">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {AGENT_REMINDER_CHOICES.map((r) => (
+              <Checkbox
+                key={r.value}
+                name="agentReminders"
+                value={r.value}
+                label={<><span className="sr-only">Agent reminder </span>{r.label}</>}
+                defaultChecked={values.agentReminders.includes(r.value)}
+                errorKey="agentReminders"
+              />
+            ))}
+          </div>
+        </Fieldset>
       </Section>
 
       <Section title="Visibility">

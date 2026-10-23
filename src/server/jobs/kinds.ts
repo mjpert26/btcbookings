@@ -12,6 +12,8 @@
  * | sf_lead_create            | salesforce           | booking (on confirm, if enabled)    |
  * | slack_membership_sync     | slack                | membership changes (any source)     |
  * | booking_reassign          | booking              | queue sync (removal_policy=reassign)|
+ * | sms_send                  | sms                  | booking (reminders, if enabled)     |
+ * | slack_dm_send             | slack                | booking (agent reminders, if enabled)|
  */
 export type JobPayloads = {
   graph_event_upsert: { bookingId: string };
@@ -25,16 +27,24 @@ export type JobPayloads = {
       | "booking_cancelled"
       | "booking_reminder"
       | "host_conflict_flagged"
-      | "host_booking_notice";
+      | "host_booking_notice"
+      | "host_booking_reminder";
     bookingId: string;
     /** "invitee" or a user id for host-facing mail. */
     recipient: "invitee" | { userId: string };
-    /** Reminder offset in minutes, for booking_reminder. */
+    /** Reminder offset in minutes, for booking_reminder and host_booking_reminder. */
     offsetMin?: number;
   };
   sf_lead_create: { bookingId: string };
   slack_membership_sync: { teamId: string; teamMemberId: string };
   booking_reassign: { bookingId: string; fromUserId: string; reason: string };
+  /** Text message through SendBlue. "invitee" texts the merchant; a user id texts that host. */
+  sms_send: { template: "booking_reminder"; bookingId: string; recipient: "invitee" | { userId: string }; offsetMin: number };
+  /** Slack direct message to a host. */
+  slack_dm_send: { template: "booking_reminder"; bookingId: string; userId: string; offsetMin: number };
 };
+
+/** Job kinds that carry booking reminders (all channels). */
+export const REMINDER_JOB_KINDS = ["email_send", "sms_send", "slack_dm_send"] as const;
 
 export type JobKind = keyof JobPayloads;

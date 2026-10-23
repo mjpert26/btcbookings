@@ -18,6 +18,8 @@ export type EventPayloadInput = {
   /** Other hosts added as required attendees (collective events). */
   coHosts: { name: string; email: string }[];
   answers: { label: string; value: string }[];
+  /** Partner (ISO) name for team booking pages. */
+  partnerName?: string | null;
 };
 
 export function escapeHtml(s: string): string {
@@ -43,6 +45,7 @@ function locationDisplay(i: EventPayloadInput): string {
 
 export function buildEventBody(i: EventPayloadInput): string {
   const rows = [
+    ...(i.partnerName ? [["Partner", i.partnerName]] : []),
     ["Invitee", i.invitee.name],
     ["Email", i.invitee.email],
     ...(i.invitee.phone ? [["Phone", i.invitee.phone]] : []),
@@ -90,7 +93,7 @@ export function buildCreatePayload(i: EventPayloadInput): EventPayload {
 export function buildUpdatePayload(i: EventPayloadInput): EventPayload {
   const display = locationDisplay(i);
   return {
-    subject: `${i.eventTypeName}: ${i.invitee.name}`,
+    subject: i.partnerName ? `${i.eventTypeName} (${i.partnerName}): ${i.invitee.name}` : `${i.eventTypeName}: ${i.invitee.name}`,
     body: { contentType: "HTML", content: buildEventBody(i) },
     start: utc(i.startAt),
     end: utc(i.endAt),

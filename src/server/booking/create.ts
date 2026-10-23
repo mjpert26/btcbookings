@@ -243,7 +243,6 @@ async function afterInsert(
   await enqueueBookingCreated(db, {
     bookingId,
     startMs,
-    reminderOffsetsMin: et.reminder_offsets_min,
     hostUserIds: hosts.map((h) => h.userId),
     resolved: loaded.resolved,
     now,

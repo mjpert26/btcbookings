@@ -104,7 +104,7 @@ The manifest now includes `usergroups:read` and `usergroups:write` (for a team's
 
 ## Queue to booking page to Slack sync
 
-When a rep leaves a partner's Salesforce Queue, the next snapshot (or push) pauses their team membership, which takes them off every booking page of that team at once, including pages with their own host list. Their upcoming bookings follow the team's removal policy (`reassign` queues a reassignment; `keep_bookings` keeps them and lists them for review), and Slack jobs remove them from the partner's linked channels and user group. Adding a rep to the queue reverses it. Manual members are never changed by the sync, and teams without a linked queue or Slack link (such as the teams imported from Calendly) get no sync or Slack work. Status per team: **Admin > Sync status** (`/admin/sync`). Details: [`docs/queue-slack-sync.md`](docs/queue-slack-sync.md).
+When a rep leaves a partner's Salesforce Queue, the next snapshot (or push) pauses their team membership, which takes them off every booking page of that team at once, including pages with their own host list. Their upcoming bookings follow the team's removal policy (`reassign` queues a reassignment; `keep_bookings` keeps them and lists them for review), and Slack jobs remove them from the partner's linked channels and user group. Adding a rep to the queue reverses it; a reassignment job that has not run yet then leaves the booking with the rep. Reassignments do not change the Salesforce Lead owner. Manual members are never changed by the sync, and teams without a linked queue or Slack link (such as the teams imported from Calendly) get no sync or Slack work. Status per team: **Admin > Sync status** (`/admin/sync`). Details: [`docs/queue-slack-sync.md`](docs/queue-slack-sync.md).
 
 ## Reminders and SMS
 
@@ -191,7 +191,7 @@ Request errors are captured by the `onRequestError` hook in `src/instrumentation
 
 ## Audit log
 
-Settings changes and booking activity are recorded in `app.audit_log` with the actor, the channel (`web`, `api`, `mcp`, `sync`, `system`, `public`) and only the fields that changed. Every booking create, reschedule, cancel, reassign and flag writes exactly one `booking.*` entry, whichever path made it (public page, invitee link, host, REST, MCP, Outlook conflict, reassignment job). Agents see the history of the bookings in their name on the booking page; managers and admins see everything at **Admin > Audit log** (`/admin/audit`), which managers can open read-only. Secrets are never stored and phone numbers are masked. No new environment variables. Details: [`docs/audit-log.md`](docs/audit-log.md).
+Settings changes and booking activity are recorded in `app.audit_log` with the actor, the channel (`web`, `api`, `mcp`, `sync`, `system`, `public`) and only the fields that changed. Every booking create, reschedule, cancel, reassign and flag writes exactly one `booking.*` entry, whichever path made it (public page, invitee link, host, REST, MCP, Outlook conflict, reassignment job). Agents see the history of the bookings in their name on the booking page; managers and admins see everything at **Admin > Audit log** (`/admin/audit`), which managers can open read-only. Secrets are never stored; phone numbers and webhook URLs are masked. No new environment variables. Details: [`docs/audit-log.md`](docs/audit-log.md).
 
 ## Partner page branding
 

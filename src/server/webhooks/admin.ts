@@ -4,7 +4,7 @@ import { z } from "zod";
 import { service, withUser } from "@/server/db/client";
 import { changedFields, writeAudit } from "@/server/audit";
 import { encryptSecret } from "@/server/crypto/aes";
-import { randomToken } from "@/server/crypto/random";
+import { randomToken, sha256Hex } from "@/server/crypto/random";
 import { enqueue } from "@/server/jobs/queue";
 import type { SessionUser } from "@/server/auth/session";
 import { checkWebhookUrl } from "@/server/webhooks/url";
@@ -72,6 +72,22 @@ function newSecret(): { secret: string; prefix: string } {
   return { secret, prefix: secret.slice(0, 12) };
 }
 
+/**
+ * The form of an endpoint URL stored in the audit log. Many receivers (Zapier, n8n webhook
+ * nodes, Slack incoming webhooks) treat the path as the credential, and managers can read
+ * the audit log, so only the origin is kept, plus a short hash of the full URL that shows
+ * when it changed. Migration 20261023126000 rewrote older entries to the same form.
+ */
+export function auditUrl(url: string): { url: string; urlHash: string } {
+  let origin = "";
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    origin = "";
+  }
+  return { url: `${origin}/…`, urlHash: sha256Hex(url).slice(0, 12) };
+}
+
 function validUrl(raw: string): string {
   const check = checkWebhookUrl(raw);
   if (!check.ok) throw new WebhookError(`The URL ${check.reason}.`);
@@ -125,7 +141,7 @@ export async function createWebhook(user: SessionUser, input: EndpointInput): Pr
       action: "webhook.create",
       entityType: "webhook_endpoint",
       entityId: id,
-      after: { url, description: v.description, events: v.events, teamId: v.teamId, secretPrefix: prefix },
+      after: { ...auditUrl(url), description: v.description, events: v.events, teamId: v.teamId, secretPrefix: prefix },
     });
   });
   return { id, secret };
@@ -145,7 +161,9 @@ export async function updateWebhook(user: SessionUser, id: string, input: Endpoi
       update app.webhook_endpoints set url = ${url}, description = ${v.description}, events = ${v.events}, team_id = ${v.teamId}, enabled = ${input.enabled}
       where id = ${id}
     `;
-    const diff = changedFields(before, after);
+    const { url: beforeUrl, ...beforeRest } = before;
+    const { url: afterUrl, ...afterRest } = after;
+    const diff = changedFields({ ...beforeRest, ...auditUrl(beforeUrl) }, { ...afterRest, ...auditUrl(afterUrl) });
     if (diff) {
       await writeAudit(tx, { actorUserId: user.id, action: "webhook.update", entityType: "webhook_endpoint", entityId: id, before: diff.before, after: diff.after });
     }
@@ -185,25 +203,34 @@ export async function deleteWebhook(user: SessionUser, id: string): Promise<void
   await withUser(user.id, async (tx) => {
     const [row] = await tx<{ url: string; events: string[] }[]>`delete from app.webhook_endpoints where id = ${id} returning url, events`;
     if (!row) throw new WebhookError("Webhook not found.");
-    await writeAudit(tx, { actorUserId: user.id, action: "webhook.delete", entityType: "webhook_endpoint", entityId: id, before: { url: row.url, events: row.events } });
+    await writeAudit(tx, { actorUserId: user.id, action: "webhook.delete", entityType: "webhook_endpoint", entityId: id, before: { ...auditUrl(row.url), events: row.events } });
   });
 }
 
-/** Queues a webhook.test delivery to one endpoint. */
+/**
+ * Queues a webhook.test delivery to one endpoint. Deliveries and jobs are written by the
+ * service connection only, so this runs in a service transaction with the actor's claims
+ * set: the admin check, the delivery, the job and the audit entry commit together.
+ */
 export async function sendTestWebhook(user: SessionUser, id: string): Promise<void> {
-  await assertAdmin(user);
-  const [exists] = await withUser(user.id, (tx) => tx`select 1 from app.webhook_endpoints where id = ${id}`);
-  if (!exists) throw new WebhookError("Webhook not found.");
+  const endpointId = z.uuid().safeParse(id);
+  if (!endpointId.success) throw new WebhookError("Webhook not found.");
+  const actor = z.uuid().parse(user.id);
   const eventId = randomUUID();
   // Deliveries are written by the service connection only. The audit entry is written in
   // the same transaction, so a test delivery never goes out without one.
   await service().begin(async (tx) => {
+    await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: actor })}, true)`;
+    const [{ ok }] = await tx<{ ok: boolean }[]>`select app.is_admin() as ok`;
+    if (!ok) throw new WebhookError("Admin access required.");
+    const [exists] = await tx`select 1 from app.webhook_endpoints where id = ${endpointId.data} for share`;
+    if (!exists) throw new WebhookError("Webhook not found.");
     const [d] = await tx<{ id: string }[]>`
       insert into app.webhook_deliveries (endpoint_id, event_id, event, payload)
-      values (${id}, ${eventId}, 'webhook.test', ${tx.json(testEventBody(eventId, new Date().toISOString()) as never)})
+      values (${endpointId.data}, ${eventId}, 'webhook.test', ${tx.json(testEventBody(eventId, new Date().toISOString()) as never)})
       returning id
     `;
     await enqueue(tx, { kind: "webhook_deliver", payload: { deliveryId: d.id }, idempotencyKey: d.id, maxAttempts: 1 });
-    await writeAudit(tx, { actorUserId: user.id, action: "webhook.test", entityType: "webhook_endpoint", entityId: id });
+    await writeAudit(tx, { actorUserId: actor, action: "webhook.test", entityType: "webhook_endpoint", entityId: endpointId.data });
   });
 }

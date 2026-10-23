@@ -259,6 +259,7 @@ describe("booking history: exactly one entry per lifecycle event", () => {
     const x = await createBooking(input(ref, ev.slug, start));
     await createBooking(input(ref, ev.slug, start));
     const [{ user_id: xHost }] = await sql<{ user_id: string }[]>`select user_id from app.booking_hosts where booking_id = ${x.bookingId} and active`;
+    await sql`update app.team_members set status = 'paused' where user_id = ${xHost}`;
     expect(await reassignBooking({ bookingId: x.bookingId, fromUserId: xHost, reason: "paused" })).toEqual({ result: { flagged: "no eligible host is free" } });
     const xs = await bookingAudits(x.bookingId);
     expect(xs.map((e) => e.action)).toEqual(["booking.create", "booking.flag"]);
@@ -317,6 +318,31 @@ describe("who can read bookings and their history", () => {
     expect(mine.status).toBe(200);
     const detail = ((await mine.json()) as { data: { history: { action: string; actorLabel: string }[] } }).data;
     expect(detail.history).toEqual([expect.objectContaining({ action: "booking.create", actorLabel: "Invitee" })]);
+  });
+
+  it("lets app_user write audit entries only as itself, through its own channels and for bookings it can write", async () => {
+    const { agentA, agentB, admin, bookingB } = await scene();
+    const insert = (userId: string, row: { action: string; entityType: string; entityId: string | null; via: string | null }) =>
+      withUser(userId, (tx) => tx`
+        insert into app.audit_log (actor_user_id, action, entity_type, entity_id, via)
+        values (${userId}, ${row.action}, ${row.entityType}, ${row.entityId}, ${row.via})
+      `);
+    const denied = { code: "42501" };
+    // Another agent's booking, any channel.
+    await expect(insert(agentA.id, { action: "booking.cancel", entityType: "booking", entityId: bookingB, via: "web" })).rejects.toMatchObject(denied);
+    await expect(insert(agentA.id, { action: "booking.cancel", entityType: "booking", entityId: bookingB, via: "system" })).rejects.toMatchObject(denied);
+    await expect(insert(agentA.id, { action: "booking.cancel", entityType: "booking", entityId: "not-a-uuid", via: "web" })).rejects.toMatchObject(denied);
+    // Channels written only by the service connection.
+    for (const via of ["system", "sync", "public"]) {
+      await expect(insert(agentB.id, { action: "booking.cancel", entityType: "booking", entityId: bookingB, via })).rejects.toMatchObject(denied);
+      await expect(insert(agentA.id, { action: "user_settings.update", entityType: "user_settings", entityId: agentA.id, via })).rejects.toMatchObject(denied);
+    }
+    // Allowed: the host's own booking, an admin, and non-booking entries on web, api and mcp.
+    await insert(agentB.id, { action: "booking.cancel", entityType: "booking", entityId: bookingB, via: "web" });
+    await insert(admin.id, { action: "booking.cancel", entityType: "booking", entityId: bookingB, via: "api" });
+    await insert(agentA.id, { action: "user_settings.update", entityType: "user_settings", entityId: agentA.id, via: "mcp" });
+    await insert(agentA.id, { action: "user_settings.update", entityType: "user_settings", entityId: agentA.id, via: null });
+    expect((await withUser(agentB.id, (tx) => loadBookingHistory(tx, bookingB))).map((h) => h.action)).toEqual(["booking.create", "booking.cancel", "booking.cancel"]);
   });
 
   it("managers and admins read every booking and its history", async () => {

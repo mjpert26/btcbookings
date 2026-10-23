@@ -9,7 +9,7 @@ Admins send booking events to other systems (n8n, a partner CRM) from **Admin > 
 | `booking.created` | A booking is made on any page (public page, REST API, MCP). |
 | `booking.rescheduled` | A booking is moved. The payload is the new booking; `rescheduledFromId` is the old one. |
 | `booking.cancelled` | A booking is cancelled by the invitee, a host, an Outlook conflict or the system. |
-| `booking.reassigned` | A host is taken off a booking (round-robin reassignment or queue removal). Sent once per previous host and reassignment. Not sent when no other host is free and the booking is flagged for an admin instead. |
+| `booking.reassigned` | A host is taken off a booking (round-robin reassignment or queue removal). Sent once per move, for the host who left; a booking that later moves away from the same host again sends a new event. Not sent when a reassignment finds nobody free: the booking keeps its host and is flagged. |
 | `webhook.test` | Sent by **Send test** on the admin page. |
 
 An endpoint subscribes to one or more events and can be limited to one partner's (team's) booking pages. Imported Calendly bookings never produce events.
@@ -82,5 +82,5 @@ The secret is shown once, when the endpoint is added or its secret is rotated. R
 - `app.webhook_endpoints`: URL, events, optional team, encrypted secret (never readable through `app_user`), enabled flag, last delivery status.
 - `app.webhook_deliveries`: one row per endpoint and event, with the payload sent, status, attempts and last response.
 - Triggers `bookings_webhook_events` (on `app.bookings`) and `booking_hosts_webhook_events` (on `app.booking_hosts`) add a `webhook_dispatch` job only when an enabled endpoint subscribes to the event. The dispatch handler (`src/server/webhooks/jobs.ts`) records the deliveries and enqueues `webhook_deliver` jobs.
-- Every admin change is audited (`webhook.create`, `webhook.update`, `webhook.enable`, `webhook.disable`, `webhook.rotate_secret`, `webhook.test`, `webhook.delete`). The `webhook.test` entry is written in the same transaction as the test delivery.
+- Every admin change is audited (`webhook.create`, `webhook.update`, `webhook.enable`, `webhook.disable`, `webhook.rotate_secret`, `webhook.test`, `webhook.delete`). Managers can read the audit log, and many receivers treat the URL path as a credential, so audit entries store only the URL's origin (`https://hooks.example.com/…`) and `urlHash`, the first 12 hex characters of the SHA-256 of the full URL, which changes when the URL changes. Migration `20261023126000_reassign_webhook_audit_hardening.sql` rewrote earlier entries to the same form. `webhook.test` is written in the same transaction as the test delivery and its job.
 - The `booking.reassigned` dispatch is keyed by booking, previous host and reassignment time, so a host reassigned away from the same booking twice produces two events.

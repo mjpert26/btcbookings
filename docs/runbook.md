@@ -10,6 +10,9 @@ select kind, status, count(*) from app.jobs where status in ('failed', 'dead') g
 
 -- Recent attempts for one job
 select attempt_no, response_code, error, created_at from app.job_attempts where job_id = '<job id>' order by attempt_no;
+
+-- Unresolved application errors (also at Admin > Errors; see docs/error-log.md)
+select source, route, error_name, message, occurrences, last_seen_at from app.error_log where resolved_at is null order by last_seen_at desc limit 50;
 ```
 
 ---

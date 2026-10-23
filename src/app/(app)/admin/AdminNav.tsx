@@ -12,6 +12,7 @@ const ITEMS = [
   { href: "/admin/integrations", label: "Integrations" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/audit", label: "Audit log" },
+  { href: "/admin/errors", label: "Errors" },
 ];
 
 export function AdminNav() {

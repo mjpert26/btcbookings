@@ -13,7 +13,7 @@ English-only pages under `src/app/(app)` plus the sign-in page. Server component
 | `/event-types`, `/new`, `/[id]`, `/[id]/variants` | owner or team admin | Editor, questions, host pool, public links (English and `/es`), Spanish variants and inheritance |
 | `/availability` | user | Weekly hours, date overrides, booking preferences |
 | `/teams`, `/teams/[id]` | user; roster for team admins | Members (add, pause, unpause, remove manual members), settings, team admins (admins), distribution, membership log |
-| `/admin/**` | admin | Overview, new team, queue sync, Slack channels, Salesforce settings and jobs, users, audit log |
+| `/admin/**` | admin | Overview, new team, queue sync, Slack channels, Salesforce settings and jobs, users, audit log, errors (`/admin/errors`, see `docs/error-log.md`) |
 
 Authorization is checked on the server in every page and action (`requireUser` / `requireAdmin`, then RLS through `withUser`). Hidden UI is never the control.
 

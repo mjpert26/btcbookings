@@ -1,6 +1,7 @@
 import "server-only";
 import { service, type Sql } from "@/server/db/client";
 import { backoffSeconds } from "@/server/jobs/queue";
+import { logError } from "@/server/errors/log";
 import {
   PermanentJobError,
   RetryAfterError,
@@ -69,6 +70,7 @@ export async function executeJob(
 
   if (!handler) {
     await sql`update app.jobs set status = 'dead', last_error = ${"No handler for kind " + job.kind}, locked_until = null where id = ${job.id}`;
+    await logJobFailure(sql, job, new Error(`No handler for kind ${job.kind}`), "dead");
     return "unknownKind";
   }
 
@@ -92,6 +94,7 @@ export async function executeJob(
                result = coalesce(${result}, result)
         where id = ${job.id}
       `;
+      await logJobFailure(sql, job, err, "dead");
       return "dead";
     }
     const delay = err instanceof RetryAfterError ? err.retryAfterSeconds : backoffSeconds(job.attempts);
@@ -100,6 +103,20 @@ export async function executeJob(
              run_at = now() + make_interval(secs => ${delay})
       where id = ${job.id}
     `;
+    await logJobFailure(sql, job, err, "retried");
     return "retried";
   }
+}
+
+/**
+ * Records a failed attempt in the error log. Only the job kind and attempt counters are
+ * stored; the payload may hold personal data and is never logged.
+ */
+function logJobFailure(sql: Sql, job: JobRow, err: unknown, outcome: "retried" | "dead"): Promise<void> {
+  return logError(err, {
+    source: "job",
+    route: job.kind,
+    db: sql,
+    context: { jobKind: job.kind, jobId: job.id, attempt: job.attempts, maxAttempts: job.max_attempts, outcome },
+  });
 }

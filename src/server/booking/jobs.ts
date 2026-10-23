@@ -23,6 +23,7 @@ import {
 } from "@/server/booking/side-effects";
 import { enqueue } from "@/server/jobs/queue";
 import { bookingById, bookingHosts } from "@/server/booking/view";
+import { hostNames, writeBookingAudit } from "@/server/booking/audit";
 
 const reassignPayload = z.object({
   bookingId: z.uuid(),
@@ -75,12 +76,22 @@ export async function reassignBooking(
     if (!from) return { result: { skipped: "host_not_assigned" } };
 
     const flag = async (why: string) => {
+      const flaggedReason = `Reassignment needed: ${why} (${payload.reason})`.slice(0, 500);
       await tx`
-        update app.bookings set status = 'flagged', flagged_reason = ${`Reassignment needed: ${why} (${payload.reason})`.slice(0, 500)}
+        update app.bookings set status = 'flagged', flagged_reason = ${flaggedReason}
         where id = ${booking.id}
       `;
+      await writeBookingAudit(tx, {
+        action: "booking.flag",
+        bookingId: booking.id,
+        actorUserId: null,
+        via: "system",
+        before: { status: locked.status },
+        after: { status: "flagged", flaggedReason, source: "reassign", fromUserId: from.user_id },
+      });
       return { result: { flagged: why } };
     };
+    const beforeHosts = await hostNames(tx, hosts.map((h) => h.user_id));
 
     if (et.scheduling_mode === "individual") return flag("individual event type");
 
@@ -94,6 +105,14 @@ export async function reassignBooking(
       await enqueueGraphDelete(tx, booking.id, { userId: from.user_id, graphEventId: from.graph_event_id });
       await enqueueGraphUpsert(tx, booking.id, `reassign:${from.user_id}`);
       await cancelPendingReminders(tx, booking.id, { userId: from.user_id });
+      await writeBookingAudit(tx, {
+        action: "booking.reassign",
+        bookingId: booking.id,
+        actorUserId: null,
+        via: "system",
+        before: { hosts: beforeHosts },
+        after: { hosts: await hostNames(tx, remaining.map((h) => h.user_id)), removedUserId: from.user_id, reason: payload.reason },
+      });
       return { result: { removed: from.user_id } };
     }
 
@@ -142,10 +161,20 @@ export async function reassignBooking(
         userIds: [to.userId],
         now,
       });
+      const afterHosts = await hostNames(tx, [to.userId, ...hosts.filter((h) => h.user_id !== from.user_id).map((h) => h.user_id)]);
+      await writeBookingAudit(tx, {
+        action: "booking.reassign",
+        bookingId: booking.id,
+        actorUserId: null,
+        via: "system",
+        before: { hosts: beforeHosts, hostUserId: from.user_id },
+        after: { hosts: afterHosts, hostUserId: to.userId, reason: payload.reason },
+      });
       return { result: { reassignedTo: to.userId } };
     }
-    // Nobody free: restore the original host and flag for a human.
-    await tx`update app.booking_hosts set active = true where booking_id = ${booking.id} and user_id = ${from.user_id}`;
+    // Nobody free: restore the original host and flag for a human. Clearing reassigned_at
+    // keeps the booking visible to that host (app.can_read_booking).
+    await tx`update app.booking_hosts set active = true, reassigned_at = null where booking_id = ${booking.id} and user_id = ${from.user_id}`;
     return flag("no eligible host is free");
   }) as Promise<JobResult>;
 }

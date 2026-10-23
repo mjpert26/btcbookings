@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { service, withUser, type Tx } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { writeAudit, writeAuditDiff } from "@/server/audit";
 import { allowedEmailDomains, env } from "@/server/env";
 import { NONCE_HEADER, signRequest } from "@/server/crypto/hmac";
 import { randomToken } from "@/server/crypto/random";
@@ -132,7 +132,7 @@ export async function setTeamSyncSettings(actor: Actor, teamId: string, settings
       removalPolicy: r.removal_policy as TeamSyncSettings["removalPolicy"],
       massRemovalThresholdPct: r.mass_removal_threshold_pct,
     });
-    await writeAudit(tx, {
+    await writeAuditDiff(tx, {
       actorUserId: actor.id,
       action: "team.sync_settings.update",
       entityType: "team",

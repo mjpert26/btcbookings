@@ -3,7 +3,7 @@
 import { Dialog, DialogCloseButton } from "@/components/ui/Dialog";
 import { ActionForm } from "@/components/ui/Form";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { goLiveImportedAction } from "../_actions/import";
+import { goLiveImportedAction } from "../../_actions/import";
 
 /** "Take everything live" behind a confirmation, because it opens every eligible page at once. */
 export function GoLiveAll({ ready, notConnected }: { ready: number; notConnected: number }) {

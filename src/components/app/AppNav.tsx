@@ -41,7 +41,13 @@ export function AppNav({ user }: { user: NavUser }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const links = user.role === "admin" ? [...LINKS, { href: "/admin", label: "Admin" }] : LINKS;
+  // Managers can open the read-only audit log; the rest of /admin is for admins.
+  const links =
+    user.role === "admin"
+      ? [...LINKS, { href: "/admin", label: "Admin" }]
+      : user.role === "manager"
+        ? [...LINKS, { href: "/admin/audit", label: "Audit log" }]
+        : LINKS;
   const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
   // Close menus on navigation.

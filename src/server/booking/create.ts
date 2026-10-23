@@ -21,6 +21,7 @@ import {
 } from "@/server/booking/engine";
 import { enqueueBookingCreated, issueManageToken } from "@/server/booking/side-effects";
 import { bookingById, buildPublicView } from "@/server/booking/view";
+import { hostNames, writeBookingAudit } from "@/server/booking/audit";
 import {
   BookingNotFoundError,
   BookingValidationError,
@@ -177,6 +178,23 @@ export async function createBooking(input: BookingInput, opts: BookingOptions = 
           throw err;
         }
         await afterInsert(tx, loaded, id, hosts, startMs, now);
+        const hostUserIds = hosts.map((h) => h.userId);
+        await writeBookingAudit(tx, {
+          action: "booking.create",
+          bookingId: id,
+          actorUserId: opts.actorUserId ?? null,
+          after: {
+            status: "confirmed",
+            eventTypeId: et.id,
+            eventType: et.name,
+            start: new Date(startMs).toISOString(),
+            end: new Date(endMs).toISOString(),
+            durationMin,
+            hosts: await hostNames(tx, hostUserIds),
+            hostUserIds,
+            createdVia: opts.createdVia ?? "public",
+          },
+        });
         return { bookingId: id, token: issued.token };
       }
       throw new SlotTakenError();

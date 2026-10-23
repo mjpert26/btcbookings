@@ -12,7 +12,7 @@ import { ActionForm } from "@/components/ui/Form";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { formatDateTime } from "@/lib/format";
 import { RequestLogTable } from "@/components/app/RequestLogTable";
-import { addCallbackAction, registerClientAction, removeCallbackAction, revokeAnyTokenAction, toggleClientAction } from "../_actions/integrations";
+import { addCallbackAction, registerClientAction, removeCallbackAction, revokeAnyTokenAction, toggleClientAction } from "../../_actions/integrations";
 
 export const metadata: Metadata = { title: "Integrations" };
 export const dynamic = "force-dynamic";

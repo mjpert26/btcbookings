@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { service } from "@/server/db/client";
 import { changedFields, writeAudit } from "@/server/audit";
+import { fieldChanges } from "@/lib/audit-diff";
 import { allowedEmailDomains } from "@/server/env";
 import { isReservedSlug, slugify } from "@/server/auth/slug";
 import { addManualMember, removeManualMember, SyncAdminError } from "@/server/sync/admin";
@@ -310,5 +311,7 @@ export async function listAudit(caller: Caller, raw: z.input<typeof listAuditSch
     via: r.via,
     before: r.before,
     after: r.after,
+    /** Field-level diff of before and after, as shown in the admin audit viewer. */
+    changes: fieldChanges(r.before, r.after),
   }));
 }

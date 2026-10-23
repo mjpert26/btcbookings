@@ -118,6 +118,11 @@ export type BookingOptions = {
   liveBusy?: LiveBusyProvider;
   /** Where the booking was made: the public page (default), the REST API or the MCP server. */
   createdVia?: "public" | "api" | "mcp";
+  /**
+   * The signed-in user acting through the REST API or MCP server, recorded as the actor of the
+   * booking audit entry. Omitted for invitees on the public pages (recorded as via 'public').
+   */
+  actorUserId?: string | null;
   /** Milliseconds to wait for liveBusy before falling back to the cache. */
   liveBusyTimeoutMs?: number;
   /** Clock override for tests (epoch ms). */

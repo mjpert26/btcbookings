@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { service } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { loadBookingHistory, type BookingHistoryEntry } from "@/server/audit-log";
 import { decryptSecret } from "@/server/crypto/aes";
 import { createBooking } from "@/server/booking/create";
 import { rescheduleByInvitee } from "@/server/booking/manage";
@@ -119,7 +119,8 @@ export type BookingDetail = BookingSummary & {
   cancelReason: string | null;
   cancelledBy: string | null;
   rescheduledFromId: string | null;
-  history: { at: string; action: string; actor: string | null; via: string | null }[];
+  /** The booking's audit history, oldest first, read under the caller's row-level security. */
+  history: BookingHistoryEntry[];
 };
 
 export async function getBooking(caller: Caller, id: string): Promise<BookingDetail> {
@@ -147,25 +148,18 @@ export async function getBooking(caller: Caller, id: string): Promise<BookingDet
       where a.booking_id = ${id}
       order by q.position nulls last, a.question_key
     `;
-    return { row, answers };
+    const history = await loadBookingHistory(tx, id);
+    return { row, answers, history };
   });
   if (!detail) throw notFound("Booking");
-  // Access was checked under RLS above; the history comes from the audit log.
-  const history = await service()<{ created_at: Date; action: string; actor: string | null; via: string | null }[]>`
-    select a.created_at, a.action, u.name as actor, a.via
-    from app.audit_log a left join app.users u on u.id = a.actor_user_id
-    where a.entity_type = 'booking' and a.entity_id = ${id}
-    order by a.created_at
-    limit 100
-  `;
-  const { row, answers } = detail;
+  const { row, answers, history } = detail;
   return {
     ...toSummary(row),
     answers: answers.map((a) => ({ key: a.key, label: a.label ? (a.label[row.language] ?? a.label.en ?? Object.values(a.label)[0] ?? null) : null, value: a.value })),
     cancelReason: row.cancel_reason,
     cancelledBy: row.cancelled_by,
     rescheduledFromId: row.rescheduled_from_id,
-    history: history.map((h) => ({ at: h.created_at.toISOString(), action: h.action, actor: h.actor, via: h.via })),
+    history,
   };
 }
 
@@ -219,20 +213,11 @@ export async function scheduleBooking(caller: Caller, raw: unknown): Promise<Boo
           answers: v.answers,
           idempotencyKey: v.idempotencyKey ? `${caller.user.id}:${v.idempotencyKey}` : null,
         },
-        { ...bookingOptions(), createdVia: caller.via === "mcp" ? "mcp" : "api" },
+        // The engine writes the booking.create audit entry in its own transaction.
+        { ...bookingOptions(), createdVia: caller.via === "mcp" ? "mcp" : "api", actorUserId: caller.user.id },
       ),
     );
     bookingId = result.bookingId;
-    if (!result.replayed) {
-      await writeAudit(service(), {
-        actorUserId: caller.user.id,
-        action: "booking.create",
-        entityType: "booking",
-        entityId: bookingId,
-        after: { eventTypeId: et.id, start: v.start, durationMin: v.durationMin ?? et.default_duration },
-        via: caller.via === "web" ? "web" : caller.via,
-      });
-    }
   } catch (err) {
     mapBookingError(err);
   }
@@ -296,15 +281,10 @@ export async function rescheduleBooking(caller: Caller, id: string, raw: unknown
   if (b?.import_source) throw new ApiError(409, "imported", "This booking was imported from Calendly. Cancel or reschedule it in Calendly.");
   if (!b?.manage_token_enc) throw new ApiError(409, "not_reschedulable", "This booking cannot be rescheduled here.");
   try {
-    const result = await inCallerContext(caller, () => rescheduleByInvitee(decryptSecret(b.manage_token_enc!, id), { start: parsed.data.start }, bookingOptions()));
-    await writeAudit(service(), {
-      actorUserId: caller.user.id,
-      action: "booking.reschedule",
-      entityType: "booking",
-      entityId: id,
-      after: { newBookingId: result.bookingId, start: parsed.data.start },
-      via: caller.via === "web" ? "web" : caller.via,
-    });
+    // The engine writes the booking.reschedule audit entry in the same transaction as the move.
+    const result = await inCallerContext(caller, () =>
+      rescheduleByInvitee(decryptSecret(b.manage_token_enc!, id), { start: parsed.data.start }, { ...bookingOptions(), actorUserId: caller.user.id }),
+    );
     return getBookingAsService(caller, result.bookingId);
   } catch (err) {
     mapBookingError(err);

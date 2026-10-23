@@ -25,7 +25,7 @@ export async function truncateAll(sql: Sql): Promise<void> {
 let counter = 0;
 export async function makeUser(
   sql: Sql,
-  over: Partial<{ email: string; name: string; role: "user" | "admin"; timezone: string; calendar: "healthy" | "broken" | null }> = {},
+  over: Partial<{ email: string; name: string; role: "user" | "admin" | "manager"; timezone: string; calendar: "healthy" | "broken" | null }> = {},
 ): Promise<{ id: string; email: string }> {
   counter++;
   const email = over.email ?? `user${counter}-${Date.now()}@bigthinkcapital.com`;

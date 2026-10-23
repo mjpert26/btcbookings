@@ -6,6 +6,7 @@ import { requireUser } from "@/server/auth/session";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
 import type { ActionState } from "@/lib/form-state";
 import { fail, invalid, ok, str } from "@/server/ui/form";
+import { audited } from "@/server/ui/admin";
 
 const cancelSchema = z.object({
   bookingId: z.string().uuid(),
@@ -16,7 +17,8 @@ export async function cancelBookingAction(_prev: ActionState, fd: FormData): Pro
   const user = await requireUser();
   const parsed = cancelSchema.safeParse({ bookingId: str(fd, "bookingId"), reason: str(fd, "reason") || undefined });
   if (!parsed.success) return invalid(parsed.error);
-  const res = await cancelBookingAsHost(user.id, parsed.data.bookingId, parsed.data.reason ?? null);
+  // The booking.cancel audit entry records the request's ip hash.
+  const res = await audited(() => cancelBookingAsHost(user.id, parsed.data.bookingId, parsed.data.reason ?? null));
   if (!res.ok) {
     return fail(
       res.reason === "not_found"

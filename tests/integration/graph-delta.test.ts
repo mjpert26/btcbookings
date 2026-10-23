@@ -162,7 +162,9 @@ describe("Outlook-side changes to the app's own events", () => {
     expect(bh.active).toBe(false);
     const jobs = await sql`select kind, payload from app.jobs order by kind`;
     expect(jobs).toEqual([{ kind: "email_send", payload: { template: "booking_cancelled", bookingId, recipient: "invitee" } }]);
-    expect(await sql`select action from app.audit_log where entity_id = ${bookingId}`).toEqual([{ action: "booking.outlook_conflict_cancelled" }]);
+    expect(await sql`select action, actor_user_id, via, after ->> 'source' as source from app.audit_log where entity_id = ${bookingId}`).toEqual([
+      { action: "booking.cancel", actor_user_id: null, via: "system", source: "outlook_conflict" },
+    ]);
 
     // A replay of the same change does nothing more.
     await withDeltaState(host.id);

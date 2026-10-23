@@ -5,7 +5,7 @@ BTC Scheduler exposes the same capabilities two ways:
 - **MCP server** for AI assistants (Claude and other Model Context Protocol clients), at `https://mcp.bigthinkcapital.com/mcp`. Until that domain is configured, use `<APP_BASE_URL>/mcp`.
 - **REST API** for scripts and automations, at `<APP_BASE_URL>/api/v1`. The description is at `/api/v1/openapi.json`.
 
-Both act as the signed-in user, with that user's current role and permissions. Both use the service layer in `src/server/api/services/`, under row-level security. Every change is recorded in the audit log with its channel (`api` or `mcp`).
+Both act as the signed-in user, with that user's current role and permissions. Both use the service layer in `src/server/api/services/`, under row-level security. Every change is recorded in the audit log with its channel (`api` or `mcp`). Bookings scheduled, rescheduled or cancelled through either write exactly one `booking.*` entry each, from the booking engine; see [`audit-log.md`](audit-log.md).
 
 ## Roles
 
@@ -53,7 +53,7 @@ Streamable HTTP, stateless and JSON-only. `POST /mcp` takes JSON-RPC requests (o
 | Tool | What it does | Role |
 |---|---|---|
 | `whoami` | The user, role, capabilities and teams | All |
-| `list_bookings`, `get_booking` | Bookings the user may see, with answers and history | All |
+| `list_bookings`, `get_booking` | Bookings the user may see, with answers and history (the booking's audit entries with field-level changes, read under the caller's row-level security) | All |
 | `find_available_times` | Open slots on a booking page | All |
 | `schedule_meeting` | Book a meeting (Outlook event and invitee email, as on the public page) | All |
 | `cancel_booking`, `reschedule_booking` | As host, page owner, team admin or admin | All (RLS decides) |
@@ -86,7 +86,7 @@ Create an API key under **Settings > Integrations** and send it as `Authorizatio
 |---|---|
 | `GET /me` | User, role and capabilities |
 | `GET /bookings`, `POST /bookings` | List bookings; schedule a meeting |
-| `GET /bookings/{id}` | Booking with answers and history |
+| `GET /bookings/{id}` | Booking with answers and history (`history[]`: `at`, `action`, `actor`, `actorLabel`, `via`, `changes`) |
 | `POST /bookings/{id}/cancel`, `POST /bookings/{id}/reschedule` | Cancel; move to a new time |
 | `GET /event-types`, `POST /event-types` | List; create a booking page |
 | `GET`, `PATCH`, `DELETE /event-types/{id}` | Read, change or delete a booking page |

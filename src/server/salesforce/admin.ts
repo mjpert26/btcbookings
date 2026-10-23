@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { withUser, type Tx } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { writeAudit, writeAuditDiff } from "@/server/audit";
 import { env } from "@/server/env";
 import {
   getEffectiveSfSettings,
@@ -252,13 +252,22 @@ export async function saveSfSettings(actor: Actor, eventTypeId: string, raw: SfS
     }
 
     const after = await readView(tx, eventTypeId);
-    const snapshot = (v: SfSettingsView) => ({
-      own: v.own && { ...v.own, updatedAt: undefined },
+    // Only the settings that changed. Bookkeeping fields (updatedBy, updatedAt) are left out.
+    const snapshot = (v: SfSettingsView): Record<string, unknown> => ({
+      createSfLead: v.own?.createSfLead ?? null,
+      isoAccountId: v.own?.isoAccountId ?? null,
+      fieldMapping: v.own?.fieldMapping ?? null,
+      staticValues: v.own?.staticValues ?? null,
+      campaignId: v.own?.campaignId ?? null,
+      ownerMode: v.own?.ownerMode ?? null,
+      ownerFixedId: v.own?.ownerFixedId ?? null,
+      createTask: v.own?.createTask ?? null,
+      createNote: v.own?.createNote ?? null,
+      setMeetingBookedFields: v.own?.setMeetingBookedFields ?? null,
       overridesParent: v.overridesParent,
       provenance: v.provenance,
-      effectiveCreateSfLead: v.effective?.createSfLead ?? false,
     });
-    await writeAudit(tx, {
+    await writeAuditDiff(tx, {
       actorUserId: actor.id,
       action: "sf_settings.update",
       entityType: "event_type_sf_settings",

@@ -23,6 +23,7 @@ import {
   issueManageToken,
 } from "@/server/booking/side-effects";
 import { bookingById, bookingHosts, bookingIdByTokenHash, buildPublicView, type BookingRow } from "@/server/booking/view";
+import { hostNames, writeBookingAudit } from "@/server/booking/audit";
 import {
   BookingError,
   BookingNotFoundError,
@@ -75,13 +76,21 @@ export async function cancelByInvitee(token: string, reason: string | undefined,
     if (!booking) throw new BookingNotFoundError();
     if (!isLive(booking, now)) throw new BookingError("not_allowed", "Booking can no longer be cancelled");
     const hosts = await bookingHosts(tx, id, true);
+    const cancelReason = reason?.trim() ? reason.trim() : null;
     await tx`
       update app.bookings
       set status = 'cancelled', cancelled_by = 'invitee', cancelled_at = now(),
-          cancel_reason = ${reason?.trim() ? reason.trim() : null}
+          cancel_reason = ${cancelReason}
       where id = ${id}
     `;
     await tx`update app.booking_hosts set active = false where booking_id = ${id}`;
+    await writeBookingAudit(tx, {
+      action: "booking.cancel",
+      bookingId: id,
+      actorUserId: null,
+      before: { status: booking.status },
+      after: { status: "cancelled", cancelledBy: "invitee", reason: cancelReason },
+    });
     await enqueueBookingCancelled(tx, {
       bookingId: id,
       hosts: hosts.map((h) => ({ userId: h.user_id, graphEventId: h.graph_event_id })),
@@ -209,6 +218,26 @@ export async function rescheduleByInvitee(
           throw err;
         }
         await tx`update app.bookings set status = 'rescheduled' where id = ${old.id}`;
+        const oldHostIds = oldHosts.map((h) => h.user_id);
+        const newHostIds = hosts.map((h) => h.userId);
+        await writeBookingAudit(tx, {
+          action: "booking.reschedule",
+          bookingId: old.id,
+          actorUserId: opts.actorUserId ?? null,
+          before: {
+            status: old.status,
+            start: old.start_at.toISOString(),
+            end: old.end_at.toISOString(),
+            hosts: await hostNames(tx, oldHostIds),
+          },
+          after: {
+            status: "rescheduled",
+            newBookingId: bookingId,
+            start: new Date(startMs).toISOString(),
+            end: new Date(endMs).toISOString(),
+            hosts: await hostNames(tx, newHostIds),
+          },
+        });
         // Round-robin credit goes to a newly assigned host only; keeping the same host is not a new assignment.
         if (et.scheduling_mode === "round_robin" && hosts[0].userId !== original) {
           await recordRoundRobin(tx, hosts[0].teamMemberId);

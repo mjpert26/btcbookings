@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
 import { withUser, type Tx } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { writeAudit, writeAuditDiff } from "@/server/audit";
 import { allowedEmailDomains } from "@/server/env";
 import { addManualMember, manualMemberOverride, removeManualMember } from "@/server/sync/admin";
 import type { ActionState } from "@/lib/form-state";
@@ -119,7 +119,15 @@ export async function updateMemberAction(teamId: string, _prev: ActionState, fd:
     `;
     if (!before) return "not_found" as const;
     await tx`update app.team_members set weight = ${v.weight}, priority_tier = ${v.priorityTier}, daily_cap = ${v.dailyCap} where id = ${v.memberId}`;
-    await writeAudit(tx, { actorUserId: user.id, action: "team.member_update", entityType: "team_member", entityId: v.memberId, before, after: { weight: v.weight, priority_tier: v.priorityTier, daily_cap: v.dailyCap }, ipHash });
+    await writeAuditDiff(tx, {
+      actorUserId: user.id,
+      action: "team.member_update",
+      entityType: "team_member",
+      entityId: v.memberId,
+      before,
+      after: { weight: v.weight, priority_tier: v.priorityTier, daily_cap: v.dailyCap },
+      ipHash,
+    });
     return "ok" as const;
   });
   if (res === "forbidden") return fail("Only team admins can edit members.");
@@ -152,14 +160,19 @@ export async function saveTeamSettingsAction(teamId: string, _prev: ActionState,
     // Removal policy and threshold are global-admin settings (enforced by a database trigger
     // too); team admins only change the conflict policy.
     const isAdmin = user.role === "admin";
+    const next = {
+      outlook_conflict_policy: v.outlookConflictPolicy,
+      removal_policy: isAdmin ? v.removalPolicy : before.removal_policy,
+      mass_removal_threshold_pct: isAdmin ? v.massRemovalThresholdPct : before.mass_removal_threshold_pct,
+    };
     const updated = await tx`
-      update app.teams set outlook_conflict_policy = ${v.outlookConflictPolicy},
-        removal_policy = ${isAdmin ? v.removalPolicy : before.removal_policy}::app.removal_policy,
-        mass_removal_threshold_pct = ${isAdmin ? v.massRemovalThresholdPct : before.mass_removal_threshold_pct}
+      update app.teams set outlook_conflict_policy = ${next.outlook_conflict_policy},
+        removal_policy = ${next.removal_policy}::app.removal_policy,
+        mass_removal_threshold_pct = ${next.mass_removal_threshold_pct}
       where id = ${teamId} returning id
     `;
     if (!updated.length) return "forbidden" as const;
-    await writeAudit(tx, { actorUserId: user.id, action: "team.settings_update", entityType: "team", entityId: teamId, before, after: v, ipHash });
+    await writeAuditDiff(tx, { actorUserId: user.id, action: "team.settings_update", entityType: "team", entityId: teamId, before, after: next, ipHash });
     return "ok" as const;
   });
   if (res === "forbidden") return fail("Only team admins can change team settings.");

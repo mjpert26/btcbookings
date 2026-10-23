@@ -1,7 +1,7 @@
 import "server-only";
 import { service, withUser } from "@/server/db/client";
 import { enqueue } from "@/server/jobs/queue";
-import { writeAudit } from "@/server/audit";
+import { writeBookingAudit } from "@/server/booking/audit";
 import type { JobPayloads } from "@/server/jobs/kinds";
 import { cancelPendingReminders } from "@/server/booking/side-effects";
 
@@ -45,11 +45,10 @@ export async function cancelBookingAsHost(actorUserId: string, bookingId: string
       returning id
     `;
     if (updated.length === 0) return { kind: "not_found" as const };
-    await writeAudit(tx, {
-      actorUserId,
+    await writeBookingAudit(tx, {
       action: "booking.cancel",
-      entityType: "booking",
-      entityId: bookingId,
+      bookingId,
+      actorUserId,
       before: { status: b.status },
       after: { status: "cancelled", cancelledBy: "host", reason },
     });

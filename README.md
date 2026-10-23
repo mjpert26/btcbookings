@@ -181,6 +181,10 @@ Server errors from pages, route handlers, server actions, cron routes, the REST 
 
 Request errors are captured by the `onRequestError` hook in `src/instrumentation.ts`. Other modules record errors they handle with `logError(err, { source, route, method, context })` from `src/server/errors/log.ts`, which never throws. No environment variables are needed. Details: [`docs/error-log.md`](docs/error-log.md).
 
+## Audit log
+
+Settings changes and booking activity are recorded in `app.audit_log` with the actor, the channel (`web`, `api`, `mcp`, `sync`, `system`, `public`) and only the fields that changed. Every booking create, reschedule, cancel, reassign and flag writes exactly one `booking.*` entry, whichever path made it (public page, invitee link, host, REST, MCP, Outlook conflict, reassignment job). Agents see the history of the bookings in their name on the booking page; managers and admins see everything at **Admin > Audit log** (`/admin/audit`), which managers can open read-only. Secrets are never stored and phone numbers are masked. No new environment variables. Details: [`docs/audit-log.md`](docs/audit-log.md).
+
 ## Partner page branding
 
 Admins and a team's team admins can customize the team's public pages at **Teams > {team} > Branding** (`/teams/{id}/branding`): display name, logo (PNG, JPEG or WebP up to 512 KB; no SVG), accent color (falls back to BTC blue below 4.5:1 contrast with white), heading, intro, and whether to show the partner logo, BTC logo, host photo, host name, meeting length and description. Logos are served from `/api/public/team-logo/{teamId}`. Changes are audited. No new environment variables. Details: [`docs/partner-branding.md`](docs/partner-branding.md).

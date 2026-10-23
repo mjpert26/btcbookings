@@ -1,12 +1,17 @@
-import { requireAdmin } from "@/server/auth/session";
+import { requireCapability } from "@/server/auth/session";
 import { AdminNav } from "./AdminNav";
 
-/** Every page under /admin requires a global admin; this check runs on the server for each request. */
+/**
+ * Every page under /admin requires at least the audit.read capability (admins and managers).
+ * Pages in the (admin-only) route group additionally require a global admin in their own
+ * layout; the audit log is the only page managers can open. These checks run on the server for
+ * each request.
+ */
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  await requireAdmin();
+  const user = await requireCapability("audit.read");
   return (
     <div>
-      <AdminNav />
+      <AdminNav role={user.role} />
       {children}
     </div>
   );

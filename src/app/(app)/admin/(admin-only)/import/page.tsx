@@ -6,7 +6,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { ActionButton } from "@/components/app/ActionButton";
-import { goLiveImportedAction, pauseImportedAction } from "../_actions/import";
+import { goLiveImportedAction, pauseImportedAction } from "../../_actions/import";
 import { ImportForm } from "./ImportForm";
 import { GoLiveAll } from "./GoLiveAll";
 

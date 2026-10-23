@@ -13,7 +13,7 @@ import { Select } from "@/components/ui/Field";
 import { Button, ButtonLink } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatDateTime } from "@/lib/format";
-import { retrySfJobAction } from "../../_actions/salesforce";
+import { retrySfJobAction } from "../../../_actions/salesforce";
 
 export const metadata: Metadata = { title: "Salesforce lead jobs" };
 

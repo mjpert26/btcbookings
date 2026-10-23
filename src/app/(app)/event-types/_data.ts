@@ -77,3 +77,39 @@ export async function manageableTeams(tx: Tx): Promise<{ id: string; name: strin
     select id, name, slug from app.teams where app.is_team_admin(id) order by name
   `;
 }
+
+/** Event type columns recorded in event_type.update audit entries (reminders have their own entry). */
+const AUDITED_COLUMNS = [
+  "name", "slug", "description", "brand_accent", "durations", "default_duration", "location_type", "location_detail",
+  "schedule_id", "buffer_before_min", "buffer_after_min", "min_notice_min", "max_per_day", "booking_window_days",
+  "slot_interval_min", "scheduling_mode", "rr_strategy", "rr_sticky_returning_invitee", "is_active", "is_listed", "overrides",
+] as const;
+
+/**
+ * A snapshot of an event type's editable settings for audit diffs: the audited columns, the
+ * booking questions keyed by question key, and team hosts keyed by member email. Compare two
+ * snapshots with changedFields() so the entry holds only what changed.
+ */
+export async function auditSnapshot(tx: Tx, id: string): Promise<Record<string, unknown> | null> {
+  const bundle = await loadBundle(tx, id);
+  if (!bundle) return null;
+  const et = bundle.eventType as unknown as Record<string, unknown>;
+  const snap: Record<string, unknown> = {};
+  for (const c of AUDITED_COLUMNS) snap[c] = et[c] ?? null;
+  snap.questions = Object.fromEntries(
+    bundle.questions.map((q) => [q.key, { type: q.type, label: q.label, required: q.required, options: q.options, position: q.position }]),
+  );
+  if (bundle.eventType.team_id) {
+    const ids = bundle.hosts.map((h) => h.team_member_id);
+    const members = ids.length
+      ? await tx<{ id: string; email: string }[]>`select id, email from app.team_members where id = any(${ids}::uuid[])`
+      : [];
+    const email = new Map(members.map((m) => [m.id, m.email]));
+    snap.hosts = Object.fromEntries(
+      bundle.hosts
+        .map((h) => [email.get(h.team_member_id) ?? h.team_member_id, { required: h.is_required, weightOverride: h.weight_override, priorityTierOverride: h.priority_tier_override }] as const)
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+  }
+  return snap;
+}

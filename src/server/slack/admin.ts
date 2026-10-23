@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { serviceTx, withUser, type Tx } from "@/server/db/client";
-import { writeAudit } from "@/server/audit";
+import { writeAudit, writeAuditDiff } from "@/server/audit";
 import { enqueue } from "@/server/jobs/queue";
 import {
   listAllChannelMembers,
@@ -180,7 +180,7 @@ export async function updateChannel(
       returning id, team_id, channel_id, channel_name, mode, dry_run, protected_slack_user_ids, notify_channel_id,
                 health, last_error, last_checked_at
     `;
-    await writeAudit(tx, {
+    await writeAuditDiff(tx, {
       actorUserId,
       action: "slack_channel.updated",
       entityType: "team_slack_channel",

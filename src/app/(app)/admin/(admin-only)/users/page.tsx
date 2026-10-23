@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatRelative } from "@/lib/format";
-import { setRoleAction } from "../_actions/users";
+import { setRoleAction } from "../../_actions/users";
 import { ROLE_LABEL } from "@/lib/permissions";
 
 export const metadata: Metadata = { title: "Users" };

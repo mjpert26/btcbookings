@@ -3,7 +3,7 @@ import { requireAdmin } from "@/server/auth/session";
 import { env } from "@/server/env";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody } from "@/components/ui/Card";
-import { createTeamAction } from "../../_actions/sync";
+import { createTeamAction } from "../../../_actions/sync";
 import { CreateTeamForm } from "./CreateTeamForm";
 
 export const metadata: Metadata = { title: "New team" };

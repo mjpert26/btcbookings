@@ -13,8 +13,14 @@ export type AuditEntry = {
   via?: AuditVia | null;
 };
 
-/** The channel a change came through. */
-export type AuditVia = "web" | "api" | "mcp" | "sync" | "system";
+/**
+ * The channel a change came through: the internal web app, the REST API, the MCP server,
+ * Salesforce queue sync, background jobs and webhooks ("system"), or an invitee on the
+ * public booking pages ("public").
+ */
+export type AuditVia = "web" | "api" | "mcp" | "sync" | "system" | "public";
+
+export const AUDIT_VIAS: readonly AuditVia[] = ["web", "api", "mcp", "sync", "system", "public"];
 
 type AuditContext = { ipHash: string | null; via?: AuditVia };
 
@@ -37,13 +43,59 @@ export async function writeAudit(db: Db, e: AuditEntry): Promise<void> {
   const store = context.getStore();
   const ipHash = e.ipHash ?? store?.ipHash ?? null;
   const via = e.via ?? store?.via ?? (e.actorUserId ? "web" : "system");
+  const before = e.before === undefined || e.before === null ? null : redactSecrets(e.before);
+  const after = e.after === undefined || e.after === null ? null : redactSecrets(e.after);
   await db`
     insert into app.audit_log (actor_user_id, action, entity_type, entity_id, before, after, ip_hash, via)
     values (${e.actorUserId}, ${e.action}, ${e.entityType}, ${e.entityId ?? null},
-            ${e.before === undefined ? null : db.json(e.before as never)},
-            ${e.after === undefined ? null : db.json(e.after as never)},
+            ${before === null ? null : db.json(before as never)},
+            ${after === null ? null : db.json(after as never)},
             ${ipHash}, ${via})
   `;
+}
+
+/**
+ * Writes an entry with only the fields that changed between `before` and `after`, using
+ * changedFields(). Nothing is written when nothing changed. Returns whether an entry was
+ * written.
+ */
+export async function writeAuditDiff<T extends Record<string, unknown>>(
+  db: Db,
+  e: Omit<AuditEntry, "before" | "after"> & { before: T; after: Partial<T> },
+): Promise<boolean> {
+  const diff = changedFields(e.before, e.after);
+  if (!diff) return false;
+  await writeAudit(db, { ...e, before: diff.before, after: diff.after });
+  return true;
+}
+
+/** Key names whose values are never stored in the audit log, at any depth. */
+const SECRET_KEY = /(secret|password|passphrase|private_?key|access_?token|refresh_?token|manage_?token|token_?(hash|enc)|bearer|authorization|api_?key_?value|signing)/i;
+
+/**
+ * Replaces the values of secret-looking keys with "[redacted]". A safety net only: callers
+ * must not pass secrets in the first place.
+ */
+export function redactSecrets(value: unknown, depth = 0): unknown {
+  if (depth > 8 || value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return value;
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = SECRET_KEY.test(k) && v !== null && v !== undefined ? "[redacted]" : redactSecrets(v, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * A phone number reduced to its last four digits ("***-4567"), for audit entries. Full
+ * numbers are never stored in the audit log.
+ */
+export function maskPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) return "***";
+  return `***-${digits.slice(-4)}`;
 }
 
 /**

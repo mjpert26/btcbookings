@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
@@ -9,6 +10,9 @@ import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { Notice } from "@/components/ui/Toast";
 import { formatDateTime, formatRange, LOCATION_LABELS } from "@/lib/format";
 import { pickLocalized } from "@/i18n/locales";
+import { loadBookingHistory } from "@/server/audit-log";
+import { AuditChanges } from "@/components/app/AuditChanges";
+import { actionLabel, viaLabel } from "@/lib/audit-diff";
 import { CancelBooking } from "./CancelBooking";
 
 export const metadata: Metadata = { title: "Booking" };
@@ -77,10 +81,12 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
       where a.booking_id = ${id}
       order by q.position nulls last, a.question_key
     `;
-    return { b, hosts, answers };
+    // Read under RLS: the same people who can read the booking can read its history.
+    const history = await loadBookingHistory(tx, id);
+    return { b, hosts, answers, history };
   });
   if (!data) notFound();
-  const { b, hosts, answers } = data;
+  const { b, hosts, answers, history } = data;
   const zone = user.timezone;
   const imported = b.import_source === "calendly";
   const cancellable = !imported && (b.status === "confirmed" || b.status === "flagged") && new Date(b.end_at) > new Date();
@@ -195,6 +201,37 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                   </Row>
                 ))}
               </dl>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card className="lg:col-span-2" aria-labelledby="history-h">
+          <CardHeader id="history-h" title="History" description="Every change to this booking: when, what, who and through which channel." />
+          <CardBody>
+            {history.length === 0 ? (
+              <p className="text-sm text-muted">{imported ? "Imported from Calendly. Its earlier history is kept in Calendly." : "No history recorded for this booking."}</p>
+            ) : (
+              <ol className="relative space-y-5 border-l border-border pl-5">
+                {history.map((h) => (
+                  <li key={h.id} className="relative">
+                    <span aria-hidden="true" className="absolute -left-[1.6rem] top-1 size-2.5 rounded-full border-2 border-surface bg-primary" />
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+                      <span className="font-semibold text-navy">{actionLabel(h.action)}</span>
+                      {h.rescheduledFromId ? (
+                        <Link href={`/bookings/${h.rescheduledFromId}`} className="text-xs font-medium text-primary hover:underline">
+                          from an earlier booking
+                        </Link>
+                      ) : null}
+                      <span className="text-muted">
+                        <time dateTime={h.at}>{formatDateTime(h.at, zone)}</time> · {h.actorLabel} · {viaLabel(h.via)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5">
+                      <AuditChanges changes={h.changes} zone={zone} />
+                    </div>
+                  </li>
+                ))}
+              </ol>
             )}
           </CardBody>
         </Card>

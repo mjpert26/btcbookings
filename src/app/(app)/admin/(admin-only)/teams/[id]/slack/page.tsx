@@ -16,7 +16,7 @@ import { ButtonLink } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { ConfirmAction } from "@/components/app/ConfirmAction";
 import { formatDateTime, formatRelative } from "@/lib/format";
-import { addChannelAction, checkHealthAction, fullResyncAction, removeChannelAction, setDryRunAction, updateChannelAction } from "../../../_actions/slack";
+import { addChannelAction, checkHealthAction, fullResyncAction, removeChannelAction, setDryRunAction, updateChannelAction } from "../../../../_actions/slack";
 import { AddChannelForm, DryRunToggle, EditChannelDialog } from "./SlackForms";
 
 export const metadata: Metadata = { title: "Slack channels" };

@@ -12,10 +12,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Notice } from "@/components/ui/Toast";
 import { pickLocalized } from "@/i18n/locales";
 import { SF_BUILTIN_SOURCES } from "@/lib/salesforce";
-import { loadBundle } from "../../../../event-types/_data";
-import { toggleOverrideAction } from "../../../../event-types/_actions";
-import { GroupToggle } from "../../../../event-types/[id]/variants/GroupToggle";
-import { saveSfSettingsAction } from "../../../_actions/salesforce";
+import { loadBundle } from "../../../../../event-types/_data";
+import { toggleOverrideAction } from "../../../../../event-types/_actions";
+import { GroupToggle } from "../../../../../event-types/[id]/variants/GroupToggle";
+import { saveSfSettingsAction } from "../../../../_actions/salesforce";
 import { SfSettingsForm, type SfFormValues } from "./SfSettingsForm";
 
 export const metadata: Metadata = { title: "Salesforce settings" };

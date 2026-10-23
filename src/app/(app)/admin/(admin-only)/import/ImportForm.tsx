@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import { importCalendlyAction, type ImportState } from "../_actions/import";
+import { importCalendlyAction, type ImportState } from "../../_actions/import";
 import { Badge } from "@/components/ui/Badge";
 
 const IDLE: ImportState = { status: "idle" };

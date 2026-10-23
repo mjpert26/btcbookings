@@ -2,7 +2,7 @@ import "server-only";
 import { DateTime } from "luxon";
 import { service, serviceTx, type Tx } from "@/server/db/client";
 import { decryptSecret, encryptSecret } from "@/server/crypto/aes";
-import { writeAudit } from "@/server/audit";
+import { writeBookingAudit } from "@/server/booking/audit";
 import { enqueue } from "@/server/jobs/queue";
 import { GraphError, graphQuery, type GraphEvent } from "@/server/graph/client";
 import { CalendarConnectionBroken } from "@/server/graph/tokens";
@@ -261,11 +261,13 @@ export async function applyConflictPolicy(
   const reason =
     kind === "deleted" ? "The event was deleted from the host's Outlook calendar." : "The event was moved in the host's Outlook calendar.";
 
+  let changed: { id: string }[];
   if (policy === "auto_cancel") {
-    await tx`
+    changed = await tx<{ id: string }[]>`
       update app.bookings
       set status = 'cancelled', cancelled_by = 'host', cancelled_at = now(), cancel_reason = ${reason}
       where id = ${bookingId} and status = 'confirmed'
+      returning id
     `;
     await tx`update app.booking_hosts set active = false where booking_id = ${bookingId}`;
     await enqueue(tx, {
@@ -284,9 +286,10 @@ export async function applyConflictPolicy(
       });
     }
   } else {
-    await tx`
+    changed = await tx<{ id: string }[]>`
       update app.bookings set status = 'flagged', flagged_reason = ${reason}
       where id = ${bookingId} and status = 'confirmed'
+      returning id
     `;
     await enqueue(tx, {
       kind: "email_send",
@@ -295,12 +298,18 @@ export async function applyConflictPolicy(
       bookingId,
     });
   }
-  await writeAudit(tx, {
+  // One entry per status change; the candidate query locks confirmed bookings, so this is
+  // skipped only if the booking changed in between.
+  if (changed.length) await writeBookingAudit(tx, {
+    action: policy === "auto_cancel" ? "booking.cancel" : "booking.flag",
+    bookingId,
     actorUserId: null,
-    action: policy === "auto_cancel" ? "booking.outlook_conflict_cancelled" : "booking.outlook_conflict_flagged",
-    entityType: "booking",
-    entityId: bookingId,
-    after: { kind, policy },
+    via: "system",
+    before: { status: "confirmed" },
+    after:
+      policy === "auto_cancel"
+        ? { status: "cancelled", cancelledBy: "host", reason, source: "outlook_conflict", conflict: kind, policy }
+        : { status: "flagged", flaggedReason: reason, source: "outlook_conflict", conflict: kind, policy },
   });
   return { bookingId, kind, policy };
 }

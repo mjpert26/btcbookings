@@ -6,13 +6,13 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/session";
 import { withUser, type Tx } from "@/server/db/client";
-import { changedFields, writeAudit } from "@/server/audit";
+import { changedFields, writeAudit, writeAuditDiff } from "@/server/audit";
 import type { ActionState } from "@/lib/form-state";
-import { bool, fail, invalid, isUuid, json, ok, pgCode, pgConstraint, str } from "@/server/ui/form";
+import { bool, fail, invalid, isUuid, json, ok, pgCode, pgConstraint, requestIpHash, str } from "@/server/ui/form";
 import { HEX_COLOR_RE, hostSchema, questionsSchema, REMINDER_CHOICES, SLUG_RE, VARIANT_GROUPS, type VariantGroupKey } from "@/lib/event-types";
 import { isReservedSlug } from "@/server/auth/slug";
 import { AGENT_REMINDER_CHANNELS, AGENT_REMINDER_CHOICES, MERCHANT_REMINDER_CHANNELS } from "@/lib/reminders";
-import { canWrite, loadBundle } from "./_data";
+import { auditSnapshot, canWrite, loadBundle } from "./_data";
 
 const optionalInt = (min: number, max: number) =>
   z.union([z.literal(""), z.coerce.number().int("Use a whole number.").min(min, `Must be at least ${min}.`).max(max, `Must be at most ${max}.`)]).transform((v) => (v === "" ? null : v));
@@ -222,12 +222,14 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
   const parsed = readForm(fd);
   if (!parsed.success) return invalid(parsed.error);
   const v = parsed.data;
+  const ipHash = await requestIpHash();
 
   try {
     const res = await withUser(user.id, async (tx) => {
       if (!(await canWrite(tx, id))) return "not_found" as const;
       const bundle = await loadBundle(tx, id);
       if (!bundle) return "not_found" as const;
+      const before = (await auditSnapshot(tx, id))!;
       const et = bundle.eventType;
       const isChild = Boolean(et.parent_event_type_id);
       const own = (g: VariantGroupKey) => !isChild || et.overrides.includes(g);
@@ -269,13 +271,16 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
         const err = await saveHosts(tx, id, et.team_id, v.hosts);
         if (err) throw new HostError(err);
       }
-      await writeAudit(tx, {
+      // Only the settings that changed, including questions and hosts. Reminder settings have
+      // their own entry below.
+      await writeAuditDiff(tx, {
         actorUserId: user.id,
         action: "event_type.update",
         entityType: "event_type",
         entityId: id,
-        before: { name: et.name, slug: et.slug, is_active: et.is_active },
-        after: { name: v.name, slug: isChild ? et.slug : v.slug, is_active: v.isActive },
+        before,
+        after: (await auditSnapshot(tx, id))!,
+        ipHash,
       });
       const rem = et as typeof et & ReminderColumns;
       const reminderChanges = changedFields<ReminderColumns>(
@@ -299,6 +304,7 @@ export async function updateEventTypeAction(id: string, _prev: ActionState, fd: 
           entityType: "event_type",
           entityId: id,
           ...reminderChanges,
+          ipHash,
         });
       }
       return "ok" as const;

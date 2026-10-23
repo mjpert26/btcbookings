@@ -13,7 +13,7 @@ import { ConfirmAction } from "@/components/app/ConfirmAction";
 import { MASS_REMOVAL_APPROVAL_MINUTES } from "@/server/sync/admin";
 import { MASS_REMOVAL_ALERT } from "@/server/sync/apply";
 import { formatDateTime, formatRelative } from "@/lib/format";
-import { linkQueueAction, requestSyncNowAction, resolveAlertAction, setSyncSettingsAction, unlinkQueueAction } from "../../../_actions/sync";
+import { linkQueueAction, requestSyncNowAction, resolveAlertAction, setSyncSettingsAction, unlinkQueueAction } from "../../../../_actions/sync";
 import { AddQueueForm, SyncSettingsForm } from "./SyncForms";
 
 export const metadata: Metadata = { title: "Queue sync" };

@@ -25,6 +25,8 @@ import json, sys, re, collections, os
 from datetime import datetime, timezone
 
 args = sys.argv[1:]
+if len(args) < 2 or args[0].startswith("--"):
+    sys.exit(__doc__)
 src, out = args[0], args[1]
 def opt(name, default=None):
     return args[args.index(name) + 1] if name in args else default

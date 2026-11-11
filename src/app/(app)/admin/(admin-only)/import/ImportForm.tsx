@@ -55,7 +55,10 @@ export function ImportForm() {
             Report {r.applied ? <Badge tone="success">Applied</Badge> : <Badge>Dry run</Badge>}
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Stat label="Users" value={`${r.users.created} new (${r.users.schedulesImported} with Calendly hours), ${r.users.existing} existing`} />
+            <Stat
+              label="Users"
+              value={`${r.users.created} new (${r.users.schedulesImported} with Calendly hours), ${r.users.existing} existing${r.users.emailsCorrected ? `, ${r.users.emailsCorrected} emails corrected` : ""}`}
+            />
             <Stat label="Teams" value={`${r.teams.created} new, ${r.teams.existing} existing, ${r.teamMembers.added} members added`} />
             <Stat
               label="Booking pages"

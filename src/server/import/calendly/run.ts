@@ -52,7 +52,7 @@ import {
 export type ImportReport = {
   applied: boolean;
   elapsedMs: number;
-  users: { created: number; existing: number; schedulesImported: number };
+  users: { created: number; existing: number; schedulesImported: number; emailsCorrected: number };
   teams: { created: number; existing: number };
   teamMembers: { added: number };
   eventTypes: { created: number; existing: number; skipped: number; goLiveEligible: number };
@@ -93,7 +93,7 @@ export async function importCalendly(
   const report: ImportReport = {
     applied: false,
     elapsedMs: 0,
-    users: { created: 0, existing: 0, schedulesImported: 0 },
+    users: { created: 0, existing: 0, schedulesImported: 0, emailsCorrected: 0 },
     teams: { created: 0, existing: 0 },
     teamMembers: { added: 0 },
     eventTypes: { created: 0, existing: 0, skipped: 0, goLiveEligible: 0 },
@@ -164,8 +164,8 @@ type Ctx = {
   users: Map<string, UserRef>;
   /** Lowercased email -> existing app user. */
   usersByEmail: Map<string, { id: string; timezone: string; importRef: string | null }>;
-  /** Calendly user URI -> existing app user linked by import_ref. */
-  usersByRef: Map<string, { id: string; email: string; timezone: string }>;
+  /** Calendly user URI -> existing app user linked by import_ref. dormant: never signed in or linked. */
+  usersByRef: Map<string, { id: string; email: string; timezone: string; dormant: boolean }>;
   userSlugs: Set<string>;
   teamSlugs: Set<string>;
   /** Calendly team URI -> existing imported team id. */
@@ -210,8 +210,9 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
 
   // Preload what the import compares against, so per-row work is inserts only.
   const [users, teams, types, bookings] = await Promise.all([
-    tx<{ id: string; email: string; timezone: string; slug: string; import_ref: string | null }[]>`
-      select id, email::text as email, timezone, slug, case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref
+    tx<{ id: string; email: string; timezone: string; slug: string; import_ref: string | null; dormant: boolean }[]>`
+      select id, email::text as email, timezone, slug, case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref,
+             (entra_oid is null and last_login_at is null) as dormant
       from app.users`,
     tx<{ id: string; slug: string; import_ref: string | null }[]>`
       select id, slug, case when import_source = ${IMPORT_SOURCE} then import_ref end as import_ref from app.teams`,
@@ -240,7 +241,9 @@ async function runImport(tx: Tx, snap: CalendlySnapshot, report: ImportReport, w
     today: DateTime.fromJSDate(now).toUTC().toISODate()!,
     users: new Map(),
     usersByEmail: new Map(users.map((u) => [u.email.toLowerCase(), { id: u.id, timezone: u.timezone, importRef: u.import_ref }])),
-    usersByRef: new Map(users.filter((u) => u.import_ref).map((u) => [u.import_ref!, { id: u.id, email: u.email.toLowerCase(), timezone: u.timezone }])),
+    usersByRef: new Map(
+      users.filter((u) => u.import_ref).map((u) => [u.import_ref!, { id: u.id, email: u.email.toLowerCase(), timezone: u.timezone, dormant: u.dormant }]),
+    ),
     userSlugs: new Set(users.map((u) => u.slug)),
     teamSlugs: new Set(teams.map((t) => t.slug)),
     teamsByRef: new Map(teams.filter((t) => t.import_ref).map((t) => [t.import_ref!, t.id])),
@@ -294,6 +297,25 @@ async function importUsers(ctx: Ctx, snap: CalendlySnapshot, now: Date): Promise
     // The Calendly link wins: sign-in may have changed the stored email since the last import.
     const linked = ctx.usersByRef.get(m.uri);
     if (linked) {
+      // An account that has never signed in may hold a guessed email (snapshots built while
+      // Calendly emails were redacted). Calendly's email replaces it, so the first sign-in
+      // links by email. Accounts that have signed in keep the email Microsoft gave them.
+      if (linked.dormant && email !== linked.email) {
+        const holder = ctx.usersByEmail.get(email);
+        if (holder && holder.id !== linked.id) {
+          ctx.warn(`Member ${m.name}: the Calendly email belongs to another user; the stored email was kept.`);
+        } else {
+          await tx`
+            update app.users set email = ${email}
+            where id = ${linked.id} and entra_oid is null and last_login_at is null
+          `;
+          const entry = ctx.usersByEmail.get(linked.email);
+          ctx.usersByEmail.delete(linked.email);
+          ctx.usersByEmail.set(email, entry ?? { id: linked.id, timezone: linked.timezone, importRef: m.uri });
+          linked.email = email;
+          ctx.report.users.emailsCorrected++;
+        }
+      }
       ctx.users.set(m.uri, { userId: linked.id, email: linked.email, timezone: linked.timezone });
       ctx.report.users.existing++;
       continue;

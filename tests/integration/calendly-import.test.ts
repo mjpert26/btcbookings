@@ -188,7 +188,7 @@ describe("Calendly import", () => {
     const existing = await makeUser(sql, { email: "jesse.axman@bigthinkcapital.com", name: "Jesse A" });
     const r = await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
     expect(r.applied).toBe(true);
-    expect(r.users).toEqual({ created: 2, existing: 1, schedulesImported: 1 });
+    expect(r.users).toEqual({ created: 2, existing: 1, schedulesImported: 1, emailsCorrected: 0 });
     expect(r.teams.created).toBe(1);
     expect(r.teamMembers.added).toBe(3);
     expect(r.eventTypes).toEqual({ created: 4, existing: 0, skipped: 0, goLiveEligible: 3 });
@@ -305,7 +305,7 @@ describe("Calendly import", () => {
   it("is idempotent and picks up Calendly cancellations, moves, reassignments and missing meetings", async () => {
     await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
     const again = await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
-    expect(again.users).toEqual({ created: 0, existing: 3, schedulesImported: 0 });
+    expect(again.users).toEqual({ created: 0, existing: 3, schedulesImported: 0, emailsCorrected: 0 });
     expect(again.teams).toEqual({ created: 0, existing: 1 });
     expect(again.eventTypes).toEqual({ created: 0, existing: 4, skipped: 0, goLiveEligible: 0 });
     expect(again.bookings.unchanged).toBe(3);
@@ -364,6 +364,49 @@ describe("Calendly import", () => {
     expect(r.users).toMatchObject({ created: 0, existing: 3 });
     expect(r.bookings.reassigned).toBe(0);
     expect(await count(sql`select count(*)::int as n from app.users`)).toBe(3);
+  });
+
+  it("replaces guessed emails on accounts that never signed in, and keeps signed-in and conflicting ones", async () => {
+    await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
+    // Aidan signs in, so his account keeps the email Microsoft gave it.
+    await completeLogin(
+      { oid: "oid-aidan", tid: "t", email: "aidan.miller@bigthinkcapital.com", name: "Aidan Miller", preferredUsername: "aidan.miller@bigthinkcapital.com" },
+      { accessToken: "a", refreshToken: "r", idToken: "i", expiresAt: new Date(Date.now() + 3600_000), scopes: [] },
+    );
+    const other = await makeUser(sql, { email: "cstokum@bigthinkcapital.com" });
+    const base = snapshot();
+    const corrected = snapshot({
+      pulledAt: "2026-10-10T12:00:00Z",
+      members: base.members.map((m) =>
+        m.uri === U("a")
+          ? { ...m, email: "aidan@bigthinkcapital.com" }
+          : m.uri === U("b")
+            ? { ...m, email: "Jesse@BigThinkCapital.com" }
+            : { ...m, email: other.email },
+      ),
+    });
+
+    const jobsBefore = await count(sql`select count(*)::int as n from app.jobs`);
+    const dry = await importCalendly(corrected, { apply: false, actorUserId: null, now: NOW });
+    expect(dry.users.emailsCorrected).toBe(1);
+    expect(await count(sql`select count(*)::int as n from app.users where email = 'jesse@bigthinkcapital.com'`)).toBe(0);
+
+    const r = await importCalendly(corrected, { apply: true, actorUserId: null, now: NOW });
+    expect(r.users).toEqual({ created: 0, existing: 3, schedulesImported: 0, emailsCorrected: 1 });
+    expect(r.warnings.some((w) => w.includes("Chris Stokum") && w.includes("belongs to another user"))).toBe(true);
+    const rows = await sql<{ import_ref: string; email: string }[]>`
+      select import_ref, email::text as email from app.users where import_ref is not null order by import_ref
+    `;
+    expect(rows).toEqual([
+      { import_ref: U("a"), email: "aidan.miller@bigthinkcapital.com" },
+      { import_ref: U("b"), email: "jesse@bigthinkcapital.com" },
+      { import_ref: U("c"), email: "chris.stokum@bigthinkcapital.com" },
+    ]);
+    expect(await count(sql`select count(*)::int as n from app.jobs`)).toBe(jobsBefore);
+
+    // A re-run with the same snapshot changes nothing further.
+    const again = await importCalendly(snapshot({ ...corrected, pulledAt: "2026-10-11T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW });
+    expect(again.users.emailsCorrected).toBe(0);
   });
 
   it("frees a rescheduled meeting's old time before holding the new one", async () => {

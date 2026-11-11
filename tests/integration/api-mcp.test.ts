@@ -314,6 +314,30 @@ describe("REST API", () => {
     const [consent] = await sql<{ sms_consent_at: Date | null }[]>`select sms_consent_at from app.bookings where id = ${bookedData.id}`;
     expect(consent.sms_consent_at).toBeInstanceOf(Date);
 
+    // An idempotency key replays the same booking instead of failing validation or double-booking.
+    const withKey = () =>
+      bookingsPOST(
+        req("/api/v1/bookings", {
+          method: "POST",
+          token: key,
+          body: JSON.stringify({
+            eventTypeId: page.id,
+            start: futureSlot(3),
+            invitee: { name: "N", email: "n@example.com", timezone: "America/New_York" },
+            answers: { company: "Acme" },
+            idempotencyKey: "crm:order/42 retry",
+          }),
+        }),
+        ctx({}),
+      );
+    const first = await withKey();
+    expect(first.status).toBe(201);
+    const second = await withKey();
+    expect(second.status).toBe(201);
+    const firstId = ((await first.json()) as { data: { id: string } }).data.id;
+    expect(((await second.json()) as { data: { id: string } }).data.id).toBe(firstId);
+    expect(await sql`select 1 from app.bookings where invitee_email = 'n@example.com'`).toHaveLength(1);
+
     const removed = await questionDELETE(req(`/api/v1/event-types/${page.id}/questions/company`, { method: "DELETE", token: key }), ctx({ id: page.id, key: "company" }));
     expect(((await removed.json()) as { data: unknown[] }).data).toEqual([]);
 

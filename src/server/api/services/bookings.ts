@@ -3,6 +3,7 @@ import { z } from "zod";
 import { service } from "@/server/db/client";
 import { loadBookingHistory, type BookingHistoryEntry } from "@/server/audit-log";
 import { decryptSecret } from "@/server/crypto/aes";
+import { sha256Hex } from "@/server/crypto/random";
 import { createBooking } from "@/server/booking/create";
 import { rescheduleByInvitee } from "@/server/booking/manage";
 import { cancelBookingAsHost } from "@/server/booking/host-actions";
@@ -185,6 +186,15 @@ export const scheduleSchema = z.object({
   idempotencyKey: z.string().min(8).max(100).optional(),
 });
 
+/**
+ * Scopes a caller's idempotency key to that caller. The booking engine accepts only
+ * [A-Za-z0-9_-]{8,100}, while API callers may send any 8-100 character string, so the
+ * scoped key is a hash: "api_" plus the hex SHA-256 of "<user id>:<key>".
+ */
+function apiIdempotencyKey(caller: Caller, key: string | undefined): string | null {
+  return key ? `api_${sha256Hex(`${caller.user.id}:${key}`)}` : null;
+}
+
 function mapBookingError(err: unknown): never {
   if (err instanceof BookingValidationError) throw new ApiError(400, "invalid_request", "The booking request is invalid.", { fields: err.fieldErrors });
   if (err instanceof SlotTakenError) throw new ApiError(409, "slot_unavailable", "That time is no longer available.");
@@ -220,7 +230,7 @@ export async function scheduleBooking(caller: Caller, raw: unknown): Promise<Boo
           smsConsent: v.invitee.smsConsent === true,
           timezone: v.invitee.timezone,
           answers: v.answers,
-          idempotencyKey: v.idempotencyKey ? `${caller.user.id}:${v.idempotencyKey}` : null,
+          idempotencyKey: apiIdempotencyKey(caller, v.idempotencyKey),
         },
         // The engine writes the booking.create audit entry in its own transaction.
         { ...bookingOptions(), createdVia: caller.via === "mcp" ? "mcp" : "api", actorUserId: caller.user.id },

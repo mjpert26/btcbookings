@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   defaultSlotInterval,
   expandSchedule,
@@ -179,6 +179,26 @@ describe("DST transitions 2026 (America/New_York)", () => {
       to: t("2026-03-09T00:00"),
     });
     expect(onDate(slots, "2026-03-08")).toEqual(["03:00", "03:30"]);
+  });
+
+  describe("ambiguous fall-back times do not depend on the real clock", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    for (const clock of ["2026-07-01T12:00:00Z", "2026-12-01T12:00:00Z"]) {
+      it(`resolves 01:30 on 2026-11-01 to the earlier offset when the clock reads ${clock}`, () => {
+        vi.useFakeTimers({ now: new Date(clock) });
+        expect(new Date(localToInstant("2026-11-01", "01:30", NY)).toISOString()).toBe(
+          "2026-11-01T05:30:00.000Z",
+        );
+        expect(new Date(localToInstant("2026-11-01", "02:00", NY)).toISOString()).toBe(
+          "2026-11-01T07:00:00.000Z",
+        );
+        expect(new Date(localToInstant("2026-03-08", "03:00", NY)).toISOString()).toBe(
+          "2026-03-08T07:00:00.000Z",
+        );
+      });
+    }
   });
 
   it("fall back: a 9:30 to 18:30 day is nine real hours", () => {

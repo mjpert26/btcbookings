@@ -73,7 +73,19 @@ export function localToInstant(date: string, time: string, zone: string): number
   }
   const dt = DateTime.fromObject({ year, month, day, hour, minute }, { zone });
   if (!dt.isValid) throw new Error(`Invalid local time ${date} ${time} in ${zone}`);
-  if (dt.day === day && dt.hour === hour && dt.minute === minute) return dt.toMillis();
+  if (dt.day === day && dt.hour === hour && dt.minute === minute) {
+    // Luxon resolves an ambiguous (fall-back) wall time with the offset in effect at the
+    // real current time, which would make results depend on the clock. Always prefer the
+    // earlier occurrence: if the offset a few hours before differs and also produces this
+    // wall time at an earlier instant, use that instant.
+    const ms = dt.toMillis();
+    const before = offsetAt(ms - 6 * 60 * MINUTE, zone);
+    if (before !== dt.offset) {
+      const earlier = ms + (dt.offset - before) * MINUTE;
+      if (earlier < ms && offsetAt(earlier, zone) === before) return earlier;
+    }
+    return ms;
+  }
 
   // Nonexistent local time. Luxon shifted it forward; find the transition instant by
   // binary search on the offset (transitions are at most a few hours apart from here).

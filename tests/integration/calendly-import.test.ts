@@ -9,6 +9,7 @@ import { cancelBookingAsHost } from "@/server/booking/host-actions";
 import { completeLogin } from "@/server/auth/login";
 import { withUser } from "@/server/db/client";
 import { createApiKey } from "@/server/oauth/server";
+import { removeManualMember } from "@/server/sync/admin";
 import { POST as importPOST } from "@/app/api/v1/import/calendly/route";
 
 let sql: Sql;
@@ -335,11 +336,34 @@ describe("Calendly import", () => {
 
   it("does not re-add team members an admin removed", async () => {
     await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
-    await sql`delete from app.team_members where email = 'chris.stokum@bigthinkcapital.com'`;
+    const admin = await makeUser(sql, { role: "admin" });
+    const [chris] = await sql<{ id: string }[]>`select id from app.team_members where email = 'chris.stokum@bigthinkcapital.com'`;
+    await removeManualMember({ id: admin.id, role: "admin" }, chris.id);
     const r = await importCalendly(snapshot(), { apply: true, actorUserId: null, now: NOW });
     expect(r.teamMembers.added).toBe(0);
-    expect(r.warnings.some((w) => w.includes("not re-added"))).toBe(true);
+    expect(r.warnings.some((w) => w.includes("chris.stokum") && w.includes("not re-added"))).toBe(true);
     expect(await count(sql`select count(*)::int as n from app.team_members`)).toBe(2);
+  });
+
+  it("adds hosts newly seen in Calendly to an existing team, but not to a queue-fed team", async () => {
+    const withoutChris = (s: CalendlySnapshot) => ({
+      ...s,
+      events: s.events.filter((e) => e.uri !== EV("3")),
+    });
+    await importCalendly(withoutChris(snapshot()), { apply: true, actorUserId: null, now: NOW });
+    expect(await count(sql`select count(*)::int as n from app.team_members`)).toBe(2);
+
+    const jobsBefore = await count(sql`select count(*)::int as n from app.jobs`);
+    const r = await importCalendly(snapshot({ pulledAt: "2026-10-10T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW });
+    expect(r.teamMembers.added).toBe(1);
+    expect(await count(sql`select count(*)::int as n from app.team_members where email = 'chris.stokum@bigthinkcapital.com'`)).toBe(1);
+    expect(await count(sql`select count(*)::int as n from app.jobs`)).toBe(jobsBefore);
+
+    await sql`delete from app.team_members where email = 'chris.stokum@bigthinkcapital.com'`;
+    await sql`update app.teams set membership_source = 'salesforce_queue' where import_ref = ${TEAM}`;
+    const q = await importCalendly(snapshot({ pulledAt: "2026-10-11T12:00:00Z" }), { apply: true, actorUserId: null, now: NOW });
+    expect(q.teamMembers.added).toBe(0);
+    expect(q.warnings.some((w) => w.includes("Salesforce queue"))).toBe(true);
   });
 
   it("copies overlapping meetings as flagged instead of failing", async () => {

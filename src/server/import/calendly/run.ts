@@ -399,6 +399,20 @@ async function importTeams(ctx: Ctx, types: CalendlyEventType[]): Promise<void> 
         select id, team_id, user_id from app.team_members where team_id = any(${existingIds}::uuid[])`
     : [];
   for (const m of existingMembers) if (m.user_id) ctx.members.set(`${m.team_id}:${m.user_id}`, m.id);
+  // Existing teams gain hosts newly seen in Calendly, except where the app manages membership:
+  // teams fed by a Salesforce queue, and people with membership history on the team (an admin
+  // or the queue sync removed them; every removal writes a membership event).
+  const [queueTeams, history] = existingIds.length
+    ? await Promise.all([
+        tx<{ id: string }[]>`
+          select id from app.teams where id = any(${existingIds}::uuid[]) and membership_source <> 'manual'`,
+        tx<{ team_id: string; email: string }[]>`
+          select distinct team_id, lower(email::text) as email from app.membership_events
+          where team_id = any(${existingIds}::uuid[])`,
+      ])
+    : [[], []];
+  const queueManaged = new Set(queueTeams.map((t) => t.id));
+  const managedEmails = new Set(history.map((h) => `${h.team_id}:${h.email}`));
 
   for (const [teamUri, teamTypes] of byTeam) {
     const name = teamTypes[0].profile.name.slice(0, 200);
@@ -439,9 +453,12 @@ async function importTeams(ctx: Ctx, types: CalendlyEventType[]): Promise<void> 
         continue;
       }
       if (ctx.members.has(`${teamId}:${u.userId}`)) continue;
-      if (!isNew) {
-        // Membership of an existing team is managed in the app; an admin may have removed this rep.
-        ctx.warn(`Team "${name}": ${u.email} is a host in Calendly but not a team member here; not re-added.`);
+      if (!isNew && queueManaged.has(teamId)) {
+        ctx.warn(`Team "${name}": ${u.email} is a host in Calendly, but this team's members come from a Salesforce queue; not added.`);
+        continue;
+      }
+      if (!isNew && managedEmails.has(`${teamId}:${u.email.toLowerCase()}`)) {
+        ctx.warn(`Team "${name}": ${u.email} is a host in Calendly but was removed from this team here; not re-added.`);
         continue;
       }
       const [row] = await tx<{ id: string }[]>`

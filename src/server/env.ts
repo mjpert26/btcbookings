@@ -9,8 +9,8 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   // Trailing slashes are stripped so "${APP_BASE_URL}/api/..." never produces "//".
   APP_BASE_URL: z.string().url().transform((v) => v.replace(/\/+$/, "")),
-  // Public origin of the MCP server (for example https://mcp.bigthinkcapital.com). The MCP
-  // endpoint is "<origin>/mcp". Defaults to APP_BASE_URL.
+  // Public origin of the MCP server. The MCP endpoint is "<origin>/mcp". Defaults to
+  // APP_BASE_URL. Never mcp.bigthinkcapital.com: that host is the BTC MCP Gateway.
   MCP_BASE_URL: z.preprocess(
     (v) => (v === "" ? undefined : v),
     z

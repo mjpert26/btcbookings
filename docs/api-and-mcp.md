@@ -2,7 +2,7 @@
 
 BTC Scheduler exposes the same capabilities two ways:
 
-- **MCP server** for AI assistants (Claude and other Model Context Protocol clients), at `https://mcp.bigthinkcapital.com/mcp`. Until that domain is configured, use `<APP_BASE_URL>/mcp`.
+- **MCP server** for AI assistants (Claude and other Model Context Protocol clients), at `<APP_BASE_URL>/mcp` (production: `https://btcbookings.vercel.app/mcp`). Employees normally reach it through the BTC MCP Gateway at `https://mcp.bigthinkcapital.com/mcp`, where it is the system `btc_scheduler`; see [BTC MCP Gateway](#btc-mcp-gateway).
 - **REST API** for scripts and automations, at `<APP_BASE_URL>/api/v1`. The description is at `/api/v1/openapi.json`.
 
 Both act as the signed-in user, with that user's current role and permissions. Both use the service layer in `src/server/api/services/`, under row-level security. Every change is recorded in the audit log with its channel (`api` or `mcp`). Bookings scheduled, rescheduled or cancelled through either write exactly one `booking.*` entry each, from the booking engine; see [`audit-log.md`](audit-log.md).
@@ -21,8 +21,9 @@ Team admins also manage their teams' members and pages. The matrix lives in `src
 
 ### Connecting
 
-- **Claude** (claude.ai or the desktop app): Settings > Connectors > Add custom connector, then paste the server URL. Sign in with Microsoft and approve the connection.
-- **Claude Code**: `claude mcp add --transport http btc-scheduler https://mcp.bigthinkcapital.com/mcp`
+- **Through the BTC MCP Gateway** (recommended): connect Claude to the gateway at `https://mcp.bigthinkcapital.com/mcp`, then open My connections on the gateway and connect BTC Scheduler. Its tools appear with the `btc_scheduler__` prefix.
+- **Directly** (claude.ai or the desktop app): Settings > Connectors > Add custom connector, then paste `https://btcbookings.vercel.app/mcp`. Sign in with Microsoft and approve the connection.
+- **Claude Code, directly**: `claude mcp add --transport http btc-scheduler https://btcbookings.vercel.app/mcp`
 
 Each user sees and disconnects their connected apps under **Settings > Integrations**.
 
@@ -65,15 +66,32 @@ Streamable HTTP, stateless and JSON-only. `POST /mcp` takes JSON-RPC requests (o
 | `create_user`, `update_user` | Add users, change roles and active state | Admin |
 | `list_audit_log` | Search the audit log | Manager, Admin |
 
-Tools a role may not use are not listed, and they are refused if called.
+Every role sees the same tool list, and a tool the caller's role may not use is refused when called ("Your role does not allow this tool."). The list is not filtered by role because the BTC MCP Gateway keeps one tool table for everyone and re-syncs it with whichever person's token it holds.
 
-### mcp.bigthinkcapital.com
+### BTC MCP Gateway
 
-1. In Vercel, add the domain `mcp.bigthinkcapital.com` to the project.
-2. In DNS, add a CNAME record from `mcp` to the target Vercel shows.
-3. Set `MCP_BASE_URL=https://mcp.bigthinkcapital.com` in Vercel and redeploy.
+`mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts many internal systems. Do not attach that domain to this project or set `MCP_BASE_URL` to it. BTC Scheduler is registered on the gateway as the per-person system `btc_scheduler`:
 
-The MCP endpoint then answers at `https://mcp.bigthinkcapital.com/mcp`. Opening the bare domain in a browser redirects to Settings > Integrations.
+| Setting | Value |
+|---|---|
+| Upstream URL | `https://btcbookings.vercel.app/mcp` (must equal `<APP_BASE_URL>/mcp`, the resource tokens are bound to) |
+| Auth | Per person (delegated OAuth). The gateway registers itself through dynamic client registration as a public client with PKCE S256 and scope `scheduler`. Nothing is pasted. |
+| Callback allowed here | `https://mcp.bigthinkcapital.com/api/connect/btc_scheduler/callback` (Admin > Integrations > Allowed callback URLs) |
+
+Each person connects their own BTC Scheduler account on the gateway, so tool calls run with that person's role here. The gateway's own grants and tool classifications decide which tools each person may call through it.
+
+Setup order on the gateway (`/admin/systems/btc_scheduler`):
+
+1. Check this server: the gateway should find the registration, authorization and token endpoints, client authentication `none`, PKCE S256 and scope `scheduler`. Leave the OAuth application form empty.
+2. Connect my account, as a BTC Scheduler admin. The gateway registers itself, exchanges the code and syncs the tools.
+3. Classify each tool (super admin). Reads: `whoami`, `list_*`, `get_*`, `find_available_times`. Writes: `schedule_meeting`, `reschedule_booking`, `create_booking_page`, `update_booking_page`, `add_question`, `update_question`, `add_team_member`, `create_user`. Deletes: `cancel_booking`, `delete_booking_page`, `remove_question`, `set_questions`, `remove_team_member`, `update_user` (it can deactivate a user and revoke their sessions).
+4. Enable the tools and the system, then grant access by role or person.
+
+Notes:
+
+- The gateway's response scanning redacts email addresses in tool results for everyone except super admins, unless the gateway owners add an exemption.
+- Refresh tokens last 30 days from last use; a person idle longer reconnects.
+- If `APP_BASE_URL` ever changes, update the gateway's upstream URL; everyone then reconnects.
 
 ## REST API
 

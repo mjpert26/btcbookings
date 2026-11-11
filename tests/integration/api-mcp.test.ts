@@ -181,7 +181,7 @@ describe("MCP server", () => {
     expect(r.headers.get("www-authenticate")).toContain(`resource_metadata="${BASE}/.well-known/oauth-protected-resource"`);
   });
 
-  it("initializes, lists role-filtered tools and runs tools as the user", async () => {
+  it("initializes, lists every tool, and runs tools as the user within their role", async () => {
     const agent = await makeHost(sql, { name: "Agent A" });
     const admin = await makeUser(sql, { role: "admin", name: "Admin" });
     const agentTok = (await oauthTokens(agent.id)).access_token;
@@ -194,8 +194,10 @@ describe("MCP server", () => {
     const agentTools = ((await rpc(agentTok, "tools/list")).body as { result: { tools: { name: string; inputSchema: { type: string } }[] } }).result.tools;
     const adminTools = ((await rpc(adminTok, "tools/list")).body as { result: { tools: { name: string }[] } }).result.tools;
     expect(agentTools.map((t) => t.name)).toContain("schedule_meeting");
-    expect(agentTools.map((t) => t.name)).not.toContain("create_user");
-    expect(adminTools.map((t) => t.name)).toContain("create_user");
+    // The list is the same for every role (a gateway syncs it with one person's token);
+    // the role is enforced when a tool is called.
+    expect(agentTools.map((t) => t.name)).toEqual(adminTools.map((t) => t.name));
+    expect(agentTools.map((t) => t.name)).toEqual(expect.arrayContaining(["create_user", "update_user", "list_audit_log"]));
     expect(agentTools.every((t) => t.inputSchema.type === "object")).toBe(true);
 
     const who = (await rpc(agentTok, "tools/call", { name: "whoami", arguments: {} })).body as { result: { structuredContent: { role: string; roleLabel: string }; isError: boolean } };

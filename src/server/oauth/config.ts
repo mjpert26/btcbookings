@@ -5,8 +5,9 @@ import { env } from "@/server/env";
  * URLs of the OAuth 2.1 authorization server (this app) and the MCP resource server.
  *
  * The authorization server is always APP_BASE_URL, because the consent screen needs the
- * user's session cookie. The MCP endpoint is "<MCP_BASE_URL>/mcp" (for example
- * https://mcp.bigthinkcapital.com/mcp) and also answers at "<APP_BASE_URL>/mcp".
+ * user's session cookie. The MCP endpoint is "<MCP_BASE_URL>/mcp" and also answers at
+ * "<APP_BASE_URL>/mcp". Production leaves MCP_BASE_URL unset; the BTC MCP Gateway
+ * (mcp.bigthinkcapital.com) fronts this server as an upstream.
  */
 
 export const MCP_SCOPE = "scheduler";

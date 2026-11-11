@@ -53,7 +53,7 @@ export default async function AdminIntegrationsPage() {
               <Row label="Client registration" value={meta.registration_endpoint} />
             </dl>
             <p className="mt-3 text-xs text-muted">
-              To serve the MCP server at mcp.bigthinkcapital.com, add that domain to the Vercel project, point a CNAME at Vercel, and set MCP_BASE_URL=https://mcp.bigthinkcapital.com.
+              Employees reach this server through the BTC MCP Gateway (mcp.bigthinkcapital.com, system btc_scheduler). Keep https://mcp.bigthinkcapital.com/api/connect/btc_scheduler/callback in the allowed callback URLs. Do not attach mcp.bigthinkcapital.com to this project: it is the domain of the gateway.
             </p>
           </CardBody>
         </Card>

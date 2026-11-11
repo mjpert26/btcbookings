@@ -71,7 +71,7 @@ Every variable is documented in [`.env.example`](.env.example). Summary:
 | Variable | Required | Purpose |
 |---|---|---|
 | `APP_BASE_URL` | yes | Public base URL; used for OAuth redirects, Graph notification URLs and email links |
-| `MCP_BASE_URL` | no | Public origin of the MCP server (for example `https://mcp.bigthinkcapital.com`); defaults to `APP_BASE_URL` |
+| `MCP_BASE_URL` | no | Public origin of the MCP server; defaults to `APP_BASE_URL`. Leave unset in production: `mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts this server |
 | `DATABASE_URL` | yes | Postgres connection (Supabase transaction pooler, port 6543, in production) |
 | `DATABASE_POOL_MAX` | no | Connections per instance (default 5) |
 | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` | yes | Entra app registration |
@@ -152,13 +152,13 @@ Defined in [`vercel.json`](vercel.json). Each route checks `Authorization: Beare
 
 ## REST API and MCP server
 
-AI assistants connect to the MCP server at `https://mcp.bigthinkcapital.com/mcp` (or `<APP_BASE_URL>/mcp`), signing in with Microsoft through OAuth 2.1. Scripts use the REST API at `<APP_BASE_URL>/api/v1` with an API key. Both act as the signed-in user with their role:
+AI assistants connect to the MCP server at `<APP_BASE_URL>/mcp`, usually through the BTC MCP Gateway (`https://mcp.bigthinkcapital.com/mcp`, system `btc_scheduler`), signing in with Microsoft through OAuth 2.1. Scripts use the REST API at `<APP_BASE_URL>/api/v1` with an API key. Both act as the signed-in user with their role:
 
 - **Agent:** their own bookings and pages.
 - **Manager:** reads everything.
 - **Admin:** manages everything.
 
-Every change is audited with its channel. Each authenticated request is recorded in `app.api_request_log` (caller, key or app, route, JSON-RPC methods, status and duration; never bodies) for 30 days. Users manage their API keys and connected apps, and see their recent requests, under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients, and see all recent requests, under **Admin > Integrations**. For setup (including the mcp.bigthinkcapital.com domain), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
+Every change is audited with its channel. Each authenticated request is recorded in `app.api_request_log` (caller, key or app, route, JSON-RPC methods, status and duration; never bodies) for 30 days. Users manage their API keys and connected apps, and see their recent requests, under **Settings > Integrations**. Admins manage the allowed OAuth callback URLs and clients, and see all recent requests, under **Admin > Integrations**. For setup (including the gateway registration), the tool list and the endpoints, see [`docs/api-and-mcp.md`](docs/api-and-mcp.md).
 
 ## Outbound webhooks
 

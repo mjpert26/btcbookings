@@ -60,11 +60,15 @@ export async function handleMessage(caller: Caller, message: unknown, report?: T
     case "ping":
       return { jsonrpc: "2.0", id, result: {} };
     case "tools/list":
+      // Every tool is listed for every role, and tools/call refuses those the caller's role may
+      // not use. A gateway that fronts this server keeps one tool table for everyone and
+      // re-syncs it with whichever person's token it holds; a role-filtered list would make it
+      // withdraw the admin and manager tools each time an agent connected.
       return {
         jsonrpc: "2.0",
         id,
         result: {
-          tools: toolsFor(caller).map((t) => ({
+          tools: TOOLS.map((t) => ({
             name: t.name,
             title: t.title,
             description: t.description,

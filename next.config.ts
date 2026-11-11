@@ -26,8 +26,7 @@ const securityHeaders = [
   },
 ];
 
-// The MCP server answers at "<MCP_BASE_URL>/mcp" (for example https://mcp.bigthinkcapital.com/mcp)
-// and also at "<APP_BASE_URL>/mcp".
+// The MCP server answers at "<MCP_BASE_URL>/mcp" and also at "<APP_BASE_URL>/mcp".
 function mcpHost(): string | null {
   try {
     return process.env.MCP_BASE_URL ? new URL(process.env.MCP_BASE_URL).host : null;

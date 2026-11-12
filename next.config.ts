@@ -61,9 +61,10 @@ const nextConfig: NextConfig = {
     // A browser opening the MCP host lands on the connection instructions.
     const host = mcpHost();
     if (host) rules.push({ source: "/", has: [{ type: "host", value: host }], destination: `${app}/settings/integrations`, permanent: false });
-    // Pages opened on a former address (APP_LEGACY_HOSTS) move to APP_BASE_URL. API routes,
-    // webhooks, cron, the MCP endpoint, well-known documents and static assets keep answering
-    // on the old host, so integrations that still call it do not break.
+    // Pages and public/ files opened on a former address (APP_LEGACY_HOSTS) move to
+    // APP_BASE_URL. API routes, webhooks, cron, the MCP endpoint, well-known documents and
+    // /_next build assets keep answering on the old host, so integrations that still call it
+    // do not break.
     for (const legacy of legacyHosts()) {
       rules.push({
         source: "/:path((?!api/|_next/|\\.well-known/|mcp(?:/|$)).*)",

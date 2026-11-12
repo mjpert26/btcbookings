@@ -74,7 +74,7 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | Variable | Required | Admin > Settings | Purpose |
 |---|---|---|---|
 | `APP_BASE_URL` | yes | no | Public base URL (production: `https://book.bigthinkcapital.com`); used for OAuth redirects, Graph notification URLs and email links |
-| `APP_LEGACY_HOSTS` | no | no | Former hostnames, comma separated (production: `btcbookings.vercel.app`). Page requests on them redirect to `APP_BASE_URL`; API routes, webhooks, cron, `/mcp`, `.well-known` and static assets keep answering there |
+| `APP_LEGACY_HOSTS` | no | no | Former hostnames, comma separated (production: `btcbookings.vercel.app`). Page requests (and `public/` files) on them redirect to `APP_BASE_URL`; API routes, webhooks, cron, `/mcp`, `.well-known` and `/_next` build assets keep answering there |
 | `MCP_BASE_URL` | no | no | Public origin of the MCP server; defaults to `APP_BASE_URL`. Leave unset in production: `mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts this server |
 | `DATABASE_URL` | yes | no | Postgres connection (Supabase transaction pooler, port 6543, in production) |
 | `DATABASE_POOL_MAX` | no | no | Connections per instance (default 5) |
@@ -85,7 +85,7 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `IP_HASH_SALT` | yes | no | Salt for hashed client IPs |
 | `CRON_SECRET` | yes | no | Vercel Cron bearer secret |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | yes | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
-| `TURNSTILE_HOSTNAMES` | with Turnstile | no | Comma-separated frontend hostnames whose Turnstile tokens are accepted (production: `book.bigthinkcapital.com,btcbookings.vercel.app`). Defaults to the hostname of `APP_BASE_URL`; `localhost` and `127.0.0.1` are ignored in production. The widget in Cloudflare must list every hostname that serves the public forms; pages on `APP_LEGACY_HOSTS` redirect, so in production the widget lists only `book.bigthinkcapital.com` |
+| `TURNSTILE_HOSTNAMES` | with Turnstile | no | Comma-separated frontend hostnames whose Turnstile tokens are accepted (production: `book.bigthinkcapital.com`). Defaults to the hostname of `APP_BASE_URL`; `localhost` and `127.0.0.1` are ignored in production. The widget in Cloudflare must list the same hostnames. Former hostnames (`APP_LEGACY_HOSTS`) do not belong here: their pages redirect, and form posts from them fail the same-origin check before Turnstile runs |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
 | `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them, texts are logged instead of sent |

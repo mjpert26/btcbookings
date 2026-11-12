@@ -24,10 +24,11 @@ App behavior (`src/server/graph/subscriptions.ts`):
   expire within 48 hours and creation for healthy connections without one.
 - Renewal is `PATCH /subscriptions/{id}` with only `expirationDateTime`. A 404 means Graph
   dropped it, so the app creates a new one.
-- Renewal keeps the subscription's `notificationUrl`. After a change of `APP_BASE_URL`,
-  existing subscriptions keep notifying the old hostname, which still serves `/api/graph/*`
-  (see "Changing the main address" in `docs/runbook.md`); only new subscriptions use the
-  new URL.
+- Renewal keeps the subscription's `notificationUrl` and `lifecycleNotificationUrl`. After a
+  change of `APP_BASE_URL`, existing subscriptions keep notifying the old hostname, which
+  still serves `/api/graph/*`; only subscriptions created afterwards use the new URL. The 409
+  cleanup below matches only the current `notificationUrl`, so it does not remove a leftover
+  subscription on the old URL. See "Changing the main address" in `docs/runbook.md`.
 - Duplicate subscriptions (same resource and changeType) fail with `409 Conflict`. The app
   then lists `/subscriptions`, deletes its own stale one (same notificationUrl and resource)
   and creates again.

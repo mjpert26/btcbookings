@@ -170,7 +170,7 @@ Production moved from `btcbookings.vercel.app` to `book.bigthinkcapital.com` on 
 2. **Entra.** Add `https://<new host>/api/auth/callback` as a Web redirect URI on the app registration (`docs/entra-setup.md`, section 2) before changing `APP_BASE_URL`; otherwise sign-in fails with a redirect URI mismatch.
 3. **Vercel environment (Production).** Set `APP_BASE_URL` to `https://<new host>` and add the old hostname to `APP_LEGACY_HOSTS`. If Turnstile is on, make sure `TURNSTILE_HOSTNAMES` and the widget's hostname list in Cloudflare include the new hostname.
 4. **Deploy.** Environment changes take effect only in a new deployment. Use **Deployments > Create Deployment** with the branch or commit to deploy. **Redeploy** on an existing deployment rebuilds that deployment's commit with the new environment, not the latest commit.
-5. **BTC MCP Gateway.** Set `systems.upstream_url` for `btc_scheduler` to `https://<new host>/mcp`, then reconnect the system in the gateway admin panel.
+5. **BTC MCP Gateway.** Set `systems.upstream_url` for `btc_scheduler` to `https://<new host>/mcp` and reconnect your own account in the gateway admin panel. Gateway connections are per person: everyone who connected BTC Scheduler on the gateway must reconnect under **My connections**, and until then their calls get `401`.
 6. **External callers (optional).** API routes keep answering on the old hostname, so these keep working, but move them when convenient: the SendBlue receive webhook (`/api/sms/inbound`), `BTC_SCHEDULER_BASE_URL` in the n8n environment, and the Salesforce Named Credential for queue pushes (`/api/sync/queue-membership`).
 
 **Verify.**
@@ -188,10 +188,25 @@ curl -s -X POST 'https://<old host>/api/graph/notifications?validationToken=chec
 
 **What changes for users.**
 
-- Pages on the old hostname (booking pages, manage links in earlier emails, the internal app) redirect to the same path and query on the new hostname. API routes, webhooks, cron, `/mcp`, `.well-known` documents and static assets are not redirected (`next.config.ts`, `APP_LEGACY_HOSTS`).
+- Pages on the old hostname (booking pages, manage links in earlier emails, the internal app) redirect to the same path and query on the new hostname. Files from `public/` redirect the same way, so the logo in emails sent before the change (`/brand/btc-logo.png`) loads through a `307`. API routes (`/api/*`, including webhooks and cron), `/mcp`, `/.well-known/*` and Next.js build assets (`/_next/*`) are not redirected (`next.config.ts`, `APP_LEGACY_HOSTS`).
 - Session cookies are per hostname, so employees sign in once more on the new hostname.
-- Sign-in must start on the new hostname. The sign-in start route (`/api/auth/login`) is not redirected, and a sign-in started on the old hostname sets its browser-binding cookie there, so the callback on the new hostname fails with `state_expired`. All sign-in links in the app are relative and the pages that hold them redirect, so this affects only a tab opened before the change; reloading the page fixes it.
-- Existing Graph subscriptions keep the old notification URL: renewal only extends the expiry. Notifications keep arriving because the old hostname still serves `/api/graph/*`. A subscription created later (new connection, or one Graph removed) uses the new URL.
-- MCP OAuth tokens are bound to the MCP resource URL, and the MCP endpoint accepts only resources on the current `APP_BASE_URL` (or `MCP_BASE_URL`). An MCP client that connected through the old URL gets `401` and must reconnect, because a refreshed token keeps the old resource. REST API keys are not bound to a host and keep working. At the 2026-11-12 change there were no active MCP OAuth tokens.
+- A tab opened on the old hostname before the change keeps working only until it calls an API route there:
+  - Sign-in started from it fails with `state_expired`. The sign-in start route (`/api/auth/login`) is not redirected, so the browser-binding cookie is set on the old hostname, and the callback on the new hostname cannot read it.
+  - Booking, reschedule and cancel forms fail with `403 forbidden`. They post to `/api/public/book` and `/api/public/manage` on the old hostname, which accept only an `Origin` equal to `APP_BASE_URL` (`src/server/booking/http.ts`). This check runs before Turnstile, so a former hostname in `TURNSTILE_HOSTNAMES` has no effect.
 
-Sign-in always returns to `APP_BASE_URL`, so the old Entra redirect URI is unused after the change; keep it only while a rollback of `APP_BASE_URL` is possible. Keep the `APP_LEGACY_HOSTS` entry for as long as old links may be in use. The `*.vercel.app` hostname cannot be removed from the project, so the redirect can stay in place.
+  All links in the app are relative and the pages that hold them redirect, so reloading the page fixes both.
+- Existing Graph subscriptions keep the old notification and lifecycle URLs: renewal only extends the expiry, and the app never moves a subscription to a new URL. A subscription moves only when it is recreated (reconnect, or Graph removing it). Notifications keep arriving because the old hostname still serves `/api/graph/*`, so the old hostname must stay attached to the Vercel project, with working DNS, while any connection uses it. A `*.vercel.app` hostname always stays attached; do not remove a former custom domain. This does not depend on `APP_LEGACY_HOSTS`.
+- The Graph 409 cleanup (`deleteStaleSubscriptions`) matches only the current notification URL. If a leftover subscription on the old URL exists for a user (for example after a disconnect whose Graph delete failed), creating that user's new subscription fails with `409` until the old one expires (at most about 7 days). The 15-minute delta sync covers changes meanwhile.
+- MCP OAuth tokens are bound to the MCP resource URL, and the MCP endpoint and the authorization page accept only resources on the current `APP_BASE_URL` (or `MCP_BASE_URL`). A client that connected through the old URL gets `401`; a refreshed token keeps the old resource, and reconnecting with the old URL fails with "Unknown resource". Change the client's server URL to `https://<new host>/mcp` and connect again. REST API keys are not bound to a host and keep working.
+- To see who must reconnect, count the live OAuth tokens on the old resource:
+
+  ```sql
+  select u.email, t.kind, t.client_id, t.last_used_at
+  from app.api_tokens t join app.users u on u.id = t.user_id
+  where t.kind in ('oauth_access', 'oauth_refresh') and t.revoked_at is null
+    and (t.expires_at is null or t.expires_at > now()) and t.resource like 'https://<old host>/%';
+  ```
+
+  At the 2026-11-12 change this returned no rows: no MCP OAuth connection, direct or through the gateway, existed yet.
+
+Sign-in always returns to `APP_BASE_URL`, so the old Entra redirect URI is unused after the change. Keep it while a rollback is possible: an Instant Rollback to a deployment built before the change also restores the old `APP_BASE_URL`, and sign-in on that deployment uses the old redirect URI. Keep the `APP_LEGACY_HOSTS` entry for as long as old links may be in use. The `*.vercel.app` hostname cannot be removed from the project, so the redirect can stay in place.

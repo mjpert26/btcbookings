@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { service, type Db, type Sql } from "@/server/db/client";
 import { env } from "@/server/env";
+import { integrationSettings } from "@/server/settings/integrations";
 import { signRequest } from "@/server/crypto/hmac";
 import { enqueue } from "@/server/jobs/queue";
 import {
@@ -411,17 +412,19 @@ export function createSalesforceHandlers(deps: SalesforceJobDeps = {}): Record<s
       throw err;
     }
 
+    // The n8n URL is environment-only; the signing secret can also be set in Admin > Settings.
     const e = env();
     const url = `${e.N8N_BASE_URL.replace(/\/+$/, "")}${e.N8N_LEAD_WEBHOOK_PATH}`;
     ctx.log({ request: redactedSummary(url, payload) });
 
-    if (!e.N8N_SIGNING_SECRET) return fail(new RetryableLeadError("N8N_SIGNING_SECRET is not configured"));
+    const signingSecret = (await integrationSettings()).N8N_SIGNING_SECRET;
+    if (!signingSecret) return fail(new RetryableLeadError("N8N_SIGNING_SECRET is not configured"));
 
     const rawBody = JSON.stringify(payload);
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "idempotency-key": bookingId,
-      ...signRequest(e.N8N_SIGNING_SECRET, rawBody, deps.now?.()),
+      ...signRequest(signingSecret, rawBody, deps.now?.()),
     };
 
     const controller = new AbortController();

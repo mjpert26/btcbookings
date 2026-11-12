@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
  * driven by Salesforce. HMAC-signed over an empty body.
  */
 export async function GET(req: Request) {
-  const auth = checkSyncHmac(req, "");
+  const auth = await checkSyncHmac(req, "");
   if (!auth.ok) return auth.response;
   const rows = await service()<{ queue_id: string }[]>`
     select distinct q.queue_id

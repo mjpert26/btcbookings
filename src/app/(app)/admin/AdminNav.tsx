@@ -14,6 +14,7 @@ const ITEMS: { href: string; label: string; exact?: boolean; capability?: Capabi
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
   { href: "/admin/integrations", label: "Integrations" },
   { href: "/admin/webhooks", label: "Webhooks" },
+  { href: "/admin/settings", label: "Settings" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/audit", label: "Audit log", capability: "audit.read" },
   { href: "/admin/errors", label: "Errors" },

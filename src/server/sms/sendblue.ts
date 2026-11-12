@@ -1,6 +1,6 @@
 import "server-only";
-import { env } from "@/server/env";
 import { PermanentJobError, RetryAfterError } from "@/server/jobs/types";
+import { integrationSettings } from "@/server/settings/integrations";
 import { redactPhone } from "@/server/sms/phone";
 
 /**
@@ -127,12 +127,13 @@ export function setSmsTransport(transport: SmsTransport | null): void {
 }
 
 /**
- * Sends one text. Without SENDBLUE_API_KEY and SENDBLUE_API_SECRET it logs a redacted line
- * and reports a skipped send, so jobs complete normally.
+ * Sends one text with the SendBlue settings (Admin > Settings, else Vercel). Without
+ * SENDBLUE_API_KEY and SENDBLUE_API_SECRET it logs a redacted line and reports a skipped
+ * send, so jobs complete normally.
  */
 export async function sendSms(msg: SmsMessage, tag: string): Promise<SmsSendResult> {
   if (override) return override(msg);
-  const e = env();
+  const e = await integrationSettings();
   if (!e.SENDBLUE_API_KEY || !e.SENDBLUE_API_SECRET) {
     console.info(`[sms] SENDBLUE_API_KEY not set; not sent: ${tag} to ${redactPhone(msg.to)}`);
     return { messageHandle: null, status: null, skipped: true };

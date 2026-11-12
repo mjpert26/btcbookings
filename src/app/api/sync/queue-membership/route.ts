@@ -34,6 +34,7 @@ const pushSchema = z.object({
  * Authentication, either:
  *   - HMAC headers (X-BTC-Timestamp, X-BTC-Signature) with SF_SYNC_SIGNING_SECRET, for Apex/n8n; or
  *   - Authorization: Bearer <SF_QUEUE_PUSH_BEARER>, for a Flow HTTP Callout via External Credential.
+ * Both secrets come from Admin > Settings, else Vercel (see checkSyncHmac and checkPushBearer).
  * Both require a body `timestamp` within 5 minutes and a unique `eventId` (replay protection).
  */
 export async function POST(req: Request) {
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
     if (err instanceof BodyTooLargeError) return jsonError("payload_too_large", 413);
     throw err;
   }
-  const auth = hasHmacHeaders(req) ? checkSyncHmac(req, raw) : checkPushBearer(req);
+  const auth = hasHmacHeaders(req) ? await checkSyncHmac(req, raw) : await checkPushBearer(req);
   if (!auth.ok) return auth.response;
 
   const parsed = pushSchema.safeParse(parseJson(raw));

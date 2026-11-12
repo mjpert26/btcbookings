@@ -18,6 +18,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Cron jobs](#cron-jobs)
 - [REST API and MCP server](#rest-api-and-mcp-server)
 - [Outbound webhooks](#outbound-webhooks)
+- [Integration settings](#integration-settings)
 - [Importing from Calendly](#importing-from-calendly)
 - [Adding an admin](#adding-an-admin)
 - [Error log](#error-log)
@@ -68,27 +69,30 @@ Sign-in needs a real Entra app registration (see below) with `http://localhost:3
 
 Every variable is documented in [`.env.example`](.env.example). Summary:
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `APP_BASE_URL` | yes | Public base URL; used for OAuth redirects, Graph notification URLs and email links |
-| `MCP_BASE_URL` | no | Public origin of the MCP server; defaults to `APP_BASE_URL`. Leave unset in production: `mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts this server |
-| `DATABASE_URL` | yes | Postgres connection (Supabase transaction pooler, port 6543, in production) |
-| `DATABASE_POOL_MAX` | no | Connections per instance (default 5) |
-| `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` | yes | Entra app registration |
-| `ALLOWED_EMAIL_DOMAINS` | no | Default `bigthinkcapital.com` |
-| `ADMIN_EMAILS` | no | Emails promoted to admin at sign-in |
-| `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID` | yes | AES-256-GCM key ring for secrets at rest |
-| `IP_HASH_SALT` | yes | Salt for hashed client IPs |
-| `CRON_SECRET` | yes | Vercel Cron bearer secret |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
-| `RESEND_API_KEY`, `EMAIL_FROM` | production | Transactional email; without a key, emails are logged instead of sent |
-| `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | Slack channel sync and agent reminder direct messages |
-| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | SendBlue text reminders; without them, texts are logged instead of sent |
-| `SENDBLUE_FROM_NUMBER` | optional | SendBlue sending line in E.164; required on shared-line plans |
-| `SENDBLUE_WEBHOOK_SECRET` | with SMS | Secret SendBlue sends in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
-| `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH`, `N8N_SIGNING_SECRET` | for SF | Outbound requests to n8n |
-| `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | Inbound queue snapshot and push authentication |
-| `SF_LEAD_MAX_ATTEMPTS`, `QUEUE_POLL_STALE_MINUTES` | no | Tuning (defaults 8 and 10) |
+Variables marked **yes** under "Admin > Settings" can also be set, replaced and removed by a global admin at **Admin > Settings** (`/admin/settings`), without a redeploy. A value set there overrides the Vercel value; removing it falls back to Vercel. All other variables are bootstrap configuration and can be changed only in Vercel. Details: [`docs/settings.md`](docs/settings.md).
+
+| Variable | Required | Admin > Settings | Purpose |
+|---|---|---|---|
+| `APP_BASE_URL` | yes | no | Public base URL; used for OAuth redirects, Graph notification URLs and email links |
+| `MCP_BASE_URL` | no | no | Public origin of the MCP server; defaults to `APP_BASE_URL`. Leave unset in production: `mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts this server |
+| `DATABASE_URL` | yes | no | Postgres connection (Supabase transaction pooler, port 6543, in production) |
+| `DATABASE_POOL_MAX` | no | no | Connections per instance (default 5) |
+| `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` | yes | no | Entra app registration |
+| `ALLOWED_EMAIL_DOMAINS` | no | no | Default `bigthinkcapital.com` |
+| `ADMIN_EMAILS` | no | no | Emails promoted to admin at sign-in |
+| `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID` | yes | no | AES-256-GCM key ring for secrets at rest, including the keys saved in Admin > Settings |
+| `IP_HASH_SALT` | yes | no | Salt for hashed client IPs |
+| `CRON_SECRET` | yes | no | Vercel Cron bearer secret |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | yes | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
+| `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
+| `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
+| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them, texts are logged instead of sent |
+| `SENDBLUE_FROM_NUMBER` | optional | yes | SendBlue sending line in E.164; required on shared-line plans |
+| `SENDBLUE_WEBHOOK_SECRET` | with SMS | yes | Secret SendBlue sends in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
+| `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH` | for SF | no | Where the app sends signed requests to n8n. Kept out of the app on purpose |
+| `N8N_SIGNING_SECRET` | for SF | yes | Signs outbound requests to n8n (Salesforce leads, Sync now) |
+| `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | yes | Inbound queue snapshot and push authentication |
+| `SF_LEAD_MAX_ATTEMPTS`, `QUEUE_POLL_STALE_MINUTES` | no | no | Tuning (defaults 8 and 10) |
 
 Generate a 32-byte key: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
 
@@ -128,7 +132,7 @@ Team pages show the partner (team) name in merchant emails, texts, agent reminde
 1. Create a Supabase project (BTC Org; production uses `us-west-2`). Functions run in the matching Vercel region, `pdx1`, set in `vercel.json`; keep the two together, because every request makes several database round trips. Under **Project > Connect**, copy the **Transaction pooler** connection string into `DATABASE_URL`.
 2. Apply migrations: `DATABASE_URL=<pooler url> pnpm db:migrate` (or paste the files in `supabase/migrations/` into the SQL editor, in order).
 3. Import the GitHub repository into Vercel (framework: Next.js). The Vercel team must be on **Pro** for per-minute cron jobs.
-4. Set every environment variable for Production and Preview. Use a separate `APP_BASE_URL` and Entra redirect URI per environment; Preview needs a stable alias (see `docs/entra-setup.md`).
+4. Set every environment variable for Production and Preview. Use a separate `APP_BASE_URL` and Entra redirect URI per environment; Preview needs a stable alias (see `docs/entra-setup.md`). The integration keys marked in the table above can instead be set after the first deploy at **Admin > Settings**.
 5. Production must not sit behind Vercel deployment protection, or at least `/api/graph/*`, `/api/sync/*` and the public booking pages must be excluded. Graph cannot validate a protected webhook URL.
 6. Optional but recommended: add a Vercel Firewall rate-limit rule for `/api/public/*`.
 7. Deploy, sign in as an admin, and check **Admin** for connection health.
@@ -163,6 +167,10 @@ Every change is audited with its channel. Each authenticated request is recorded
 ## Outbound webhooks
 
 Admins send signed booking events (`booking.created`, `booking.rescheduled`, `booking.cancelled`, `booking.reassigned`) to HTTPS endpoints from **Admin > Webhooks** (`/admin/webhooks`), optionally limited to one partner's pages. Deliveries go through the jobs outbox with retries, private addresses are refused, and imported Calendly bookings never produce events. No environment variables are needed. Receiver guide and signature check: [`docs/webhooks.md`](docs/webhooks.md).
+
+## Integration settings
+
+Global admins manage the keys for Resend, SendBlue, Slack, Turnstile and the Salesforce / n8n shared secrets at **Admin > Settings** (`/admin/settings`), without Vercel access or a redeploy. A value set there overrides the Vercel variable of the same name and applies within 30 seconds; removing it falls back to Vercel. Secrets are encrypted with the app key ring and are write-only (only the last four characters are shown), every change is audited without the value, and each service has a test button that reaches only the signed-in admin. Bootstrap variables (database, encryption keys, Entra, cron, base URLs, admin and domain lists, n8n URLs) stay in Vercel; the page shows only whether each is set. Requires migration `20261112120000_integration_settings.sql`. Details: [`docs/settings.md`](docs/settings.md).
 
 ## Importing from Calendly
 
@@ -217,6 +225,7 @@ Integration tests rebuild the `btc_scheduler_test` database from the migrations 
 - The e2e suite seeds `btc_e2e_booking` and starts the app on port 3417 (`E2E_PORT` overrides).
 - The internal UI e2e suite needs a running app and a database from `scripts/e2e-internal-db.sh` (seed: `tests/e2e/internal-seed.sql`).
 - Admin and roster server actions delegate to `src/server/{sync,slack,salesforce}/admin.ts`, which authorize and audit; see `docs/internal-ui.md`.
+- Read integration keys (Resend, SendBlue, Slack, Turnstile, n8n and Salesforce secrets) with `integrationSettings()` from `src/server/settings/integrations.ts`, never with `env()`: a value set in Admin > Settings overrides the environment. See `docs/settings.md`.
 
 ## Project layout
 
@@ -237,6 +246,7 @@ src/server/salesforce   Lead payload mapping and outbox handler
 src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts
 src/server/errors       error log: redaction, fingerprinting, logError(), admin queries
+src/server/settings     Admin > Settings integration keys: resolver, admin functions, test buttons
 supabase/migrations     schema and RLS
 n8n/                    importable n8n workflows
 docs/                   plan, setup guides, runbook

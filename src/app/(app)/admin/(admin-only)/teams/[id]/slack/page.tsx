@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { requireAdmin } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
 import { previewChannel, SlackAdminError, type PreviewResult } from "@/server/slack/admin";
-import { SlackNotConfiguredError } from "@/server/slack/client";
+import { SLACK_NOT_CONFIGURED_MESSAGE, SlackNotConfiguredError } from "@/server/slack/client";
 import { Notice } from "@/components/ui/Toast";
 import { isUuid } from "@/server/ui/form";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -76,7 +76,7 @@ async function loadPreview(userId: string, channelConfigId: string): Promise<Pre
     return { ok: true, result, names: new Map(rows.map((r) => [r.id, r.name])) };
   } catch (err) {
     if (err instanceof SlackAdminError && err.code !== "forbidden") return { ok: false, error: err.message };
-    if (err instanceof SlackNotConfiguredError) return { ok: false, error: "Slack is not configured on this deployment (SLACK_BOT_TOKEN is not set), so the channel's members cannot be read." };
+    if (err instanceof SlackNotConfiguredError) return { ok: false, error: `${SLACK_NOT_CONFIGURED_MESSAGE} Until then the channel's members cannot be read.` };
     throw err;
   }
 }

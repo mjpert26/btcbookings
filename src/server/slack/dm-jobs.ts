@@ -5,7 +5,7 @@ import { PermanentJobError, type JobContext, type JobHandler, type JobResult, ty
 import { bookingById } from "@/server/booking/view";
 import { loadAgentReminderData, reminderDisabledReason, reminderSkipReason } from "@/server/email/reminders";
 import { loadReminderSettings } from "@/server/booking/side-effects";
-import { SLACK_CONFIG_ERRORS, slackClientFromEnv, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
+import { SLACK_CONFIG_ERRORS, slackClientFromSettings, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
 import { agentReminderSlackText } from "@/server/slack/dm";
 import { configErrorMessage, resolveSlackUserId, SlackConfigError } from "@/server/slack/sync";
 
@@ -23,13 +23,13 @@ function skip(reason: string): JobResult {
   return { result: { skipped: reason } };
 }
 
-export type SlackDmDeps = { client?: () => SlackClient; sql?: Sql; now?: number };
+export type SlackDmDeps = { client?: () => SlackClient | Promise<SlackClient>; sql?: Sql; now?: number };
 
 /**
  * slack_dm_send: a reminder posted as a direct message from the bot to a host. The Slack
  * user id is resolved by email and cached in app.slack_identities. The event type's
- * current reminder settings are re-checked before sending. Without
- * SLACK_BOT_TOKEN the job completes as skipped.
+ * current reminder settings are re-checked before sending. Without a SLACK_BOT_TOKEN
+ * setting (Admin > Settings or Vercel) the job completes as skipped.
  */
 export async function handleSlackDm(job: Pick<JobRow, "id" | "payload">, ctx: Pick<JobContext, "log">, deps: SlackDmDeps = {}): Promise<JobResult> {
   const parsed = payloadSchema.safeParse(job.payload);
@@ -48,7 +48,7 @@ export async function handleSlackDm(job: Pick<JobRow, "id" | "payload">, ctx: Pi
 
   let client: SlackClient;
   try {
-    client = (deps.client ?? (() => slackClientFromEnv()))();
+    client = await (deps.client ?? (() => slackClientFromSettings()))();
   } catch (err) {
     if (err instanceof SlackNotConfiguredError) {
       console.info("[slack] SLACK_BOT_TOKEN not set; reminder DM not sent");

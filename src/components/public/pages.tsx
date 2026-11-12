@@ -7,7 +7,7 @@ import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import type { Metadata } from "next";
 import { service } from "@/server/db/client";
-import { env } from "@/server/env";
+import { turnstileSiteKey } from "@/server/settings/integrations";
 import { isLocale, type Locale } from "@/i18n/locales";
 import { findOwner, listPublicEventTypes, loadPublicEventType, toPublicEventType } from "@/server/booking/load";
 import { slugSchema } from "@/server/booking/validation";
@@ -64,7 +64,7 @@ export async function EventBookingPage(props: { kind: "user" | "team"; ownerSlug
   if (!found) notFound();
   const { event, windowEnd, partner } = found;
   const t = await getTranslations({ locale: event.language, namespace: "public" });
-  const siteKey = env().TURNSTILE_SITE_KEY || null;
+  const siteKey = await turnstileSiteKey();
   const show = eventDetails(partner);
 
   return (

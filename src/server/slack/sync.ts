@@ -1,7 +1,7 @@
 import "server-only";
 import type { Db, Sql } from "@/server/db/client";
-import { env } from "@/server/env";
 import { RetryAfterError } from "@/server/jobs/types";
+import { integrationSettings } from "@/server/settings/integrations";
 import { SLACK_CONFIG_ERRORS, type SlackClient, type SlackResponse } from "@/server/slack/client";
 import {
   BOT_NOT_IN_CHANNEL_MESSAGE,
@@ -270,7 +270,7 @@ export function configErrorMessage(code: string): string {
     case "token_revoked":
     case "token_expired":
     case "account_inactive":
-      return `The Slack bot token is invalid or revoked (${code}). Update SLACK_BOT_TOKEN and redeploy.`;
+      return `The Slack bot token is invalid or revoked (${code}). Update the bot token (SLACK_BOT_TOKEN) in Admin > Settings.`;
     default:
       return `Slack rejected the app's credentials (${code}).`;
   }
@@ -390,10 +390,10 @@ async function runKick(client: SlackClient, channelId: string, slackUserId: stri
   return interpret(first);
 }
 
-function adminNotifyFallback(opts: SyncOptions): string | null {
+async function adminNotifyFallback(opts: SyncOptions): Promise<string | null> {
   if (opts.adminNotifyChannel !== undefined) return opts.adminNotifyChannel;
   try {
-    return env().SLACK_ADMIN_NOTIFY_CHANNEL ?? null;
+    return (await integrationSettings()).SLACK_ADMIN_NOTIFY_CHANNEL || null;
   } catch {
     return null;
   }
@@ -542,7 +542,7 @@ async function syncMemberChannelsUnlocked(
     }
 
     if (rec.changed && (plan.action === "invite" || plan.action === "kick")) {
-      const notifyTo = channel.notify_channel_id ?? adminNotifyFallback(opts);
+      const notifyTo = channel.notify_channel_id ?? (await adminNotifyFallback(opts));
       if (notifyTo) {
         reason ??= noticeReason(await latestEventSource(db, member.teamId, member.teamMemberId));
         const notice = await postNotice(client, notifyTo, noticeText(plan.action, target, channel.channel_id, member.teamName, reason));

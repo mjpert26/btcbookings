@@ -1,6 +1,6 @@
 import "server-only";
-import { env } from "@/server/env";
 import { RetryAfterError } from "@/server/jobs/types";
+import { integrationSettings } from "@/server/settings/integrations";
 
 /**
  * Minimal typed client for the Slack Web API methods BTC Scheduler uses.
@@ -63,7 +63,11 @@ export type SlackClient = {
   /** Replaces the full member list of a user group. Slack rejects an empty list. */
   usergroupsUsersUpdate(usergroup: string, users: string[]): Promise<SlackResponse<{ usergroup?: Record<string, unknown> }>>;
   chatPostMessage(channel: string, text: string): Promise<SlackResponse<{ ts?: string }>>;
+  /** Checks the token. Read-only: nothing is posted or changed. */
+  authTest(): Promise<SlackResponse<SlackAuthTest>>;
 };
+
+export type SlackAuthTest = { team?: string; team_id?: string; user?: string; user_id?: string; bot_id?: string };
 
 export type SlackClientOptions = {
   token: string;
@@ -100,6 +104,9 @@ export class SlackNotConfiguredError extends Error {
     this.name = "SlackNotConfiguredError";
   }
 }
+
+/** Shown in the admin UI when no bot token is set in Admin > Settings or in Vercel. */
+export const SLACK_NOT_CONFIGURED_MESSAGE = "Slack is not configured: set the bot token (SLACK_BOT_TOKEN) in Admin > Settings or in Vercel.";
 
 function parseRetryAfter(value: string | null, fallback: number): number {
   const n = value === null ? NaN : Number.parseInt(value, 10);
@@ -174,12 +181,16 @@ export function createSlackClient(opts: SlackClientOptions): SlackClient {
     usergroupsUsersUpdate: (usergroup, users) => call("usergroups.users.update", { usergroup, users: users.join(",") }, "json"),
     chatPostMessage: (channel, text) =>
       call("chat.postMessage", { channel, text, unfurl_links: false, unfurl_media: false }, "json"),
+    authTest: () => call("auth.test", {}, "form"),
   };
 }
 
-/** Client built from SLACK_BOT_TOKEN. Throws SlackNotConfiguredError when it is unset. */
-export function slackClientFromEnv(fetchImpl?: FetchLike): SlackClient {
-  const token = env().SLACK_BOT_TOKEN;
+/**
+ * Client built from the SLACK_BOT_TOKEN setting (Admin > Settings, else Vercel). Throws
+ * SlackNotConfiguredError when no token is set.
+ */
+export async function slackClientFromSettings(fetchImpl?: FetchLike): Promise<SlackClient> {
+  const token = (await integrationSettings()).SLACK_BOT_TOKEN;
   if (!token) throw new SlackNotConfiguredError();
   return createSlackClient({ token, fetch: fetchImpl });
 }

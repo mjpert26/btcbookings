@@ -4,6 +4,7 @@ import { z } from "zod";
 import { service, withUser, type Tx } from "@/server/db/client";
 import { writeAudit, writeAuditDiff } from "@/server/audit";
 import { allowedEmailDomains, env } from "@/server/env";
+import { integrationSettings } from "@/server/settings/integrations";
 import { NONCE_HEADER, signRequest } from "@/server/crypto/hmac";
 import { randomToken } from "@/server/crypto/random";
 import { MASS_REMOVAL_ALERT } from "@/server/sync/apply";
@@ -476,7 +477,8 @@ export async function createTeam(actor: Actor, input: CreateTeamInput): Promise<
 export type SyncNowResult = { ok: true } | { ok: false; error: string };
 
 /**
- * Asks n8n to run the queue poller now. The request is HMAC-signed with N8N_SIGNING_SECRET.
+ * Asks n8n to run the queue poller now. The request is HMAC-signed with the N8N_SIGNING_SECRET
+ * setting (Admin > Settings, else Vercel).
  * Global admins and the team's admins may call it. The roster itself is not changed here; the
  * request and its outcome are recorded in the audit log.
  */
@@ -513,16 +515,17 @@ async function sendSyncNow(
 ): Promise<SyncNowResult> {
   if (queueIds.length === 0) return { ok: false, error: "no_linked_queues" };
 
-  const e = env();
-  if (!e.N8N_SIGNING_SECRET) return { ok: false, error: "not_configured" };
+  // The n8n URL is environment-only; the signing secret can also be set in Admin > Settings.
+  const signingSecret = (await integrationSettings()).N8N_SIGNING_SECRET;
+  if (!signingSecret) return { ok: false, error: "not_configured" };
   const body = JSON.stringify({ teamId, queueIds, requestedAt: new Date().toISOString() });
   const doFetch = opts.fetch ?? fetch;
   try {
-    const res = await doFetch(new URL(QUEUE_SYNC_NOW_PATH, e.N8N_BASE_URL).toString(), {
+    const res = await doFetch(new URL(QUEUE_SYNC_NOW_PATH, env().N8N_BASE_URL).toString(), {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...signRequest(e.N8N_SIGNING_SECRET, body),
+        ...signRequest(signingSecret, body),
         [NONCE_HEADER]: randomToken(16),
       },
       body,

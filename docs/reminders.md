@@ -69,9 +69,11 @@ The main worker (`/api/cron/jobs`) sends reminders. `/api/cron/reminders` is a s
 
 ## SendBlue setup
 
-1. In the SendBlue dashboard, create an API key. Set `SENDBLUE_API_KEY` (key ID) and `SENDBLUE_API_SECRET` (secret key) in Vercel.
+1. In the SendBlue dashboard, create an API key. Set `SENDBLUE_API_KEY` (key ID) and `SENDBLUE_API_SECRET` (secret key) at **Admin > Settings** (Text messages), or in Vercel. A value set in Admin > Settings overrides Vercel and needs no redeploy; **Send test text** sends one text to your own number from Availability > Booking preferences (see `docs/settings.md`).
 2. Optional: set `SENDBLUE_FROM_NUMBER` to the sending line in E.164. It is required on shared-line plans.
 3. Add a receive webhook that points to `<APP_BASE_URL>/api/sms/inbound` and give it a signing secret of at least 16 characters. Set the same value as `SENDBLUE_WEBHOOK_SECRET`. SendBlue sends it in the `sb-signing-secret` header; requests without a matching header get HTTP 401, and the route returns 503 until the secret is configured.
+
+`SENDBLUE_FROM_NUMBER` and `SENDBLUE_WEBHOOK_SECRET` can also be set at **Admin > Settings**.
 
 Without the key and secret, text jobs complete with a "not sent" log line and nothing is sent, the same way email works without `RESEND_API_KEY`.
 

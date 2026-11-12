@@ -84,7 +84,7 @@ where kind = 'graph_event_upsert' and status = 'dead'
 **Stale (no snapshots arriving).**
 
 1. In n8n (api.bigthinkcapital.com), open **BTC Scheduler - SF Queue Snapshot Poller** and check recent executions.
-2. Common failures: the SF Token Broker returned no token (check the broker workflow and the JWT key file), SOQL errors (a queue ID that does not exist), or the app rejected the signature (`401`). The signature secret in n8n (`BTC_SCHEDULER_SIGNING_SECRET`) must equal `SF_SYNC_SIGNING_SECRET` in Vercel, and the n8n server clock must be within 5 minutes.
+2. Common failures: the SF Token Broker returned no token (check the broker workflow and the JWT key file), SOQL errors (a queue ID that does not exist), or the app rejected the signature (`401`). The signature secret in n8n (`BTC_SCHEDULER_SIGNING_SECRET`) must equal the app's `SF_SYNC_SIGNING_SECRET` (shown at **Admin > Settings**, Salesforce and n8n, by its last four characters and source; a value set there overrides Vercel), and the n8n server clock must be within 5 minutes.
 3. Use **Sync now** on the team page to trigger the poller once the cause is fixed.
 
 **Safety rail tripped (`mass_removal_blocked`).** A snapshot would have paused more than the team's threshold (default 50%) of its active queue members, so nothing was applied.
@@ -110,7 +110,7 @@ If BTC does not want apps to remove members, switch the channel to **add only** 
 Other per-channel states:
 
 - `bot_not_in_channel`: private channels require the bot as a member. In Slack, open the channel and run `/invite @BTC Scheduler`, then select **Check health**.
-- `missing_scope` / `invalid_auth`: the app was reinstalled with fewer scopes or the token changed. Reinstall from `slack/manifest.yml` and update `SLACK_BOT_TOKEN`.
+- `missing_scope` / `invalid_auth`: the app was reinstalled with fewer scopes or the token changed. Reinstall from `slack/manifest.yml`, set the new bot token at **Admin > Settings** (Slack), and select **Check token**. No redeploy is needed.
 - Rate limits are retried automatically using Slack's `Retry-After`.
 
 ---
@@ -129,7 +129,7 @@ where j.status in ('failed', 'dead') order by j.created_at desc;
 
 **By error.**
 
-- `401` from n8n: the signature failed. `N8N_SIGNING_SECRET` (Vercel) must equal `BTC_SCHEDULER_N8N_SIGNING_SECRET` (n8n), and the clocks must be within 5 minutes.
+- `401` from n8n: the signature failed. The app's `N8N_SIGNING_SECRET` (**Admin > Settings**, else Vercel) must equal `BTC_SCHEDULER_N8N_SIGNING_SECRET` (n8n), and the clocks must be within 5 minutes.
 - `404` from n8n: the workflow **BTC Scheduler - SF Lead Create** is inactive or the webhook path changed (`N8N_LEAD_WEBHOOK_PATH`).
 - `duplicate`: Salesforce duplicate rules or `DuplicateCheckHandler` matched an existing Lead. This is not retried. The booking stores the matched Lead ID when Salesforce returns one. Review the existing Lead. No retry is needed unless the rule was wrong.
 - `REQUIRED_FIELD_MISSING` / `FIELD_CUSTOM_VALIDATION_EXCEPTION` / `INVALID_FIELD`: the event type's field mapping does not satisfy Lead validation. Fix it under **Admin > Event types > Salesforce**, then select **Retry**.
@@ -138,3 +138,22 @@ where j.status in ('failed', 'dead') order by j.created_at desc;
 **Retry.** Use **Retry** in the admin UI (audited). Retries are idempotent: the booking ID is the idempotency key, and n8n skips bookings it already created a Lead for. The job of a booking that was rescheduled cannot be retried when the new booking has its own lead job ("This booking was rescheduled"); retry the new booking's job, which also takes over a first booking that never got its Lead.
 
 A booking never fails because Salesforce is down. The lead job waits in the outbox and retries with exponential backoff up to `SF_LEAD_MAX_ATTEMPTS`.
+
+---
+
+## Integration key wrong, expired or leaked
+
+**Symptoms.** Emails or texts stop sending (`Resend invalid_api_key`, `SendBlue http_401` in job errors), Slack channels show "token invalid or revoked", n8n or the sync endpoints answer `401`, or a key was exposed.
+
+**Confirm.** Open **Admin > Settings**. Each key shows where its value comes from (**Set here**, **From Vercel**, **Default** or **Not set**) and, for secrets, the last four characters. Use the group's test button (email, text, Slack token, Turnstile secret); each reaches only you.
+
+**Fix.**
+
+1. Create a new key with the provider (Resend, SendBlue, Slack, Cloudflare), or a new shared secret for n8n and Salesforce.
+2. Set it at **Admin > Settings** and run the test button. Other server instances pick it up within 30 seconds; no redeploy is needed.
+3. For shared secrets, update the other side right away: `N8N_SIGNING_SECRET` and `SF_SYNC_SIGNING_SECRET` in the n8n environment (see `docs/n8n-workflows.md`), `SF_QUEUE_PUSH_BEARER` in the Salesforce External Credential, `SENDBLUE_WEBHOOK_SECRET` in the SendBlue webhook.
+4. Revoke the old key with the provider. If the old value is also set in Vercel, remove or replace it there as well: the app falls back to the Vercel value when a panel value is removed or the database cannot be read.
+
+Every change is in the audit log (`settings.update`, `settings.remove`, entity type `integration_setting`) without the value. Bootstrap variables (`DATABASE_URL`, `TOKEN_ENCRYPTION_KEYS`, `ENTRA_*`, `CRON_SECRET`, `IP_HASH_SALT`, base URLs, `ADMIN_EMAILS`, `ALLOWED_EMAIL_DOMAINS`, n8n URLs) can be changed only in Vercel, followed by a redeploy. Details: `docs/settings.md`.
+
+If `TOKEN_ENCRYPTION_KEYS` loses the key id that encrypted a stored secret, that secret no longer decrypts: the app logs "integration setting could not be decrypted" with the key name and uses the Vercel value. Set the key again at **Admin > Settings**.

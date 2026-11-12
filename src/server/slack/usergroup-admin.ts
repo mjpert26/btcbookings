@@ -4,7 +4,13 @@ import { z } from "zod";
 import { serviceTx, withUser, type Tx } from "@/server/db/client";
 import { writeAudit } from "@/server/audit";
 import { enqueue } from "@/server/jobs/queue";
-import { SLACK_CONFIG_ERRORS, slackClientFromEnv, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
+import {
+  SLACK_CONFIG_ERRORS,
+  SLACK_NOT_CONFIGURED_MESSAGE,
+  slackClientFromSettings,
+  SlackNotConfiguredError,
+  type SlackClient,
+} from "@/server/slack/client";
 import { SlackAdminError } from "@/server/slack/admin";
 import { configErrorMessage } from "@/server/slack/sync";
 import { SLACK_USER_ID_RE, USERGROUP_ID_RE } from "@/server/slack/plan";
@@ -82,7 +88,7 @@ export type UsergroupHealth = { health: UsergroupConfigRow["health"]; lastError:
 
 /** Reads the group's members once to confirm the app can see it. Never changes Slack. */
 export async function checkUsergroupAccess(client: SlackClient | null, id: string): Promise<UsergroupHealth> {
-  if (!client) return { health: "unknown", lastError: "Slack is not configured on this deployment (SLACK_BOT_TOKEN is not set)." };
+  if (!client) return { health: "unknown", lastError: SLACK_NOT_CONFIGURED_MESSAGE };
   const res = await client.usergroupsUsersList(id);
   if (res.ok) return { health: "ok", lastError: null };
   const code = res.error ?? "unknown_error";
@@ -92,10 +98,11 @@ export async function checkUsergroupAccess(client: SlackClient | null, id: strin
   return { health: "unknown", lastError: `Slack returned ${code}` };
 }
 
-function clientOrNull(opts: { client?: SlackClient }): SlackClient | null {
+/** Resolved before a transaction starts, so the settings read never waits inside one. */
+async function clientOrNull(opts: { client?: SlackClient }): Promise<SlackClient | null> {
   if (opts.client) return opts.client;
   try {
-    return slackClientFromEnv();
+    return await slackClientFromSettings();
   } catch (err) {
     if (err instanceof SlackNotConfiguredError) return null;
     throw err;
@@ -111,6 +118,7 @@ export async function linkUsergroup(
 ): Promise<UsergroupConfigRow> {
   const data = parse(linkSchema, input);
   const team = parse(uuid, teamId);
+  const slack = await clientOrNull(opts);
   return withUser(actorUserId, async (tx) => {
     await requireAdmin(tx);
     const [t] = await tx`select id from app.teams where id = ${team}`;
@@ -121,7 +129,7 @@ export async function linkUsergroup(
     // out of a group they still belong to through another team.
     const [taken] = await tx`select id from app.team_slack_usergroups where usergroup_id = ${data.usergroupId}`;
     if (taken) throw new SlackAdminError("duplicate", "This Slack user group is already linked to another team");
-    const h = await checkUsergroupAccess(clientOrNull(opts), data.usergroupId);
+    const h = await checkUsergroupAccess(slack, data.usergroupId);
     const [row] = await tx<UsergroupConfigRow[]>`
       insert into app.team_slack_usergroups
         (team_id, usergroup_id, usergroup_handle, mode, dry_run, protected_slack_user_ids, health, last_error, last_checked_at)
@@ -193,10 +201,11 @@ export async function unlinkUsergroup(actorUserId: string, configId: string): Pr
 
 /** Re-reads the group from Slack and updates its health. */
 export async function checkUsergroupHealth(actorUserId: string, configId: string, opts: { client?: SlackClient } = {}): Promise<UsergroupConfigRow> {
+  const slack = await clientOrNull(opts);
   return withUser(actorUserId, async (tx) => {
     await requireAdmin(tx);
     const before = await loadConfig(tx, configId);
-    const h = await checkUsergroupAccess(clientOrNull(opts), before.usergroup_id);
+    const h = await checkUsergroupAccess(slack, before.usergroup_id);
     const [row] = await tx<UsergroupConfigRow[]>`
       update app.team_slack_usergroups set health = ${h.health}, last_error = ${h.lastError}, last_checked_at = now()
       where id = ${before.id} returning ${tx(COLUMNS)}

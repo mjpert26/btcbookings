@@ -1,7 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { service } from "@/server/db/client";
-import { env } from "@/server/env";
+import { integrationSettings } from "@/server/settings/integrations";
 import {
   DEFAULT_TOLERANCE_SECONDS,
   NONCE_HEADER,
@@ -51,9 +51,12 @@ export async function readBodyLimited(req: Request, maxBytes = MAX_SYNC_BODY_BYT
 
 export type HmacCheck = { ok: true } | { ok: false; response: NextResponse };
 
-/** Verifies X-BTC-Timestamp / X-BTC-Signature against the queue sync signing secret. */
-export function checkSyncHmac(req: Request, rawBody: string, nowSeconds?: number): HmacCheck {
-  const secret = env().SF_SYNC_SIGNING_SECRET;
+/**
+ * Verifies X-BTC-Timestamp / X-BTC-Signature against the queue sync signing secret
+ * (SF_SYNC_SIGNING_SECRET in Admin > Settings, else Vercel).
+ */
+export async function checkSyncHmac(req: Request, rawBody: string, nowSeconds?: number): Promise<HmacCheck> {
+  const secret = (await integrationSettings()).SF_SYNC_SIGNING_SECRET;
   if (!secret) return { ok: false, response: jsonError("not_configured", 503) };
   const result = verifySignature(
     secret,
@@ -70,9 +73,12 @@ export function hasHmacHeaders(req: Request): boolean {
   return req.headers.has(SIGNATURE_HEADER) || req.headers.has(TIMESTAMP_HEADER);
 }
 
-/** Constant-time check of "Authorization: Bearer <SF_QUEUE_PUSH_BEARER>". */
-export function checkPushBearer(req: Request): HmacCheck {
-  const bearer = env().SF_QUEUE_PUSH_BEARER;
+/**
+ * Constant-time check of "Authorization: Bearer <SF_QUEUE_PUSH_BEARER>" (Admin > Settings,
+ * else Vercel).
+ */
+export async function checkPushBearer(req: Request): Promise<HmacCheck> {
+  const bearer = (await integrationSettings()).SF_QUEUE_PUSH_BEARER;
   if (!bearer) return { ok: false, response: jsonError("not_configured", 503) };
   const header = req.headers.get("authorization") ?? "";
   if (!safeEqual(header, `Bearer ${bearer}`)) return { ok: false, response: jsonError("unauthorized", 401) };

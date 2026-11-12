@@ -39,8 +39,9 @@ const snapshotSchema = z.object({
 });
 
 /**
- * Full membership snapshot from the n8n poller. HMAC-signed (SF_SYNC_SIGNING_SECRET); the
- * signed snapshotId must be unique (replay protection).
+ * Full membership snapshot from the n8n poller. HMAC-signed with the SF_SYNC_SIGNING_SECRET
+ * setting (Admin > Settings, else Vercel); the signed snapshotId must be unique (replay
+ * protection).
  */
 export async function POST(req: Request) {
   let raw: string;
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
     if (err instanceof BodyTooLargeError) return jsonError("payload_too_large", 413);
     throw err;
   }
-  const auth = checkSyncHmac(req, raw);
+  const auth = await checkSyncHmac(req, raw);
   if (!auth.ok) return auth.response;
 
   const parsed = snapshotSchema.safeParse(parseJson(raw));

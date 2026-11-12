@@ -7,7 +7,8 @@ import { enqueue } from "@/server/jobs/queue";
 import {
   listAllChannelMembers,
   SLACK_CONFIG_ERRORS,
-  slackClientFromEnv,
+  slackClientFromSettings,
+  SlackNotConfiguredError,
   type SlackClient,
   type SlackResponse,
   type SlackChannelInfo,
@@ -95,7 +96,29 @@ async function loadConfig(tx: Tx, id: string): Promise<ChannelConfigRow> {
   return row;
 }
 
-const client = (opts: AdminOptions) => opts.client ?? slackClientFromEnv();
+/**
+ * Resolves the Slack client before a transaction starts, so the settings read never waits for
+ * a pool connection while the transaction holds one. The returned function throws
+ * SlackNotConfiguredError where the client is first needed, keeping the order of checks
+ * (admin, not found, duplicate) the same as before.
+ */
+async function clientGetter(opts: AdminOptions): Promise<() => SlackClient> {
+  if (opts.client) {
+    const fixed = opts.client;
+    return () => fixed;
+  }
+  try {
+    const resolved = await slackClientFromSettings();
+    return () => resolved;
+  } catch (err) {
+    if (err instanceof SlackNotConfiguredError) {
+      return () => {
+        throw err;
+      };
+    }
+    throw err;
+  }
+}
 
 type Health = { health: ChannelConfigRow["health"]; lastError: string | null; name: string | null };
 
@@ -133,6 +156,7 @@ export async function addChannel(
 ): Promise<ChannelConfigRow> {
   const data = parse(addSchema, input);
   const team = parse(uuid, teamId);
+  const client = await clientGetter(opts);
   return withUser(actorUserId, async (tx) => {
     await requireAdmin(tx);
     const [t] = await tx`select id from app.teams where id = ${team}`;
@@ -140,7 +164,7 @@ export async function addChannel(
     const [dup] = await tx`select id from app.team_slack_channels where team_id = ${team} and channel_id = ${data.channelId}`;
     if (dup) throw new SlackAdminError("duplicate", "This channel is already linked to the team");
 
-    const h = healthFromInfo(await client(opts).conversationsInfo(data.channelId));
+    const h = healthFromInfo(await client().conversationsInfo(data.channelId));
     const [row] = await tx<ChannelConfigRow[]>`
       insert into app.team_slack_channels
         (team_id, channel_id, channel_name, mode, dry_run, protected_slack_user_ids, notify_channel_id,
@@ -237,10 +261,11 @@ export async function checkChannelHealth(
   channelConfigId: string,
   opts: AdminOptions = {},
 ): Promise<ChannelConfigRow> {
+  const client = await clientGetter(opts);
   return withUser(actorUserId, async (tx) => {
     await requireAdmin(tx);
     const before = await loadConfig(tx, channelConfigId);
-    const h = healthFromInfo(await client(opts).conversationsInfo(before.channel_id));
+    const h = healthFromInfo(await client().conversationsInfo(before.channel_id));
     const [row] = await tx<ChannelConfigRow[]>`
       update app.team_slack_channels
       set health = ${h.health}, last_error = ${h.lastError}, last_checked_at = now(),
@@ -273,10 +298,11 @@ export async function previewChannel(
   channelConfigId: string,
   opts: AdminOptions = {},
 ): Promise<PreviewResult> {
+  const client = await clientGetter(opts);
   return withUser(actorUserId, async (tx) => {
     await requireAdmin(tx);
     const cfg = await loadConfig(tx, channelConfigId);
-    const slack = client(opts);
+    const slack = client();
 
     const membersRes = await listAllChannelMembers(slack, cfg.channel_id);
     if (!membersRes.ok || !membersRes.data) {

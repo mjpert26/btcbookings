@@ -92,7 +92,8 @@ export async function resolveAlertAction(_prev: ActionState, fd: FormData): Prom
 
 const SYNC_NOW_ERRORS: Record<string, string> = {
   no_linked_queues: "Link a Salesforce Queue before requesting a sync.",
-  not_configured: "The n8n signing secret (N8N_SIGNING_SECRET) is not configured, so a sync cannot be requested. The poller still runs every 2 minutes.",
+  not_configured:
+    "The n8n signing secret (N8N_SIGNING_SECRET) is not set in Admin > Settings or in Vercel, so a sync cannot be requested. The poller still runs every 2 minutes.",
   network_error: "n8n could not be reached. The poller still runs every 2 minutes.",
 };
 

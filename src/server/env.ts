@@ -1,9 +1,42 @@
 import "server-only";
 import { z } from "zod";
 
+/** E.164 phone number, for example +15551234567. */
+export const E164_RE = /^\+[1-9]\d{7,14}$/;
+
+export const DEFAULT_EMAIL_FROM = "BTC Scheduling <scheduling@bigthinkcapital.com>";
+
+/**
+ * Value rules for the integration keys that Admin > Settings can also set. The environment
+ * schema below and the settings panel (src/server/settings/keys.ts) both use them, so the
+ * panel accepts exactly the values the environment accepts.
+ */
+export const integrationValueRules = {
+  TURNSTILE_SITE_KEY: z.string(),
+  TURNSTILE_SECRET_KEY: z.string(),
+  RESEND_API_KEY: z.string(),
+  EMAIL_FROM: z.string(),
+  SLACK_BOT_TOKEN: z.string(),
+  SLACK_ADMIN_NOTIFY_CHANNEL: z.string(),
+  SENDBLUE_API_KEY: z.string(),
+  SENDBLUE_API_SECRET: z.string(),
+  SENDBLUE_FROM_NUMBER: z.string().regex(E164_RE),
+  SENDBLUE_WEBHOOK_SECRET: z.string().min(16),
+  N8N_SIGNING_SECRET: z.string(),
+  SF_SYNC_SIGNING_SECRET: z.string(),
+  SF_QUEUE_PUSH_BEARER: z.string(),
+} as const;
+
+const rules = integrationValueRules;
+const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
+
 /**
  * Server environment. Validated lazily on first access so that `next build` does not
  * require production secrets. Every variable is documented in .env.example.
+ *
+ * The keys in integrationValueRules are read through integrationSettings()
+ * (src/server/settings/integrations.ts), not through env(): a value set in Admin > Settings
+ * overrides the environment.
  */
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -35,27 +68,27 @@ const schema = z.object({
 
   CRON_SECRET: z.string().min(16),
 
-  TURNSTILE_SITE_KEY: z.string().optional(),
-  TURNSTILE_SECRET_KEY: z.string().optional(),
+  TURNSTILE_SITE_KEY: rules.TURNSTILE_SITE_KEY.optional(),
+  TURNSTILE_SECRET_KEY: rules.TURNSTILE_SECRET_KEY.optional(),
 
-  RESEND_API_KEY: z.string().optional(),
-  EMAIL_FROM: z.string().default("BTC Scheduling <scheduling@bigthinkcapital.com>"),
+  RESEND_API_KEY: rules.RESEND_API_KEY.optional(),
+  EMAIL_FROM: rules.EMAIL_FROM.default(DEFAULT_EMAIL_FROM),
 
-  SLACK_BOT_TOKEN: z.string().optional(),
-  SLACK_ADMIN_NOTIFY_CHANNEL: z.string().optional(),
+  SLACK_BOT_TOKEN: rules.SLACK_BOT_TOKEN.optional(),
+  SLACK_ADMIN_NOTIFY_CHANNEL: rules.SLACK_ADMIN_NOTIFY_CHANNEL.optional(),
 
   // SendBlue SMS. Without the key and secret, text messages are logged and not sent.
-  SENDBLUE_API_KEY: z.string().optional(),
-  SENDBLUE_API_SECRET: z.string().optional(),
-  SENDBLUE_FROM_NUMBER: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^\+[1-9]\d{7,14}$/).optional()),
+  SENDBLUE_API_KEY: rules.SENDBLUE_API_KEY.optional(),
+  SENDBLUE_API_SECRET: rules.SENDBLUE_API_SECRET.optional(),
+  SENDBLUE_FROM_NUMBER: z.preprocess(emptyToUndefined, rules.SENDBLUE_FROM_NUMBER.optional()),
   // Shared secret SendBlue sends in the sb-signing-secret header of inbound webhooks.
-  SENDBLUE_WEBHOOK_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
+  SENDBLUE_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, rules.SENDBLUE_WEBHOOK_SECRET.optional()),
 
   N8N_BASE_URL: z.string().url().default("https://api.bigthinkcapital.com"),
   N8N_LEAD_WEBHOOK_PATH: z.string().default("/webhook/btc-scheduler/lead"),
-  N8N_SIGNING_SECRET: z.string().optional(),
-  SF_SYNC_SIGNING_SECRET: z.string().optional(),
-  SF_QUEUE_PUSH_BEARER: z.string().optional(),
+  N8N_SIGNING_SECRET: rules.N8N_SIGNING_SECRET.optional(),
+  SF_SYNC_SIGNING_SECRET: rules.SF_SYNC_SIGNING_SECRET.optional(),
+  SF_QUEUE_PUSH_BEARER: rules.SF_QUEUE_PUSH_BEARER.optional(),
   SF_LEAD_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
   QUEUE_POLL_STALE_MINUTES: z.coerce.number().int().positive().default(10),
 });

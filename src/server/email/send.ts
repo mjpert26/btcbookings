@@ -1,7 +1,7 @@
 import "server-only";
 import { Resend } from "resend";
-import { env } from "@/server/env";
 import { PermanentJobError } from "@/server/jobs/types";
+import { integrationSettings, type IntegrationConfig } from "@/server/settings/integrations";
 
 export type OutgoingEmail = {
   to: string;
@@ -45,18 +45,29 @@ const PERMANENT = new Set([
   "invalid_api_key",
 ]);
 
+/** The part of the Resend SDK that sendEmail uses. */
+export type ResendLike = { emails: Pick<Resend["emails"], "send"> };
+
+export type SendEmailDeps = {
+  /** Settings to use instead of integrationSettings(), e.g. a fresh read for a test send. */
+  config?: Pick<IntegrationConfig, "RESEND_API_KEY" | "EMAIL_FROM">;
+  /** Builds the Resend client for an API key. Tests inject a fake. */
+  resend?: (apiKey: string) => ResendLike;
+};
+
 /**
- * Sends one email with Resend. Without RESEND_API_KEY (until the owner configures Resend)
- * it logs a redacted line and reports success, so jobs complete normally.
+ * Sends one email with Resend, using the RESEND_API_KEY and EMAIL_FROM settings (Admin >
+ * Settings, else Vercel). Without an API key (until the owner configures Resend) it logs a
+ * redacted line and reports success, so jobs complete normally.
  */
-export async function sendEmail(email: OutgoingEmail): Promise<SendResult> {
+export async function sendEmail(email: OutgoingEmail, deps: SendEmailDeps = {}): Promise<SendResult> {
   if (override) return override(email);
-  const e = env();
+  const e = deps.config ?? (await integrationSettings());
   if (!e.RESEND_API_KEY) {
     console.info(`[email] RESEND_API_KEY not set; not sent: ${email.tag} to ${redactEmail(email.to)}`);
     return { id: null, skipped: true };
   }
-  const resend = new Resend(e.RESEND_API_KEY);
+  const resend = deps.resend ? deps.resend(e.RESEND_API_KEY) : new Resend(e.RESEND_API_KEY);
   const { data, error } = await resend.emails.send(
     {
       from: e.EMAIL_FROM,

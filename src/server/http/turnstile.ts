@@ -1,32 +1,45 @@
 import "server-only";
-import { env } from "@/server/env";
+import { integrationSettings } from "@/server/settings/integrations";
 
 export type TurnstileResult = { ok: true } | { ok: false; reason: string };
 
+export const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
 /**
- * Verifies a Cloudflare Turnstile token server-side. Turnstile is optional: when
- * TURNSTILE_SECRET_KEY is not configured, verification is skipped in every environment and
- * the public forms rely on their other protections (same-origin check, per-IP and per-email
- * rate limits, and daily volume caps). Setting the secret turns verification on.
+ * Calls Cloudflare's siteverify endpoint. Throws when Cloudflare cannot be reached or does
+ * not answer with JSON within five seconds. The secret is sent only in the request body.
+ */
+export async function siteverify(
+  secret: string,
+  token: string,
+  remoteIp?: string,
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response> = fetch,
+): Promise<{ success: boolean; errorCodes: string[] }> {
+  const body = new URLSearchParams({ secret, response: token });
+  if (remoteIp) body.set("remoteip", remoteIp);
+  const res = await fetchImpl(TURNSTILE_VERIFY_URL, { method: "POST", body, signal: AbortSignal.timeout(5000) });
+  const json = (await res.json()) as { success?: boolean; "error-codes"?: string[] };
+  return { success: json.success === true, errorCodes: Array.isArray(json["error-codes"]) ? json["error-codes"].map(String) : [] };
+}
+
+/**
+ * Verifies a Cloudflare Turnstile token server-side. Turnstile is optional: when the
+ * TURNSTILE_SECRET_KEY setting (Admin > Settings, else Vercel) is not set, verification is
+ * skipped in every environment and the public forms rely on their other protections
+ * (same-origin check, per-IP and per-email rate limits, and daily volume caps). Setting the
+ * secret turns verification on.
  */
 export async function verifyTurnstile(
   token: string | null | undefined,
   remoteIp?: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<TurnstileResult> {
-  const secret = env().TURNSTILE_SECRET_KEY;
+  const secret = (await integrationSettings()).TURNSTILE_SECRET_KEY;
   if (!secret) return { ok: true };
   if (!token || token.length > 2048) return { ok: false, reason: "missing_token" };
-  const body = new URLSearchParams({ secret, response: token });
-  if (remoteIp) body.set("remoteip", remoteIp);
   try {
-    const res = await fetchImpl("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-      method: "POST",
-      body,
-      signal: AbortSignal.timeout(5000),
-    });
-    const json = (await res.json()) as { success?: boolean; "error-codes"?: string[] };
-    return json.success ? { ok: true } : { ok: false, reason: (json["error-codes"] ?? ["failed"]).join(",") };
+    const result = await siteverify(secret, token, remoteIp, fetchImpl);
+    return result.success ? { ok: true } : { ok: false, reason: (result.errorCodes.length ? result.errorCodes : ["failed"]).join(",") };
   } catch {
     return { ok: false, reason: "turnstile_unreachable" };
   }

@@ -50,7 +50,11 @@ is issued.
   `restricted_action`, `enterprise_is_restricted` or `team_access_not_granted`, which the
   admin UI shows as a channel error.
 
-## 4. Configure Vercel
+## 4. Configure the token
+
+The simplest way: at **Admin > Settings** (Slack), set the bot token (`SLACK_BOT_TOKEN`) and, optionally, the admin notice channel (`SLACK_ADMIN_NOTIFY_CHANNEL`), then select **Check token** (Slack `auth.test`; nothing is posted). No redeploy is needed, and a value set there overrides Vercel. See `docs/settings.md`.
+
+Or set them in Vercel:
 
 1. In the Vercel project, open **Settings > Environment Variables**.
 2. Add `SLACK_BOT_TOKEN` with the `xoxb-` token for the Production environment (and Preview
@@ -156,7 +160,7 @@ not allowed, Slack returns `permission_denied` and the user group shows an error
 | bot not in channel | Private channel the bot is not in, or a wrong channel id. | `/invite @BTC Scheduler` in the channel, then run a health check. |
 | error: removals blocked (`restricted_action`) | Workspace settings stop the app removing members. | Section 6. |
 | error: missing scope | The installed app lacks a scope. | Update the app from `slack/manifest.yml` and reinstall. |
-| error: token invalid or revoked | `SLACK_BOT_TOKEN` is wrong or the app was uninstalled. | Reinstall, update the variable, redeploy. |
+| error: token invalid or revoked | `SLACK_BOT_TOKEN` is wrong or the app was uninstalled. | Reinstall, then set the new token at Admin > Settings (no redeploy). |
 | error: archived | The channel was archived. | Unarchive it or remove the channel link. |
 | warning: users_not_found | The member's email does not match a Slack account. | Fix the email in Slack or in the roster. |
 | skipped: workspace_admin / bot_user | The person is a workspace owner, admin or a bot. | Expected; remove them by hand if needed. |

@@ -2,15 +2,15 @@ import "server-only";
 import { z } from "zod";
 import { service } from "@/server/db/client";
 import { PermanentJobError, type JobHandler, type JobResult } from "@/server/jobs/types";
-import { slackClientFromEnv, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
+import { slackClientFromSettings, SlackNotConfiguredError, type SlackClient } from "@/server/slack/client";
 import { loadChannels, SlackConfigError, configErrorMessage, syncMemberChannels, type SyncOptions } from "@/server/slack/sync";
 import { loadUsergroup, syncMemberUsergroup } from "@/server/slack/usergroup";
 
 const payloadSchema = z.object({ teamId: z.string().uuid(), teamMemberId: z.string().uuid() });
 
 export type SlackHandlerDeps = {
-  /** Returns the Slack client. Defaults to one built from SLACK_BOT_TOKEN. */
-  client?: () => SlackClient;
+  /** Returns the Slack client. Defaults to one built from the SLACK_BOT_TOKEN setting. */
+  client?: () => SlackClient | Promise<SlackClient>;
   options?: SyncOptions;
 };
 
@@ -30,12 +30,12 @@ export const SLACK_NOT_CONFIGURED = "slack_not_configured";
  * so an unconfigured deployment never builds up failing jobs.
  */
 export function createSlackHandlers(deps: SlackHandlerDeps = {}): Record<string, JobHandler> {
-  const getClient = deps.client ?? (() => slackClientFromEnv());
+  const getClient = deps.client ?? (() => slackClientFromSettings());
 
   /** Returns the client, or null after logging when Slack is not configured. */
-  const clientOrSkip = (kind: string, teamId: string, teamMemberId: string): SlackClient | null => {
+  const clientOrSkip = async (kind: string, teamId: string, teamMemberId: string): Promise<SlackClient | null> => {
     try {
-      return getClient();
+      return await getClient();
     } catch (err) {
       if (err instanceof SlackNotConfiguredError) {
         console.info(JSON.stringify({ msg: "slack job skipped", kind, teamId, teamMemberId, reason: SLACK_NOT_CONFIGURED }));
@@ -59,7 +59,7 @@ export function createSlackHandlers(deps: SlackHandlerDeps = {}): Record<string,
     const channels = await loadChannels(sql, teamId);
     if (channels.length === 0) return { result: { channels: 0, actions: [] } };
 
-    const client = clientOrSkip("slack_membership_sync", teamId, teamMemberId);
+    const client = await clientOrSkip("slack_membership_sync", teamId, teamMemberId);
     if (!client) return { result: { skipped: SLACK_NOT_CONFIGURED } };
 
     ctx.log({ request: { kind: "slack_membership_sync", teamId, teamMemberId, channelIds: channels.map((c) => c.channel_id) } });
@@ -94,7 +94,7 @@ export function createSlackHandlers(deps: SlackHandlerDeps = {}): Record<string,
     const cfg = await loadUsergroup(sql, teamId);
     if (!cfg) return { result: { usergroup: null } };
 
-    const client = clientOrSkip("slack_usergroup_sync", teamId, teamMemberId);
+    const client = await clientOrSkip("slack_usergroup_sync", teamId, teamMemberId);
     if (!client) return { result: { skipped: SLACK_NOT_CONFIGURED } };
 
     ctx.log({ request: { kind: "slack_usergroup_sync", teamId, teamMemberId, usergroupId: cfg.usergroup_id } });

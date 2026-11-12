@@ -6,7 +6,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * SendBlue receive webhook. Records STOP / START replies in the SMS opt-out list.
- * Authenticated with the sb-signing-secret header (SENDBLUE_WEBHOOK_SECRET).
+ * Authenticated with the sb-signing-secret header, checked against the SENDBLUE_WEBHOOK_SECRET
+ * setting (Admin > Settings, else Vercel) by handleInboundSms.
  */
 export async function POST(req: Request) {
   let raw: string;

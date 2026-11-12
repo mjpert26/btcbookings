@@ -73,7 +73,7 @@ Setup > Security > Named Credentials.
    - Save.
 2. In the External Credential, **Principals** > New.
    - Parameter Name `Default`, Sequence 1, Identity Type `Named Principal`.
-   - Authentication Parameters > Add: Name `Token`, Value = the value of `SF_QUEUE_PUSH_BEARER` from the BTC Scheduler Vercel environment.
+   - Authentication Parameters > Add: Name `Token`, Value = the value of `SF_QUEUE_PUSH_BEARER` in BTC Scheduler (set at **Admin > Settings**, Salesforce and n8n, or in the Vercel environment).
    - Save.
 3. In the External Credential, **Custom Headers** > New.
    - Name `Authorization`, Value `Bearer {!$Credential.BTC_Scheduler_Push.Token}`, Sequence 1.
@@ -86,7 +86,7 @@ Setup > Security > Named Credentials.
    - Save.
 5. Grant access to the principal. Create (or reuse) a permission set, open **External Credential Principal Access**, add `BTC_Scheduler_Push - Default`, and assign the permission set to every user who runs the queue screen flow. For Apex that runs as the Automated Process user or an integration user, assign it to that user too.
 
-Rotating the token: set the new value in Vercel (`SF_QUEUE_PUSH_BEARER`), redeploy, then edit the principal's `Token` parameter. Pushes in between fail with 401 and the poller covers them.
+Rotating the token: set the new value at **Admin > Settings** (`SF_QUEUE_PUSH_BEARER`; it applies within 30 seconds, no redeploy), then edit the principal's `Token` parameter. Pushes in between fail with 401 and the poller covers them. If the old value is also in Vercel, remove it there.
 
 ## B. Flow HTTP Callout in the queue screen flow (optional)
 

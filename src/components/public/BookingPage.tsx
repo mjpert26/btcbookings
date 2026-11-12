@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { env } from "@/server/env";
+import { turnstileSiteKey } from "@/server/settings/integrations";
 import { getBookingByToken } from "@/server/booking/manage";
 import { googleCalendarUrl, outlookCalendarUrl } from "@/server/booking/ics";
 import { formatWhen } from "@/server/email/format";
@@ -12,7 +12,11 @@ import { visibleHosts } from "./branding";
 
 /** /b/[token]: confirmation, status and self-service for one booking. */
 export async function BookingPage(props: { token: string; isNew: boolean; updated: boolean }) {
-  const [view, partner] = await Promise.all([getBookingByToken(props.token), getPartnerBrandingForManageToken(props.token)]);
+  const [view, partner, siteKey] = await Promise.all([
+    getBookingByToken(props.token),
+    getPartnerBrandingForManageToken(props.token),
+    turnstileSiteKey(),
+  ]);
   if (!view) notFound();
   const hosts = visibleHosts(view.hosts, partner);
   const locale = view.language;
@@ -125,7 +129,7 @@ export async function BookingPage(props: { token: string; isNew: boolean; update
             inviteeTimezone={view.inviteeTimezone}
             durationMin={view.durationMin}
             windowEnd={view.windowEnd}
-            turnstileSiteKey={env().TURNSTILE_SITE_KEY || null}
+            turnstileSiteKey={siteKey}
             links={
               live
                 ? {

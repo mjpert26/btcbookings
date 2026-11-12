@@ -1,8 +1,8 @@
 import "server-only";
 import { z } from "zod";
 import { service, type Db } from "@/server/db/client";
-import { env } from "@/server/env";
 import { sha256Hex, safeEqual } from "@/server/crypto/random";
+import { integrationSettings } from "@/server/settings/integrations";
 import { clearOptOut, parseOptKeyword, recordOptOut } from "@/server/sms/opt-out";
 import { normalizeE164 } from "@/server/sms/phone";
 
@@ -10,7 +10,8 @@ import { normalizeE164 } from "@/server/sms/phone";
  * SendBlue receive webhook (POST /api/sms/inbound).
  *
  * Authentication: SendBlue sends the webhook's configured signing secret in the
- * sb-signing-secret header. It is compared in constant time with SENDBLUE_WEBHOOK_SECRET.
+ * sb-signing-secret header. It is compared in constant time with the SENDBLUE_WEBHOOK_SECRET
+ * setting (Admin > Settings, else Vercel).
  *
  * Only opt-out keywords are acted on: STOP (and equivalents) adds the sender to
  * app.sms_opt_outs, START removes it. A payload with opted_out = true is also recorded.
@@ -41,7 +42,8 @@ export async function handleInboundSms(
   raw: string,
   opts: { db?: Db; secret?: string } = {},
 ): Promise<InboundResult> {
-  const auth = checkSigningSecret(headers.get(SIGNING_SECRET_HEADER), opts.secret ?? env().SENDBLUE_WEBHOOK_SECRET);
+  const secret = opts.secret ?? (await integrationSettings()).SENDBLUE_WEBHOOK_SECRET;
+  const auth = checkSigningSecret(headers.get(SIGNING_SECRET_HEADER), secret);
   if (auth === "not_configured") return { status: 503, body: { error: "not_configured" } };
   if (auth === "unauthorized") return { status: 401, body: { error: "unauthorized" } };
 

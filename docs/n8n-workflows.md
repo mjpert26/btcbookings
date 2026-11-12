@@ -73,7 +73,7 @@ Headers:
 | `X-BTC-Signature` | `sha256=` + hex HMAC-SHA256 of `"<timestamp>.<raw body>"` |
 | `Idempotency-Key` | The booking id |
 
-The secret is `N8N_SIGNING_SECRET` in the app and `BTC_SCHEDULER_SIGNING_SECRET` in n8n (same value). n8n rejects timestamps more than 300 seconds from its clock. Signing code: `src/server/crypto/hmac.ts`.
+The secret is `N8N_SIGNING_SECRET` in the app and `BTC_SCHEDULER_N8N_SIGNING_SECRET` in n8n (same value). It is the app-to-n8n secret, also used by the poller's "Sync now" check. `BTC_SCHEDULER_SIGNING_SECRET` in n8n is the other direction (n8n to the app) and equals the app's `SF_SYNC_SIGNING_SECRET`. n8n rejects timestamps more than 300 seconds from its clock. Signing code: `src/server/crypto/hmac.ts`.
 
 Body:
 
@@ -215,7 +215,7 @@ The two flows must not act on the same booking. BTC Scheduler bookings never go 
 
 ### n8n configuration
 
-- Environment variable: `BTC_SCHEDULER_SIGNING_SECRET` (same value as the app's `N8N_SIGNING_SECRET`). The Code nodes use `require('crypto')`, which the token broker already relies on (`NODE_FUNCTION_ALLOW_BUILTIN` must include `crypto`).
+- Environment variable: `BTC_SCHEDULER_N8N_SIGNING_SECRET` (same value as the app's `N8N_SIGNING_SECRET`). The Code nodes use `require('crypto')`, which the token broker already relies on (`NODE_FUNCTION_ALLOW_BUILTIN` must include `crypto`).
 - Credentials: Redis "api n8n redis" (`4i3m00SkLAc8SzwE`). Salesforce access comes from the "SF Token Broker" sub-workflow; no Salesforce credential is stored on any node of this workflow.
 - **Caller policies.** Both sub-workflows must accept calls from this workflow's owner:
   - SF Token Broker (`7wen5ULQg7DBlCvC`): its caller policy is `workflowsFromSameOwner`, so this workflow must be owned by the same n8n project as the broker.
@@ -228,7 +228,7 @@ App environment: `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH`, `N8N_SIGNING_SECRET`, 
 
 1. In n8n, Workflows, Import from File, select `n8n/sf-lead-create.json`, into the project that owns the SF Token Broker. Confirm the Redis credential bindings (**Idempotency Lookup**, **Remember Result**, **Remember Update**), that **Get SF Token** points at `7wen5ULQg7DBlCvC` and that **Write Meeting Booked** points at `yVjvBOx5E3Zc36rX`.
 2. Allow this workflow to call the shared writer (see Caller policies).
-3. Set `BTC_SCHEDULER_SIGNING_SECRET` in the n8n environment and restart n8n if required.
+3. Set `BTC_SCHEDULER_N8N_SIGNING_SECRET` in the n8n environment and restart n8n if required.
 4. Test with the webhook's test URL (`/webhook-test/btc-scheduler/lead`) before activating. Sign a body locally:
 
    ```bash
@@ -293,7 +293,7 @@ Why the extra user query: `GroupMember` has no `User` relationship in SOQL, so `
 |---|---|
 | `BTC_SCHEDULER_BASE_URL` | App origin, for example `https://book.bigthinkcapital.com` (no trailing slash). |
 | `BTC_SCHEDULER_SIGNING_SECRET` | Same value as the app's `SF_SYNC_SIGNING_SECRET`. Signs `linked-queues` and `queue-snapshot` requests. |
-| `BTC_SCHEDULER_N8N_SIGNING_SECRET` | Same value as the app's `N8N_SIGNING_SECRET`. Verifies "Sync now" requests from the app. |
+| `BTC_SCHEDULER_N8N_SIGNING_SECRET` | Same value as the app's `N8N_SIGNING_SECRET`. Verifies "Sync now" requests and lead requests (BTC Scheduler - SF Lead Create) from the app. |
 | `SF_INSTANCE_URL` | Optional. Defaults to `https://bigthink.my.salesforce.com`. |
 
 The Code nodes use `require('crypto')`, which must be allowed (`NODE_FUNCTION_ALLOW_BUILTIN=crypto`, already the case for the token broker's JWT signing).

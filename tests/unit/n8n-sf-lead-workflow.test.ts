@@ -122,7 +122,7 @@ async function verify(body: Record<string, unknown>, opts: { secret?: string; ts
     { helpers: { getBinaryDataBuffer: async () => Buffer.from(raw, "utf8") } },
     dollar({}),
     { first: () => ({ json: { headers: { "x-btc-timestamp": ts, "x-btc-signature": sig, "idempotency-key": String(body.bookingId) } }, binary: { data: {} } }) },
-    { BTC_SCHEDULER_SIGNING_SECRET: SECRET },
+    { BTC_SCHEDULER_N8N_SIGNING_SECRET: SECRET },
     (m: string) => {
       if (m !== "crypto") throw new Error(`unexpected require(${m})`);
       return nodeCrypto;

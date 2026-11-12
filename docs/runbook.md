@@ -129,7 +129,7 @@ where j.status in ('failed', 'dead') order by j.created_at desc;
 
 **By error.**
 
-- `401` from n8n: the signature failed. `N8N_SIGNING_SECRET` (Vercel) must equal `BTC_SCHEDULER_SIGNING_SECRET` (n8n), and the clocks must be within 5 minutes.
+- `401` from n8n: the signature failed. `N8N_SIGNING_SECRET` (Vercel) must equal `BTC_SCHEDULER_N8N_SIGNING_SECRET` (n8n), and the clocks must be within 5 minutes.
 - `404` from n8n: the workflow **BTC Scheduler - SF Lead Create** is inactive or the webhook path changed (`N8N_LEAD_WEBHOOK_PATH`).
 - `duplicate`: Salesforce duplicate rules or `DuplicateCheckHandler` matched an existing Lead. This is not retried. The booking stores the matched Lead ID when Salesforce returns one. Review the existing Lead. No retry is needed unless the rule was wrong.
 - `REQUIRED_FIELD_MISSING` / `FIELD_CUSTOM_VALIDATION_EXCEPTION` / `INVALID_FIELD`: the event type's field mapping does not satisfy Lead validation. Fix it under **Admin > Event types > Salesforce**, then select **Retry**.

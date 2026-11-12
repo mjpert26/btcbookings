@@ -157,3 +157,41 @@ A booking never fails because Salesforce is down. The lead job waits in the outb
 Every change is in the audit log (`settings.update`, `settings.remove`, entity type `integration_setting`) without the value. Bootstrap variables (`DATABASE_URL`, `TOKEN_ENCRYPTION_KEYS`, `ENTRA_*`, `CRON_SECRET`, `IP_HASH_SALT`, base URLs, `ADMIN_EMAILS`, `ALLOWED_EMAIL_DOMAINS`, n8n URLs) can be changed only in Vercel, followed by a redeploy. Details: `docs/settings.md`.
 
 If `TOKEN_ENCRYPTION_KEYS` loses the key id that encrypted a stored secret, that secret no longer decrypts. **Admin > Settings** marks it **Unreadable**, the app logs "integration setting could not be decrypted" with the key name, and the app uses the Vercel value. Without a Vercel value, email, text and Slack jobs are retried instead of being skipped, and Turnstile verification fails closed (`settings_unavailable`), so public bookings fail until the key is set again. Set the key again at **Admin > Settings**.
+
+---
+
+## Changing the main address
+
+Production moved from `btcbookings.vercel.app` to `book.bigthinkcapital.com` on 2026-11-12. Use these steps for any later change of the public hostname.
+
+**Order of steps.**
+
+1. **DNS.** Add the new hostname to the Vercel project (**Project > Settings > Domains**) and create the CNAME record Vercel shows. Wait until Vercel reports the domain as valid and HTTPS answers.
+2. **Entra.** Add `https://<new host>/api/auth/callback` as a Web redirect URI on the app registration (`docs/entra-setup.md`, section 2) before changing `APP_BASE_URL`; otherwise sign-in fails with a redirect URI mismatch.
+3. **Vercel environment (Production).** Set `APP_BASE_URL` to `https://<new host>` and add the old hostname to `APP_LEGACY_HOSTS`. If Turnstile is on, make sure `TURNSTILE_HOSTNAMES` and the widget's hostname list in Cloudflare include the new hostname.
+4. **Deploy.** Environment changes take effect only in a new deployment. Use **Deployments > Create Deployment** with the branch or commit to deploy. **Redeploy** on an existing deployment rebuilds that deployment's commit with the new environment, not the latest commit.
+5. **BTC MCP Gateway.** Set `systems.upstream_url` for `btc_scheduler` to `https://<new host>/mcp`, then reconnect the system in the gateway admin panel.
+6. **External callers (optional).** API routes keep answering on the old hostname, so these keep working, but move them when convenient: the SendBlue receive webhook (`/api/sms/inbound`), `BTC_SCHEDULER_BASE_URL` in the n8n environment, and the Salesforce Named Credential for queue pushes (`/api/sync/queue-membership`).
+
+**Verify.**
+
+```bash
+# Issuer and MCP resource name the new host
+curl -s https://<new host>/.well-known/oauth-authorization-server | jq -r .issuer
+curl -s https://<new host>/.well-known/oauth-protected-resource/mcp | jq -r .resource
+# Microsoft sign-in returns to the new host
+curl -s -o /dev/null -D - https://<new host>/api/auth/login | grep -i '^location' | grep -o 'redirect_uri=[^&]*'
+# Pages on the old host redirect (307); API routes do not
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://<old host>/login
+curl -s -X POST 'https://<old host>/api/graph/notifications?validationToken=check' -w ' [%{http_code}]\n'
+```
+
+**What changes for users.**
+
+- Pages on the old hostname (booking pages, manage links in earlier emails, the internal app) redirect to the same path and query on the new hostname. API routes, webhooks, cron, `/mcp`, `.well-known` documents and static assets are not redirected (`next.config.ts`, `APP_LEGACY_HOSTS`).
+- Session cookies are per hostname, so employees sign in once more on the new hostname.
+- Sign-in must start on the new hostname. The sign-in start route (`/api/auth/login`) is not redirected, and a sign-in started on the old hostname sets its browser-binding cookie there, so the callback on the new hostname fails with `state_expired`. All sign-in links in the app are relative and the pages that hold them redirect, so this affects only a tab opened before the change; reloading the page fixes it.
+- Existing Graph subscriptions keep the old notification URL: renewal only extends the expiry. Notifications keep arriving because the old hostname still serves `/api/graph/*`. A subscription created later (new connection, or one Graph removed) uses the new URL.
+- MCP OAuth tokens are bound to the MCP resource URL, and the MCP endpoint accepts only resources on the current `APP_BASE_URL` (or `MCP_BASE_URL`). An MCP client that connected through the old URL gets `401` and must reconnect, because a refreshed token keeps the old resource. REST API keys are not bound to a host and keep working. At the 2026-11-12 change there were no active MCP OAuth tokens.
+
+Sign-in always returns to `APP_BASE_URL`, so the old Entra redirect URI is unused after the change; keep it only while a rollback of `APP_BASE_URL` is possible. Keep the `APP_LEGACY_HOSTS` entry for as long as old links may be in use. The `*.vercel.app` hostname cannot be removed from the project, so the redirect can stay in place.

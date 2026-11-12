@@ -20,7 +20,7 @@ Go to **Authentication > Platform configurations > Web** and add one URI for eac
 |---|---|
 | Local | `http://localhost:3000/api/auth/callback` |
 | Preview | `https://<stable-preview-alias>/api/auth/callback` |
-| Production | `https://<production-domain>/api/auth/callback` (for example `https://book.bigthinkcapital.com/api/auth/callback`) |
+| Production | `https://book.bigthinkcapital.com/api/auth/callback`. The former `https://btcbookings.vercel.app/api/auth/callback` is no longer used (sign-in always returns to `APP_BASE_URL`); keep it only while a rollback of `APP_BASE_URL` is possible. See "Changing the main address" in `docs/runbook.md` |
 
 Notes:
 

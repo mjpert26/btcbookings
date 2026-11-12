@@ -7,8 +7,9 @@ import { sendEmail, type ResendLike } from "@/server/email/send";
 import { siteverify } from "@/server/http/turnstile";
 import { createSendblueClient } from "@/server/sms/sendblue";
 import { createSlackClient, type FetchLike } from "@/server/slack/client";
-import { integrationSettings } from "@/server/settings/integrations";
+import { integrationSettings, settingUnavailable, type IntegrationConfig } from "@/server/settings/integrations";
 import { SettingsError } from "@/server/settings/admin";
+import type { ManagedKey } from "@/server/settings/keys";
 
 /**
  * Test buttons in Admin > Settings. Each check uses the values saved right now (a fresh read,
@@ -17,7 +18,9 @@ import { SettingsError } from "@/server/settings/admin";
  * - Email: sends one test email to the admin's own address.
  * - Slack: calls auth.test, which only checks the token. Nothing is posted.
  * - Turnstile: calls siteverify with the secret and a dummy token. invalid-input-secret means
- *   the secret is wrong; invalid-input-response means the secret was accepted.
+ *   the secret is wrong; invalid-input-response means the secret was accepted. A secret that
+ *   accepts the dummy token is a Cloudflare test key, which lets every request pass, so the
+ *   check fails.
  * - Text messages: the SendBlue client has no read-only request, so one test text is sent to
  *   the admin's own mobile number (Availability > Booking preferences), unless it opted out.
  *
@@ -53,6 +56,14 @@ async function recordCheck(user: SessionUser, service: CheckService, ok: boolean
   );
 }
 
+const UNAVAILABLE_MESSAGE =
+  "The value saved here could not be read: the settings could not be loaded just now, or the stored secret no longer decrypts. Check the key below and set it again if it is marked unreadable.";
+
+/** True when one of `keys` has no value because the saved settings could not be read. */
+function unreadable(config: IntegrationConfig, ...keys: ManagedKey[]): boolean {
+  return keys.some((key) => settingUnavailable(config, key));
+}
+
 /** A short, value-free description of an error from a provider client. */
 function safeError(err: unknown): string {
   const message = err instanceof Error ? err.message : "request failed";
@@ -61,6 +72,7 @@ function safeError(err: unknown): string {
 
 async function checkEmail(user: SessionUser, deps: CheckDeps): Promise<CheckResult> {
   const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "RESEND_API_KEY")) return { ok: false, message: UNAVAILABLE_MESSAGE };
   if (!config.RESEND_API_KEY) return { ok: false, message: "No Resend API key is set here or in Vercel, so emails are logged instead of sent." };
   try {
     const sent = await sendEmail(
@@ -83,6 +95,7 @@ async function checkEmail(user: SessionUser, deps: CheckDeps): Promise<CheckResu
 
 async function checkSlack(deps: CheckDeps): Promise<CheckResult> {
   const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "SLACK_BOT_TOKEN")) return { ok: false, message: UNAVAILABLE_MESSAGE };
   if (!config.SLACK_BOT_TOKEN) return { ok: false, message: "No Slack bot token is set here or in Vercel." };
   try {
     const res = await createSlackClient({ token: config.SLACK_BOT_TOKEN, fetch: deps.fetch }).authTest();
@@ -97,6 +110,7 @@ async function checkSlack(deps: CheckDeps): Promise<CheckResult> {
 
 async function checkTurnstile(deps: CheckDeps): Promise<CheckResult> {
   const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "TURNSTILE_SECRET_KEY")) return { ok: false, message: UNAVAILABLE_MESSAGE };
   if (!config.TURNSTILE_SECRET_KEY) return { ok: false, message: "No Turnstile secret key is set here or in Vercel, so the check is skipped on the public forms." };
   const siteKeyNote = config.TURNSTILE_SITE_KEY ? "" : " The site key is not set: set it too, or the public forms cannot pass the check.";
   let result: { success: boolean; errorCodes: string[] };
@@ -109,9 +123,14 @@ async function checkTurnstile(deps: CheckDeps): Promise<CheckResult> {
     return { ok: false, message: "Cloudflare rejected the secret key (invalid-input-secret). Check the value." };
   }
   if (result.success) {
-    return { ok: true, message: `The secret key is valid. Cloudflare accepted the dummy token, which only test secret keys do.${siteKeyNote}` };
+    // A real secret key never accepts a made-up token; Cloudflare's always-pass test key does.
+    return {
+      ok: false,
+      message:
+        "This is a Cloudflare test secret key: Cloudflare accepted a made-up token, so every request would pass and bot protection is off. Use the secret key of your Turnstile widget.",
+    };
   }
-  if (result.errorCodes.includes("invalid-input-response") || result.errorCodes.includes("timeout-or-duplicate")) {
+  if (result.errorCodes.includes("invalid-input-response")) {
     return { ok: true, message: `The secret key is valid. Cloudflare rejected only the dummy token, as expected.${siteKeyNote}` };
   }
   return { ok: false, message: `Cloudflare answered with ${result.errorCodes.join(", ") || "an unexpected response"}.` };
@@ -119,6 +138,7 @@ async function checkTurnstile(deps: CheckDeps): Promise<CheckResult> {
 
 async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult> {
   const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET")) return { ok: false, message: UNAVAILABLE_MESSAGE };
   if (!config.SENDBLUE_API_KEY || !config.SENDBLUE_API_SECRET) {
     return { ok: false, message: "Set the SendBlue API key ID and secret key first." };
   }

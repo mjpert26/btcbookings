@@ -1,6 +1,6 @@
 import "server-only";
 import { RetryAfterError } from "@/server/jobs/types";
-import { integrationSettings } from "@/server/settings/integrations";
+import { IntegrationSettingUnavailableError, integrationSettings, settingUnavailable } from "@/server/settings/integrations";
 
 /**
  * Minimal typed client for the Slack Web API methods BTC Scheduler uses.
@@ -187,11 +187,16 @@ export function createSlackClient(opts: SlackClientOptions): SlackClient {
 
 /**
  * Client built from the SLACK_BOT_TOKEN setting (Admin > Settings, else Vercel). Throws
- * SlackNotConfiguredError when no token is set.
+ * SlackNotConfiguredError when no token is set, and IntegrationSettingUnavailableError
+ * (retryable) when a token may be set in Admin > Settings but could not be read.
  */
 export async function slackClientFromSettings(fetchImpl?: FetchLike): Promise<SlackClient> {
-  const token = (await integrationSettings()).SLACK_BOT_TOKEN;
-  if (!token) throw new SlackNotConfiguredError();
+  const config = await integrationSettings();
+  const token = config.SLACK_BOT_TOKEN;
+  if (!token) {
+    if (settingUnavailable(config, "SLACK_BOT_TOKEN")) throw new IntegrationSettingUnavailableError("SLACK_BOT_TOKEN");
+    throw new SlackNotConfiguredError();
+  }
   return createSlackClient({ token, fetch: fetchImpl });
 }
 

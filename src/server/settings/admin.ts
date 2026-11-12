@@ -3,7 +3,7 @@ import { withUser, type Tx } from "@/server/db/client";
 import { writeAudit } from "@/server/audit";
 import { encryptSecret } from "@/server/crypto/aes";
 import type { SessionUser } from "@/server/auth/session";
-import { environmentState, invalidateIntegrationSettings, type SettingSource } from "@/server/settings/integrations";
+import { environmentState, invalidateIntegrationSettings, panelReadStatus, type SettingSource } from "@/server/settings/integrations";
 import { isManagedKey, isSecretKey, KEY_INFO, last4, parseSettingValue, settingAad, type ManagedKey, MANAGED_KEYS } from "@/server/settings/keys";
 
 /**
@@ -26,14 +26,31 @@ export class SettingsError extends Error {
 
 export type { SettingSource };
 
+/**
+ * Why a value saved here is not in use: "undecryptable" when the stored secret does not
+ * decrypt with the current key ring, "unavailable" when the settings could not be read on the
+ * service connection.
+ */
+export type SettingProblem = "undecryptable" | "unavailable";
+
 export type SettingView = {
   key: ManagedKey;
   label: string;
   hint: string;
   placeholder: string | null;
   isSecret: boolean;
+  /** Where the value shown comes from: "panel" whenever a value is saved here. */
   source: SettingSource;
-  /** Secrets only: the last four characters of the active value. */
+  /**
+   * The source the app actually uses. It differs from `source` only when `problem` is set:
+   * the app then uses the Vercel value, the default, or nothing.
+   */
+  effectiveSource: SettingSource;
+  problem: SettingProblem | null;
+  /**
+   * Secrets only: the last four characters of the value shown, or null when it is shorter
+   * than LAST4_MIN_LENGTH characters (see last4()).
+   */
   last4: string | null;
   /** Plain keys only: the active value. */
   value: string | null;
@@ -62,7 +79,11 @@ function environmentAuditView(key: ManagedKey): SettingAuditView {
 
 type PanelRow = { key: string; is_secret: boolean; value_plain: string | null; last4: string | null; updated_at: Date; updated_by_name: string | null };
 
-/** Every managed key with its source and display value. Secrets show only last4. */
+/**
+ * Every managed key with its source and display value. Secrets show only last4. A value saved
+ * here that the app cannot use (a secret that does not decrypt, or settings that could not be
+ * read) is flagged in `problem`, with the source the app uses instead.
+ */
 export async function listIntegrationSettings(user: SessionUser): Promise<SettingView[]> {
   const rows = await withUser(user.id, async (tx) => {
     await requireAdmin(tx);
@@ -72,6 +93,9 @@ export async function listIntegrationSettings(user: SessionUser): Promise<Settin
       from app.integration_settings s left join app.users u on u.id = s.updated_by
     `;
   });
+  // After the admin check: the resolver tries the stored secrets on the service connection
+  // and reports only the names of those that do not decrypt.
+  const status = rows.length > 0 ? await panelReadStatus() : { known: true, unreadable: [] };
   const byKey = new Map(rows.map((r) => [r.key, r]));
   return MANAGED_KEYS.map((key): SettingView => {
     const info = KEY_INFO[key];
@@ -79,9 +103,12 @@ export async function listIntegrationSettings(user: SessionUser): Promise<Settin
     const row = byKey.get(key);
     const base = { key, label: info.label, hint: info.hint, placeholder: info.placeholder ?? null, isSecret: secret };
     if (row) {
+      const problem: SettingProblem | null = !status.known ? "unavailable" : status.unreadable.includes(key) ? "undecryptable" : null;
       return {
         ...base,
         source: "panel",
+        effectiveSource: problem ? environmentState(key).source : "panel",
+        problem,
         last4: secret ? row.last4 : null,
         value: secret ? null : row.value_plain,
         updatedByName: row.updated_by_name,
@@ -92,6 +119,8 @@ export async function listIntegrationSettings(user: SessionUser): Promise<Settin
     return {
       ...base,
       source: state.source,
+      effectiveSource: state.source,
+      problem: null,
       last4: secret && state.value ? last4(state.value) : null,
       value: !secret && state.value ? state.value : null,
       updatedByName: null,

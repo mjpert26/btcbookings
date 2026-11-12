@@ -6,6 +6,7 @@ import { fail, requestIpHash } from "@/server/ui/form";
 import { SyncAdminError } from "@/server/sync/admin";
 import { SlackAdminError } from "@/server/slack/admin";
 import { SLACK_NOT_CONFIGURED_MESSAGE, SlackNotConfiguredError } from "@/server/slack/client";
+import { IntegrationSettingUnavailableError } from "@/server/settings/integrations";
 import { ForbiddenError, NotFoundError, SfSettingsValidationError } from "@/server/salesforce/admin";
 
 /**
@@ -44,6 +45,7 @@ export function adminError(err: unknown, fieldErrors?: Record<string, string>): 
   if (err instanceof SlackNotConfiguredError) {
     return fail(SLACK_NOT_CONFIGURED_MESSAGE);
   }
+  if (err instanceof IntegrationSettingUnavailableError) return fail(sentence(err.message));
   if (err instanceof ZodError) return fail(sentence(err.issues.map((i) => i.message).join("; ")));
   throw err;
 }

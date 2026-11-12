@@ -1,7 +1,7 @@
 import "server-only";
 import { Resend } from "resend";
 import { PermanentJobError } from "@/server/jobs/types";
-import { integrationSettings, type IntegrationConfig } from "@/server/settings/integrations";
+import { IntegrationSettingUnavailableError, integrationSettings, settingUnavailable, type IntegrationConfig } from "@/server/settings/integrations";
 
 export type OutgoingEmail = {
   to: string;
@@ -58,12 +58,15 @@ export type SendEmailDeps = {
 /**
  * Sends one email with Resend, using the RESEND_API_KEY and EMAIL_FROM settings (Admin >
  * Settings, else Vercel). Without an API key (until the owner configures Resend) it logs a
- * redacted line and reports success, so jobs complete normally.
+ * redacted line and reports success, so jobs complete normally. When the key may be set in
+ * Admin > Settings but could not be read, it throws IntegrationSettingUnavailableError so
+ * the job is retried instead.
  */
 export async function sendEmail(email: OutgoingEmail, deps: SendEmailDeps = {}): Promise<SendResult> {
   if (override) return override(email);
   const e = deps.config ?? (await integrationSettings());
   if (!e.RESEND_API_KEY) {
+    if (settingUnavailable(e, "RESEND_API_KEY")) throw new IntegrationSettingUnavailableError("RESEND_API_KEY");
     console.info(`[email] RESEND_API_KEY not set; not sent: ${email.tag} to ${redactEmail(email.to)}`);
     return { id: null, skipped: true };
   }

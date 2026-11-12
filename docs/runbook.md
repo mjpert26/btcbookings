@@ -145,15 +145,15 @@ A booking never fails because Salesforce is down. The lead job waits in the outb
 
 **Symptoms.** Emails or texts stop sending (`Resend invalid_api_key`, `SendBlue http_401` in job errors), Slack channels show "token invalid or revoked", n8n or the sync endpoints answer `401`, or a key was exposed.
 
-**Confirm.** Open **Admin > Settings**. Each key shows where its value comes from (**Set here**, **From Vercel**, **Default** or **Not set**) and, for secrets, the last four characters. Use the group's test button (email, text, Slack token, Turnstile secret); each reaches only you.
+**Confirm.** Open **Admin > Settings**. Each key shows where its value comes from (**Set here**, **From Vercel**, **Default** or **Not set**) and, for secrets of 16 characters or more, the last four characters. A saved secret marked **Unreadable** does not decrypt, and the row says which value the app uses instead. Use the group's test button (email, text, Slack token, Turnstile secret); each reaches only you.
 
 **Fix.**
 
 1. Create a new key with the provider (Resend, SendBlue, Slack, Cloudflare), or a new shared secret for n8n and Salesforce.
-2. Set it at **Admin > Settings** and run the test button. Other server instances pick it up within 30 seconds; no redeploy is needed.
+2. Set it at **Admin > Settings** and run the test button. Other server instances pick it up within 30 seconds; no redeploy is needed. For Turnstile, the site key and secret must match; follow the order in `docs/settings.md` ("Turnstile keys").
 3. For shared secrets, update the other side right away: `N8N_SIGNING_SECRET` and `SF_SYNC_SIGNING_SECRET` in the n8n environment (see `docs/n8n-workflows.md`), `SF_QUEUE_PUSH_BEARER` in the Salesforce External Credential, `SENDBLUE_WEBHOOK_SECRET` in the SendBlue webhook.
-4. Revoke the old key with the provider. If the old value is also set in Vercel, remove or replace it there as well: the app falls back to the Vercel value when a panel value is removed or the database cannot be read.
+4. Wait at least 30 seconds, then revoke the old key with the provider. If the old value is also set in Vercel, remove or replace it there as well: the app falls back to the Vercel value when a panel value is removed or cannot be read.
 
 Every change is in the audit log (`settings.update`, `settings.remove`, entity type `integration_setting`) without the value. Bootstrap variables (`DATABASE_URL`, `TOKEN_ENCRYPTION_KEYS`, `ENTRA_*`, `CRON_SECRET`, `IP_HASH_SALT`, base URLs, `ADMIN_EMAILS`, `ALLOWED_EMAIL_DOMAINS`, n8n URLs) can be changed only in Vercel, followed by a redeploy. Details: `docs/settings.md`.
 
-If `TOKEN_ENCRYPTION_KEYS` loses the key id that encrypted a stored secret, that secret no longer decrypts: the app logs "integration setting could not be decrypted" with the key name and uses the Vercel value. Set the key again at **Admin > Settings**.
+If `TOKEN_ENCRYPTION_KEYS` loses the key id that encrypted a stored secret, that secret no longer decrypts. **Admin > Settings** marks it **Unreadable**, the app logs "integration setting could not be decrypted" with the key name, and the app uses the Vercel value. Without a Vercel value, email, text and Slack jobs are retried instead of being skipped, and Turnstile verification fails closed (`settings_unavailable`), so public bookings fail until the key is set again. Set the key again at **Admin > Settings**.

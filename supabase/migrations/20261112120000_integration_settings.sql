@@ -7,7 +7,8 @@
 --
 -- Secret keys are encrypted with the app key ring (AAD: 'integration_setting:' || key) and
 -- stored in value_enc, which app_user can write but never read. Only the last four
--- characters (last4) are readable, for display. Plain keys are stored in value_plain.
+-- characters (last4) are readable, for display, and only for secrets of 16 characters or more
+-- (last4 is null for shorter secrets). Plain keys are stored in value_plain.
 -- Decryption happens only on the service connection (src/server/settings/integrations.ts).
 
 create table app.integration_settings (
@@ -46,9 +47,9 @@ create table app.integration_settings (
       'SF_QUEUE_PUSH_BEARER'
     ))
   ),
-  -- Secrets use value_enc and last4 only; plain keys use value_plain only.
+  -- Secrets use value_enc (and last4 when long enough) only; plain keys use value_plain only.
   constraint integration_settings_value_column_check check (
-    (is_secret and value_enc is not null and last4 is not null and value_plain is null)
+    (is_secret and value_enc is not null and value_plain is null)
     or (not is_secret and value_plain is not null and value_enc is null and last4 is null)
   )
 );

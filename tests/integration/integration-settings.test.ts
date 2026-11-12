@@ -3,15 +3,23 @@ import { connectTestDb, makeUser, truncateAll } from "../helpers/db";
 import { setServiceClient, withUser, type Sql } from "@/server/db/client";
 import type { SessionUser } from "@/server/auth/session";
 import { DEFAULT_EMAIL_FROM, resetEnvCache } from "@/server/env";
-import { encryptSecret } from "@/server/crypto/aes";
+import { encryptSecret, encryptWith, parseKeyRing } from "@/server/crypto/aes";
 import { sendEmail, type ResendLike } from "@/server/email/send";
 import { verifyTurnstile } from "@/server/http/turnstile";
-import { slackClientFromSettings } from "@/server/slack/client";
+import { sendSms } from "@/server/sms/sendblue";
+import { slackClientFromSettings, SlackNotConfiguredError } from "@/server/slack/client";
 import { checkPushBearer } from "@/server/sync/http";
-import { CACHE_TTL_MS, integrationSettings, invalidateIntegrationSettings, resetIntegrationSettingsCache } from "@/server/settings/integrations";
-import { listIntegrationSettings, removeIntegrationSetting, setIntegrationSetting, SettingsError } from "@/server/settings/admin";
+import {
+  CACHE_TTL_MS,
+  IntegrationSettingUnavailableError,
+  integrationSettings,
+  invalidateIntegrationSettings,
+  READ_LIMITS,
+  resetIntegrationSettingsCache,
+} from "@/server/settings/integrations";
+import { listIntegrationSettings, removeIntegrationSetting, setIntegrationSetting, SettingsError, type SettingView } from "@/server/settings/admin";
 import { runSettingsCheck, TEST_SMS_TEXT, TURNSTILE_DUMMY_TOKEN } from "@/server/settings/checks";
-import { settingAad } from "@/server/settings/keys";
+import { MANAGED_KEYS, settingAad } from "@/server/settings/keys";
 
 let sql: Sql;
 
@@ -41,6 +49,25 @@ async function adminSession(): Promise<SessionUser> {
   const u = await makeUser(sql, { role: "admin", name: "Ada Admin" });
   return session(u, "admin");
 }
+
+/** A service client whose every query and transaction fails like a refused connection. */
+function refusingClient(): Sql {
+  const refuse = () =>
+    Promise.reject(Object.assign(new Error("connect ECONNREFUSED postgres://app:hunter2@db.internal/app"), { code: "ECONNREFUSED" }));
+  return Object.assign(refuse, { begin: refuse }) as unknown as Sql;
+}
+
+/** A service client whose queries and transactions never finish. */
+function hangingClient(): Sql {
+  const hang = () => new Promise(() => {});
+  return Object.assign(hang, { begin: hang }) as unknown as Sql;
+}
+
+async function viewsByKey(user: SessionUser): Promise<Record<string, SettingView>> {
+  return Object.fromEntries((await listIntegrationSettings(user)).map((v) => [v.key, v]));
+}
+
+const EMAIL = { to: "invitee@example.com", subject: "Hi", html: "<p>Hi</p>", text: "Hi", idempotencyKey: "k-unavailable", tag: "test" };
 
 type Captured = { url: string; init: RequestInit };
 
@@ -146,25 +173,131 @@ describe("resolver", () => {
     expect((await integrationSettings()).SF_QUEUE_PUSH_BEARER).toBe("test-sf-queue-push-bearer-token");
   });
 
-  it("falls back to the environment when the database cannot be read, and logs no values", async () => {
+  it("falls back to the environment when no read has succeeded yet, and logs no values", async () => {
     const admin = await adminSession();
     await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-EEEE");
     resetIntegrationSettingsCache();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const failing = (() =>
-      Promise.reject(Object.assign(new Error("connect ECONNREFUSED postgres://app:hunter2@db.internal/app"), { code: "ECONNREFUSED" }))) as unknown as Sql;
-    setServiceClient(failing);
+    setServiceClient(refusingClient());
     try {
       const cfg = await integrationSettings();
       expect(cfg.SLACK_BOT_TOKEN).toBe("xoxb-test");
       expect(cfg.N8N_SIGNING_SECRET).toBe("test-n8n-signing-secret");
+      // Every key may be set in the panel, so none of them counts as deliberately not set.
+      expect([...cfg.unavailable].sort()).toEqual([...MANAGED_KEYS].sort());
     } finally {
       setServiceClient(sql);
     }
     const logged = warn.mock.calls.flat().join(" ");
     expect(logged).toContain("ECONNREFUSED");
+    expect(logged).toContain("using environment values");
     expect(logged).not.toContain("hunter2");
     expect(logged).not.toContain("xoxb-");
+  });
+
+  it("keeps using the last values read when a later read fails", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-STALE-OK");
+    await setIntegrationSetting(admin, "TURNSTILE_SECRET_KEY", "0x-panel-turnstile-secret-STAL");
+    expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-STALE-OK");
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setServiceClient(refusingClient());
+    try {
+      // A failed fresh read (a test button) neither loses the values nor drops the cache.
+      expect((await integrationSettings({ fresh: true })).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-STALE-OK");
+      // A failed refresh after the TTL serves the last values read, not the environment.
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + CACHE_TTL_MS + 1000);
+      const cfg = await integrationSettings();
+      expect(cfg.SLACK_BOT_TOKEN).toBe("xoxb-panel-token-STALE-OK");
+      expect(cfg.TURNSTILE_SECRET_KEY).toBe("0x-panel-turnstile-secret-STAL");
+      expect(cfg.unavailable).toEqual([]);
+      // Bot protection stays on.
+      expect(await verifyTurnstile(null)).toEqual({ ok: false, reason: "missing_token" });
+      // A write in this instance invalidates the cache but keeps the last values as the fallback.
+      invalidateIntegrationSettings();
+      expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-STALE-OK");
+    } finally {
+      setServiceClient(sql);
+    }
+    const logged = warn.mock.calls.flat().join(" ");
+    expect(logged).toContain("using the last values read");
+    expect(logged).not.toContain("xoxb-");
+  });
+
+  it("does not wait for a read that does not finish in time", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-SLOW-OK");
+    expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-SLOW-OK");
+    invalidateIntegrationSettings();
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setServiceClient(hangingClient());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = integrationSettings();
+      await vi.advanceTimersByTimeAsync(READ_LIMITS.overallMs + 10);
+      expect((await pending).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-SLOW-OK");
+    } finally {
+      vi.useRealTimers();
+      setServiceClient(sql);
+    }
+    expect(warn.mock.calls.flat().join(" ")).toContain("settings_read_timeout");
+  });
+
+  it("does not wait behind a lock on the settings table", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-LOCK-OK");
+    expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-LOCK-OK");
+    invalidateIntegrationSettings();
+
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let markLocked!: () => void;
+    const locked = new Promise<void>((resolve) => (markLocked = resolve));
+    const holder = sql.begin(async (tx) => {
+      await tx`lock table app.integration_settings in access exclusive mode`;
+      markLocked();
+      await released;
+    });
+    await locked;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const started = Date.now();
+    try {
+      expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-LOCK-OK");
+      expect(Date.now() - started).toBeLessThan(READ_LIMITS.overallMs + 1000);
+    } finally {
+      release();
+      await holder;
+    }
+    // 55P03: lock_not_available, from lock_timeout.
+    expect(warn.mock.calls.flat().join(" ")).toContain("55P03");
+  });
+
+  it("does not let a missing key look deliberately unset while the settings cannot be read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("SLACK_BOT_TOKEN", "");
+    resetEnvCache();
+    const resend = fakeResend();
+    setServiceClient(refusingClient());
+    try {
+      // Jobs fail and are retried instead of finishing without sending.
+      await expect(sendEmail(EMAIL, { resend: resend.factory })).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
+      await expect(sendSms({ to: "+12125550199", content: "Hi" }, "test")).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
+      await expect(slackClientFromSettings()).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
+      // Bot protection fails closed, as it does when Cloudflare cannot be reached.
+      expect(await verifyTurnstile("token-1")).toEqual({ ok: false, reason: "settings_unavailable" });
+    } finally {
+      setServiceClient(sql);
+    }
+    expect(resend.keys).toEqual([]);
+
+    // Once the settings can be read, a key set nowhere is simply not configured, as before.
+    resetIntegrationSettingsCache();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(await sendEmail(EMAIL, { resend: resend.factory })).toEqual({ id: null, skipped: true });
+    await expect(slackClientFromSettings()).rejects.toBeInstanceOf(SlackNotConfiguredError);
+    expect(await verifyTurnstile(null)).toEqual({ ok: true });
   });
 
   it("does not decrypt a secret copied to another key's row", async () => {
@@ -176,6 +309,7 @@ describe("resolver", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cfg = await integrationSettings();
     expect(cfg.RESEND_API_KEY).toBeUndefined();
+    expect(cfg.unavailable).toEqual(["RESEND_API_KEY"]);
     expect(cfg.SLACK_BOT_TOKEN).toBe("xoxb-panel-token-FFFF");
     expect(warn.mock.calls.flat().join(" ")).toContain("RESEND_API_KEY");
     expect(warn.mock.calls.flat().join(" ")).not.toContain("xoxb-panel");
@@ -275,6 +409,7 @@ describe("admin functions", () => {
     const rows = await sql<{ action: string; entity_type: string; entity_id: string; actor_user_id: string; before: Record<string, unknown>; after: Record<string, unknown> }[]>`
       select action, entity_type, entity_id, actor_user_id, before, after from app.audit_log order by created_at, id
     `;
+    // The Vercel token "xoxb-test" is shorter than 16 characters, so none of it is recorded.
     expect(rows.map((r) => [r.action, r.entity_type, r.entity_id])).toEqual([
       ["settings.update", "integration_setting", "SLACK_BOT_TOKEN"],
       ["settings.update", "integration_setting", "SLACK_BOT_TOKEN"],
@@ -284,7 +419,7 @@ describe("admin functions", () => {
     expect(rows.every((r) => r.actor_user_id === admin.id)).toBe(true);
     expect(rows.map((r) => [r.before, r.after])).toEqual([
       [
-        { key: "SLACK_BOT_TOKEN", source: "vercel", last4: "test" },
+        { key: "SLACK_BOT_TOKEN", source: "vercel", last4: null },
         { key: "SLACK_BOT_TOKEN", source: "panel", last4: "AAAA" },
       ],
       [
@@ -293,7 +428,7 @@ describe("admin functions", () => {
       ],
       [
         { key: "SLACK_BOT_TOKEN", source: "panel", last4: "BBBB" },
-        { key: "SLACK_BOT_TOKEN", source: "vercel", last4: "test" },
+        { key: "SLACK_BOT_TOKEN", source: "vercel", last4: null },
       ],
       [
         { key: "EMAIL_FROM", source: "default", last4: null },
@@ -304,6 +439,81 @@ describe("admin functions", () => {
     expect(all).not.toContain("xoxb-panel-secret");
     expect(all).not.toContain("xoxb-test");
     expect(all).not.toContain("panel@bigthinkcapital.com");
+  });
+});
+
+describe("secrets the app cannot show or use", () => {
+  it("never stores, shows or audits the last characters of a short secret", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "SF_QUEUE_PUSH_BEARER", "shortK3y");
+    const [row] = await sql<{ last4: string | null; value_enc: string }[]>`select last4, value_enc from app.integration_settings where key = 'SF_QUEUE_PUSH_BEARER'`;
+    expect(row.last4).toBeNull();
+    expect(row.value_enc).toMatch(/^v1\./);
+    expect((await integrationSettings()).SF_QUEUE_PUSH_BEARER).toBe("shortK3y");
+
+    vi.stubEnv("N8N_SIGNING_SECRET", "n8n-shrt");
+    resetEnvCache();
+    const views = await viewsByKey(admin);
+    expect(views.SF_QUEUE_PUSH_BEARER).toMatchObject({ source: "panel", last4: null, value: null });
+    expect(views.N8N_SIGNING_SECRET).toMatchObject({ source: "vercel", last4: null, value: null });
+
+    await setIntegrationSetting(admin, "N8N_SIGNING_SECRET", "n8n-signing-secret-long-ABCD");
+    await removeIntegrationSetting(admin, "SF_QUEUE_PUSH_BEARER");
+    const audit = await sql<{ entity_id: string; before: Record<string, unknown>; after: Record<string, unknown> }[]>`
+      select entity_id, before, after from app.audit_log order by created_at, id
+    `;
+    expect(audit.map((r) => [r.entity_id, r.before, r.after])).toEqual([
+      ["SF_QUEUE_PUSH_BEARER", { key: "SF_QUEUE_PUSH_BEARER", source: "vercel", last4: "oken" }, { key: "SF_QUEUE_PUSH_BEARER", source: "panel", last4: null }],
+      ["N8N_SIGNING_SECRET", { key: "N8N_SIGNING_SECRET", source: "vercel", last4: null }, { key: "N8N_SIGNING_SECRET", source: "panel", last4: "ABCD" }],
+      ["SF_QUEUE_PUSH_BEARER", { key: "SF_QUEUE_PUSH_BEARER", source: "panel", last4: null }, { key: "SF_QUEUE_PUSH_BEARER", source: "vercel", last4: "oken" }],
+    ]);
+    const stored = JSON.stringify([audit, await sql`select key, last4 from app.integration_settings`, views]);
+    expect(stored).not.toContain("K3y");
+    expect(stored).not.toContain("shrt");
+  });
+
+  it("flags a saved secret that does not decrypt, and does not treat the key as not set", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "TURNSTILE_SITE_KEY", "0x-panel-site-key");
+    // Encrypted with a key id that is no longer in TOKEN_ENCRYPTION_KEYS.
+    const removedRing = parseKeyRing(`k9:${Buffer.alloc(32, 9).toString("base64")}`, "k9");
+    await sql`
+      insert into app.integration_settings (key, is_secret, value_enc, last4, updated_by)
+      values ('TURNSTILE_SECRET_KEY', true, ${encryptWith(removedRing, "0x-panel-turnstile-secret-WXYZ", settingAad("TURNSTILE_SECRET_KEY"))}, 'WXYZ', ${admin.id}),
+             ('RESEND_API_KEY', true, ${encryptSecret("re_panel_key_for_slack_9876", settingAad("SLACK_BOT_TOKEN"))}, '9876', ${admin.id})
+    `;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let views = await viewsByKey(admin);
+    expect(views.TURNSTILE_SECRET_KEY).toMatchObject({ source: "panel", effectiveSource: "unset", problem: "undecryptable", last4: "WXYZ" });
+    expect(views.RESEND_API_KEY).toMatchObject({ source: "panel", effectiveSource: "unset", problem: "undecryptable" });
+    expect(views.TURNSTILE_SITE_KEY).toMatchObject({ source: "panel", effectiveSource: "panel", problem: null });
+    expect(views.SLACK_BOT_TOKEN).toMatchObject({ source: "vercel", effectiveSource: "vercel", problem: null });
+    expect(JSON.stringify(views)).not.toContain("0x-panel-turnstile-secret");
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("0x-panel-turnstile-secret");
+
+    const cfg = await integrationSettings();
+    expect([...cfg.unavailable].sort()).toEqual(["RESEND_API_KEY", "TURNSTILE_SECRET_KEY"]);
+    expect(cfg.TURNSTILE_SECRET_KEY).toBeUndefined();
+    // Bot protection fails closed and email jobs are retried instead of finishing unsent.
+    expect(await verifyTurnstile("token-1")).toEqual({ ok: false, reason: "settings_unavailable" });
+    const resend = fakeResend();
+    await expect(sendEmail(EMAIL, { resend: resend.factory })).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
+    expect(await runSettingsCheck(admin, "turnstile")).toMatchObject({ ok: false, message: expect.stringContaining("no longer decrypts") });
+
+    // With a Vercel value, the app uses it, and the page says so.
+    vi.stubEnv("RESEND_API_KEY", "re_vercel_key_value_5678");
+    resetEnvCache();
+    views = await viewsByKey(admin);
+    expect(views.RESEND_API_KEY).toMatchObject({ source: "panel", effectiveSource: "vercel", problem: "undecryptable" });
+    expect(await sendEmail(EMAIL, { resend: resend.factory })).toEqual({ id: "em_test", skipped: false });
+    expect(resend.keys).toEqual(["re_vercel_key_value_5678"]);
+
+    // Saving the value again fixes it.
+    await setIntegrationSetting(admin, "TURNSTILE_SECRET_KEY", "0x-panel-turnstile-secret-NEW1");
+    views = await viewsByKey(admin);
+    expect(views.TURNSTILE_SECRET_KEY).toMatchObject({ source: "panel", effectiveSource: "panel", problem: null, last4: "NEW1" });
+    expect((await integrationSettings()).TURNSTILE_SECRET_KEY).toBe("0x-panel-turnstile-secret-NEW1");
   });
 });
 
@@ -406,6 +616,16 @@ describe("test buttons", () => {
 
     const invalid = fakeFetch({ success: false, "error-codes": ["invalid-input-secret"] });
     expect(await runSettingsCheck(admin, "turnstile", { fetch: invalid.fn })).toMatchObject({ ok: false, message: expect.stringContaining("invalid-input-secret") });
+
+    // A secret that accepts a made-up token is Cloudflare's always-pass test key: bot protection is off.
+    const alwaysPass = fakeFetch({ success: true, "error-codes": [] });
+    expect(await runSettingsCheck(admin, "turnstile", { fetch: alwaysPass.fn })).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("Cloudflare test secret key"),
+    });
+    // "Token already spent" for a token that was never issued is not a real secret's answer either.
+    const spent = fakeFetch({ success: false, "error-codes": ["timeout-or-duplicate"] });
+    expect(await runSettingsCheck(admin, "turnstile", { fetch: spent.fn })).toMatchObject({ ok: false });
 
     await setIntegrationSetting(admin, "TURNSTILE_SITE_KEY", "0x-panel-site-key");
     const both = await runSettingsCheck(admin, "turnstile", { fetch: valid.fn });

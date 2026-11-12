@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { requireAdmin } from "@/server/auth/session";
 import { listIntegrationSettings, type SettingSource, type SettingView } from "@/server/settings/admin";
-import { bootstrapStatus, MAX_VALUE_LENGTH, SETTING_GROUPS, type SettingGroupId } from "@/server/settings/keys";
+import { bootstrapStatus, LAST4_MIN_LENGTH, MAX_VALUE_LENGTH, SETTING_GROUPS, type SettingGroupId } from "@/server/settings/keys";
 import type { CheckService } from "@/server/settings/checks";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -39,7 +39,7 @@ const TESTS: Partial<Record<SettingGroupId, { service: CheckService; label: stri
   turnstile: {
     service: "turnstile",
     label: "Check secret key",
-    note: "Asks Cloudflare to verify a dummy token. A rejected token with an accepted secret means the secret key is valid.",
+    note: "Asks Cloudflare to verify a dummy token. A rejected token with an accepted secret means the secret key is valid. A Cloudflare test secret key fails this check.",
   },
 };
 
@@ -52,9 +52,19 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** What the app uses instead of a value saved here that it cannot use. */
+const FALLBACK: Record<SettingSource, string> = {
+  panel: "the app is using the value saved here",
+  vercel: "the app is using the Vercel value",
+  default: "the app is using the default",
+  unset: "the app has no value for this key",
+};
+
 function currentValue(s: SettingView): ReactNode {
   if (s.isSecret) {
-    return s.last4 ? <span className="font-mono text-xs">Ends in {s.last4}</span> : <span className="text-muted">None</span>;
+    if (s.last4) return <span className="font-mono text-xs">Ends in {s.last4}</span>;
+    if (s.source !== "unset") return <span className="text-muted">Set (shorter than {LAST4_MIN_LENGTH} characters, so no characters are shown)</span>;
+    return <span className="text-muted">None</span>;
   }
   return s.value ? <code className="break-all font-mono text-xs">{s.value}</code> : <span className="text-muted">None</span>;
 }
@@ -68,12 +78,24 @@ function SettingItem({ s, zone }: { s: SettingView; zone: string }) {
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-ink">{s.label}</span>
           <Badge tone={source.tone}>{source.label}</Badge>
+          {s.problem === "undecryptable" ? <Badge tone="danger">Unreadable</Badge> : s.problem === "unavailable" ? <Badge tone="warning">Not loaded</Badge> : null}
           {s.isSecret ? <Badge tone="neutral">Secret</Badge> : null}
         </div>
         <code className="font-mono text-xs text-muted">{s.key}</code>
         <p className="mt-1 text-xs text-muted">{s.hint}</p>
+        {s.problem === "undecryptable" ? (
+          <Notice tone="danger" className="mt-2">
+            The value saved here cannot be decrypted with the current encryption keys (TOKEN_ENCRYPTION_KEYS), so {FALLBACK[s.effectiveSource]}. Set
+            the value again.
+          </Notice>
+        ) : s.problem === "unavailable" ? (
+          <Notice tone="warning" className="mt-2">
+            The settings could not be loaded on this server just now, so {FALLBACK[s.effectiveSource]}. Reload the page; if this persists, check the
+            database.
+          </Notice>
+        ) : null}
         <dl className="mt-2 text-sm">
-          <Row label={s.isSecret ? "Active value" : "Value"}>{currentValue(s)}</Row>
+          <Row label={s.problem ? "Saved value" : s.isSecret ? "Active value" : "Value"}>{currentValue(s)}</Row>
           {inPanel ? (
             <Row label="Updated">
               {s.updatedByName ?? "A former user"}
@@ -123,8 +145,9 @@ export default async function AdminSettingsPage() {
   const byKey = new Map(settings.map((s) => [s.key, s]));
   const bootstrap = bootstrapStatus();
   const zone = user.timezone;
+  // What the app uses, so a saved secret that does not decrypt counts as not set.
   const turnstileHalfSet =
-    (byKey.get("TURNSTILE_SITE_KEY")?.source === "unset") !== (byKey.get("TURNSTILE_SECRET_KEY")?.source === "unset");
+    (byKey.get("TURNSTILE_SITE_KEY")?.effectiveSource === "unset") !== (byKey.get("TURNSTILE_SECRET_KEY")?.effectiveSource === "unset");
 
   return (
     <>

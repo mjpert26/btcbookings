@@ -5,6 +5,7 @@ import { requireAdmin } from "@/server/auth/session";
 import { withUser } from "@/server/db/client";
 import { previewChannel, SlackAdminError, type PreviewResult } from "@/server/slack/admin";
 import { SLACK_NOT_CONFIGURED_MESSAGE, SlackNotConfiguredError } from "@/server/slack/client";
+import { IntegrationSettingUnavailableError } from "@/server/settings/integrations";
 import { Notice } from "@/components/ui/Toast";
 import { isUuid } from "@/server/ui/form";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -77,6 +78,7 @@ async function loadPreview(userId: string, channelConfigId: string): Promise<Pre
   } catch (err) {
     if (err instanceof SlackAdminError && err.code !== "forbidden") return { ok: false, error: err.message };
     if (err instanceof SlackNotConfiguredError) return { ok: false, error: `${SLACK_NOT_CONFIGURED_MESSAGE} Until then the channel's members cannot be read.` };
+    if (err instanceof IntegrationSettingUnavailableError) return { ok: false, error: err.message };
     throw err;
   }
 }

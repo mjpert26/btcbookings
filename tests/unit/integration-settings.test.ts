@@ -9,6 +9,7 @@ import {
   isSecretKey,
   KEY_INFO,
   last4,
+  LAST4_MIN_LENGTH,
   MANAGED_KEYS,
   MAX_VALUE_LENGTH,
   parseSettingValue,
@@ -16,6 +17,7 @@ import {
   SECRET_KEYS,
   SETTING_GROUPS,
   settingAad,
+  TURNSTILE_TEST_KEY_MESSAGE,
 } from "@/server/settings/keys";
 
 const MIGRATION = readFileSync(join(__dirname, "../../supabase/migrations/20261112120000_integration_settings.sql"), "utf8");
@@ -99,6 +101,27 @@ describe("parseSettingValue", () => {
     expect(parseSettingValue("SENDBLUE_FROM_NUMBER", "+1 555 123 4567")).toMatchObject({ ok: false });
     expect(parseSettingValue("SENDBLUE_WEBHOOK_SECRET", "short-secret")).toEqual({ ok: false, error: "Use at least 16 characters." });
   });
+
+  it("refuses Cloudflare's Turnstile test keys in production only", () => {
+    const testKeys: [("TURNSTILE_SECRET_KEY" | "TURNSTILE_SITE_KEY"), string][] = [
+      ["TURNSTILE_SECRET_KEY", "1x0000000000000000000000000000000AA"],
+      ["TURNSTILE_SECRET_KEY", "2x0000000000000000000000000000000AA"],
+      ["TURNSTILE_SECRET_KEY", "3x0000000000000000000000000000000AA"],
+      ["TURNSTILE_SITE_KEY", "1x00000000000000000000AA"],
+      ["TURNSTILE_SITE_KEY", "2x00000000000000000000AB"],
+      ["TURNSTILE_SITE_KEY", "1x00000000000000000000BB"],
+      ["TURNSTILE_SITE_KEY", "3x00000000000000000000FF"],
+    ];
+    for (const [key, value] of testKeys) {
+      expect(parseSettingValue(key, value, { production: true })).toEqual({ ok: false, error: TURNSTILE_TEST_KEY_MESSAGE });
+      expect(parseSettingValue(key, value, { production: false })).toEqual({ ok: true, value });
+    }
+    // Real keys start with 0x.
+    expect(parseSettingValue("TURNSTILE_SECRET_KEY", "0x4AAAAAAABkMYinukE8nzYS_7Ca4oZYTlS", { production: true })).toMatchObject({ ok: true });
+    expect(parseSettingValue("TURNSTILE_SITE_KEY", "0x4AAAAAAABkMYinukE8nzY", { production: true })).toMatchObject({ ok: true });
+    // Other keys are not affected.
+    expect(parseSettingValue("N8N_SIGNING_SECRET", "1x0000000000000000000000000000000AA", { production: true })).toMatchObject({ ok: true });
+  });
 });
 
 describe("secret storage helpers", () => {
@@ -110,9 +133,14 @@ describe("secret storage helpers", () => {
     expect(() => decryptSecret(enc)).toThrow();
   });
 
-  it("keeps only the last four characters for display", () => {
-    expect(last4("re_abcdefgh1234")).toBe("1234");
-    expect(last4("abc")).toBe("abc");
+  it("keeps only the last four characters for display, and none of a short secret", () => {
+    expect(LAST4_MIN_LENGTH).toBe(16);
+    expect(last4("re_abcdefghi_1234")).toBe("1234");
+    expect(last4("x".repeat(12) + "WXYZ")).toBe("WXYZ");
+    expect(last4("x".repeat(11) + "WXYZ")).toBeNull();
+    expect(last4("shortK3y")).toBeNull();
+    expect(last4("abcd")).toBeNull();
+    expect(last4("abc")).toBeNull();
   });
 
   it("reports whether bootstrap variables are set, never their values", () => {

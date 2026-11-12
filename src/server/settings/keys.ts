@@ -49,9 +49,18 @@ export function settingAad(key: ManagedKey): string {
   return `integration_setting:${key}`;
 }
 
-/** The last four characters of a secret, for display and the audit log. */
-export function last4(value: string): string {
-  return value.slice(-4);
+/**
+ * Shortest secret whose last four characters are shown. Below this length the last four
+ * characters would give away too much of the value (or all of it), so none are shown.
+ */
+export const LAST4_MIN_LENGTH = 16;
+
+/**
+ * The last four characters of a secret, for display and the audit log, or null when the
+ * secret is shorter than LAST4_MIN_LENGTH characters.
+ */
+export function last4(value: string): string | null {
+  return value.length >= LAST4_MIN_LENGTH ? value.slice(-4) : null;
 }
 
 export type KeyInfo = {
@@ -146,14 +155,28 @@ const baseValue = z
 export type ParsedValue = { ok: true; value: string } | { ok: false; error: string };
 
 /**
- * Validates a submitted value: trimmed, not empty, at most MAX_VALUE_LENGTH characters, no
- * control characters, and accepted by the same rule env.ts applies to the variable.
+ * Cloudflare's documented Turnstile test keys, such as the secret 1x0000000000000000000000000000000AA
+ * that accepts every token. Real site and secret keys start with "0x".
  */
-export function parseSettingValue(key: ManagedKey, raw: unknown): ParsedValue {
+const TURNSTILE_TEST_KEY = /^[1-3]x0+[A-F]{2}$/;
+
+export const TURNSTILE_TEST_KEY_MESSAGE =
+  "This is a Cloudflare Turnstile test key. Test keys either let every request pass or block every booking, so they are not accepted in production. Use the keys of your Turnstile widget.";
+
+/**
+ * Validates a submitted value: trimmed, not empty, at most MAX_VALUE_LENGTH characters, no
+ * control characters, and accepted by the same rule env.ts applies to the variable. In
+ * production, Cloudflare's Turnstile test keys are refused as well.
+ */
+export function parseSettingValue(key: ManagedKey, raw: unknown, opts: { production?: boolean } = {}): ParsedValue {
   const base = baseValue.safeParse(raw);
   if (!base.success) return { ok: false, error: base.error.issues[0]?.message ?? "Enter a value." };
   const rule = integrationValueRules[key].safeParse(base.data);
   if (!rule.success) return { ok: false, error: KEY_INFO[key].invalid ?? "This value is not valid." };
+  const production = opts.production ?? process.env.NODE_ENV === "production";
+  if (production && (key === "TURNSTILE_SECRET_KEY" || key === "TURNSTILE_SITE_KEY") && TURNSTILE_TEST_KEY.test(base.data)) {
+    return { ok: false, error: TURNSTILE_TEST_KEY_MESSAGE };
+  }
   return { ok: true, value: base.data };
 }
 

@@ -1,5 +1,5 @@
 import "server-only";
-import { integrationSettings } from "@/server/settings/integrations";
+import { integrationSettings, settingUnavailable } from "@/server/settings/integrations";
 
 export type TurnstileResult = { ok: true } | { ok: false; reason: string };
 
@@ -28,14 +28,20 @@ export async function siteverify(
  * skipped in every environment and the public forms rely on their other protections
  * (same-origin check, per-IP and per-email rate limits, and daily volume caps). Setting the
  * secret turns verification on.
+ *
+ * When the secret may be set in Admin > Settings but could not be read (the settings table
+ * was unreadable on this instance, or the stored secret does not decrypt) and Vercel has no
+ * secret, verification fails closed with `settings_unavailable`, as it does when Cloudflare
+ * cannot be reached.
  */
 export async function verifyTurnstile(
   token: string | null | undefined,
   remoteIp?: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<TurnstileResult> {
-  const secret = (await integrationSettings()).TURNSTILE_SECRET_KEY;
-  if (!secret) return { ok: true };
+  const config = await integrationSettings();
+  const secret = config.TURNSTILE_SECRET_KEY;
+  if (!secret) return settingUnavailable(config, "TURNSTILE_SECRET_KEY") ? { ok: false, reason: "settings_unavailable" } : { ok: true };
   if (!token || token.length > 2048) return { ok: false, reason: "missing_token" };
   try {
     const result = await siteverify(secret, token, remoteIp, fetchImpl);

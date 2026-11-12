@@ -70,6 +70,9 @@ const schema = z.object({
 
   TURNSTILE_SITE_KEY: rules.TURNSTILE_SITE_KEY.optional(),
   TURNSTILE_SECRET_KEY: rules.TURNSTILE_SECRET_KEY.optional(),
+  // Comma-separated frontend hostnames whose Turnstile tokens the server accepts. Defaults to
+  // the hostname of APP_BASE_URL. localhost and 127.0.0.1 are ignored in production.
+  TURNSTILE_HOSTNAMES: z.preprocess(emptyToUndefined, z.string().max(1000).optional()),
 
   RESEND_API_KEY: rules.RESEND_API_KEY.optional(),
   EMAIL_FROM: rules.EMAIL_FROM.default(DEFAULT_EMAIL_FROM),

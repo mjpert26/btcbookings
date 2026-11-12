@@ -119,7 +119,13 @@ export function ManageBooking(props: Props) {
 
   const needsTurnstile = !!props.turnstileSiteKey;
   const turnstileBox = needsTurnstile ? (
-    <Turnstile ref={turnstile} siteKey={props.turnstileSiteKey!} language={locale} onToken={setTurnstileToken} />
+    <Turnstile
+      ref={turnstile}
+      siteKey={props.turnstileSiteKey!}
+      action={mode === "reschedule" ? "reschedule" : "cancel"}
+      language={locale}
+      onToken={setTurnstileToken}
+    />
   ) : null;
   const errorBox = error ? (
     <div role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">

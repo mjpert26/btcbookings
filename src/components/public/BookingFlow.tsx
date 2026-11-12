@@ -291,7 +291,7 @@ function IntakeForm(props: {
           );
         })}
         {props.turnstileSiteKey ? (
-          <Turnstile ref={turnstile} siteKey={props.turnstileSiteKey} language={locale} onToken={setTurnstileToken} />
+          <Turnstile ref={turnstile} siteKey={props.turnstileSiteKey} action="book" language={locale} onToken={setTurnstileToken} />
         ) : null}
         <p className="text-xs text-muted">{t("privacy")}</p>
         <div>

@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
   const emailLimited = await limit([{ key: `book:email:${emailKey(body.email)}`, max: 5, windowSeconds: 600 }]);
   if (emailLimited) return emailLimited;
 
-  const turnstile = await verifyTurnstile(body.turnstileToken, clientIp(req.headers));
+  const turnstile = await verifyTurnstile(body.turnstileToken, { action: "book", remoteIp: clientIp(req.headers) });
   if (!turnstile.ok) return jsonError(400, "verification_failed");
 
   // Volume ceiling per booking page and overall, after Turnstile, so a scripted flood cannot

@@ -42,8 +42,11 @@ export type TurnstileHandle = { reset: () => void };
  * Cloudflare Turnstile widget. Rendered only when a site key is configured; without one
  * the server skips verification outside production.
  */
-export const Turnstile = forwardRef<TurnstileHandle, { siteKey: string; language: string; onToken: (t: string | null) => void }>(
-  function Turnstile({ siteKey, language, onToken }, ref) {
+export const Turnstile = forwardRef<
+  TurnstileHandle,
+  { siteKey: string; action: "book" | "reschedule" | "cancel"; language: string; onToken: (t: string | null) => void }
+>(
+  function Turnstile({ siteKey, action, language, onToken }, ref) {
     const el = useRef<HTMLDivElement>(null);
     const widget = useRef<string | null>(null);
     const tokenCb = useRef(onToken);
@@ -65,6 +68,7 @@ export const Turnstile = forwardRef<TurnstileHandle, { siteKey: string; language
           if (cancelled || !el.current || !window.turnstile) return;
           widget.current = window.turnstile.render(el.current, {
             sitekey: siteKey,
+            action,
             language,
             callback: (token: string) => tokenCb.current(token),
             "expired-callback": () => tokenCb.current(null),
@@ -77,7 +81,7 @@ export const Turnstile = forwardRef<TurnstileHandle, { siteKey: string; language
         if (widget.current) window.turnstile?.remove(widget.current);
         widget.current = null;
       };
-    }, [siteKey, language]);
+    }, [siteKey, action, language]);
 
     return <div ref={el} className="min-h-[65px]" />;
   },

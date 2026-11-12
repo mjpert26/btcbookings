@@ -96,6 +96,12 @@ The site key and the secret key belong to one Cloudflare widget and must match. 
 
   Bot protection is off for about a minute. Alternatively, save both keys back to back at a quiet time and expect up to 30 seconds of failed verifications.
 
+### Turnstile checks
+
+The public forms send a Turnstile token with a fixed action: the booking form sends `book`, the reschedule form `reschedule`, and the cancel form `cancel` (`src/components/public/Turnstile.tsx`). When `TURNSTILE_SECRET_KEY` is set, `verifyTurnstile()` (`src/server/http/turnstile.ts`) accepts a token only when Cloudflare's siteverify reports success, the token's action equals the form's action, and the token was issued on a hostname in `TURNSTILE_HOSTNAMES` (Vercel only; defaults to the hostname of `APP_BASE_URL`, and `localhost` and `127.0.0.1` are ignored in production). Tokens are single-use: a replayed token is refused (`timeout-or-duplicate`). Siteverify errors, non-2xx answers and timeouts (10 seconds) refuse the request.
+
+Every hostname in `TURNSTILE_HOSTNAMES` must also be listed under Hostname management on the widget in the Cloudflare dashboard, or the widget does not issue tokens there.
+
 ## Code
 
 - `src/server/settings/keys.ts`: key list, groups, validation, bootstrap list.

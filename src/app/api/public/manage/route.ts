@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
   if (limited) return limited;
 
   if (write) {
-    const turnstile = await verifyTurnstile(body.turnstileToken, clientIp(req.headers));
+    const turnstile = await verifyTurnstile(body.turnstileToken, { action: body.action === "cancel" ? "cancel" : "reschedule", remoteIp: clientIp(req.headers) });
     if (!turnstile.ok) return jsonError(400, "verification_failed");
   }
 

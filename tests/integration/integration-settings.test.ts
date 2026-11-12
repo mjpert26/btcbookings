@@ -213,7 +213,7 @@ describe("resolver", () => {
       expect(cfg.TURNSTILE_SECRET_KEY).toBe("0x-panel-turnstile-secret-STAL");
       expect(cfg.unavailable).toEqual([]);
       // Bot protection stays on.
-      expect(await verifyTurnstile(null)).toEqual({ ok: false, reason: "missing_token" });
+      expect(await verifyTurnstile(null, { action: "book" })).toEqual({ ok: false, reason: "missing_token" });
       // A write in this instance invalidates the cache but keeps the last values as the fallback.
       invalidateIntegrationSettings();
       expect((await integrationSettings()).SLACK_BOT_TOKEN).toBe("xoxb-panel-token-STALE-OK");
@@ -286,7 +286,7 @@ describe("resolver", () => {
       await expect(sendSms({ to: "+12125550199", content: "Hi" }, "test")).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
       await expect(slackClientFromSettings()).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
       // Bot protection fails closed, as it does when Cloudflare cannot be reached.
-      expect(await verifyTurnstile("token-1")).toEqual({ ok: false, reason: "settings_unavailable" });
+      expect(await verifyTurnstile("token-1", { action: "book" })).toEqual({ ok: false, reason: "settings_unavailable" });
     } finally {
       setServiceClient(sql);
     }
@@ -297,7 +297,7 @@ describe("resolver", () => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     expect(await sendEmail(EMAIL, { resend: resend.factory })).toEqual({ id: null, skipped: true });
     await expect(slackClientFromSettings()).rejects.toBeInstanceOf(SlackNotConfiguredError);
-    expect(await verifyTurnstile(null)).toEqual({ ok: true });
+    expect(await verifyTurnstile(null, { action: "book" })).toEqual({ ok: true });
   });
 
   it("does not decrypt a secret copied to another key's row", async () => {
@@ -496,7 +496,7 @@ describe("secrets the app cannot show or use", () => {
     expect([...cfg.unavailable].sort()).toEqual(["RESEND_API_KEY", "TURNSTILE_SECRET_KEY"]);
     expect(cfg.TURNSTILE_SECRET_KEY).toBeUndefined();
     // Bot protection fails closed and email jobs are retried instead of finishing unsent.
-    expect(await verifyTurnstile("token-1")).toEqual({ ok: false, reason: "settings_unavailable" });
+    expect(await verifyTurnstile("token-1", { action: "book" })).toEqual({ ok: false, reason: "settings_unavailable" });
     const resend = fakeResend();
     await expect(sendEmail(EMAIL, { resend: resend.factory })).rejects.toBeInstanceOf(IntegrationSettingUnavailableError);
     expect(await runSettingsCheck(admin, "turnstile")).toMatchObject({ ok: false, message: expect.stringContaining("no longer decrypts") });
@@ -543,11 +543,11 @@ describe("consumers use the panel value", () => {
 
   it("verifies Turnstile tokens with the panel secret", async () => {
     const admin = await adminSession();
-    expect(await verifyTurnstile(null)).toEqual({ ok: true });
+    expect(await verifyTurnstile(null, { action: "book" })).toEqual({ ok: true });
     await setIntegrationSetting(admin, "TURNSTILE_SECRET_KEY", "0x-panel-turnstile-secret");
-    expect(await verifyTurnstile(null)).toEqual({ ok: false, reason: "missing_token" });
-    const cf = fakeFetch({ success: true });
-    expect(await verifyTurnstile("token-1", "203.0.113.9", cf.fn as unknown as typeof fetch)).toEqual({ ok: true });
+    expect(await verifyTurnstile(null, { action: "book" })).toEqual({ ok: false, reason: "missing_token" });
+    const cf = fakeFetch({ success: true, action: "book", hostname: "localhost" });
+    expect(await verifyTurnstile("token-1", { action: "book", remoteIp: "203.0.113.9", fetchImpl: cf.fn as unknown as typeof fetch })).toEqual({ ok: true });
     const body = new URLSearchParams(String(cf.calls[0].init.body));
     expect(body.get("secret")).toBe("0x-panel-turnstile-secret");
     expect(body.get("response")).toBe("token-1");

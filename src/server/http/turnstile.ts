@@ -4,8 +4,10 @@ import { env } from "@/server/env";
 export type TurnstileResult = { ok: true } | { ok: false; reason: string };
 
 /**
- * Verifies a Cloudflare Turnstile token server-side. When TURNSTILE_SECRET_KEY is not
- * configured (local development), verification is skipped outside production.
+ * Verifies a Cloudflare Turnstile token server-side. Turnstile is optional: when
+ * TURNSTILE_SECRET_KEY is not configured, verification is skipped in every environment and
+ * the public forms rely on their other protections (same-origin check, per-IP and per-email
+ * rate limits, and daily volume caps). Setting the secret turns verification on.
  */
 export async function verifyTurnstile(
   token: string | null | undefined,
@@ -13,9 +15,7 @@ export async function verifyTurnstile(
   fetchImpl: typeof fetch = fetch,
 ): Promise<TurnstileResult> {
   const secret = env().TURNSTILE_SECRET_KEY;
-  if (!secret) {
-    return env().NODE_ENV === "production" ? { ok: false, reason: "turnstile_not_configured" } : { ok: true };
-  }
+  if (!secret) return { ok: true };
   if (!token || token.length > 2048) return { ok: false, reason: "missing_token" };
   const body = new URLSearchParams({ secret, response: token });
   if (remoteIp) body.set("remoteip", remoteIp);

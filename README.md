@@ -80,7 +80,7 @@ Every variable is documented in [`.env.example`](.env.example). Summary:
 | `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID` | yes | AES-256-GCM key ring for secrets at rest |
 | `IP_HASH_SALT` | yes | Salt for hashed client IPs |
 | `CRON_SECRET` | yes | Vercel Cron bearer secret |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | production | Cloudflare Turnstile on public forms |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | Slack channel sync and agent reminder direct messages |
 | `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | SendBlue text reminders; without them, texts are logged instead of sent |

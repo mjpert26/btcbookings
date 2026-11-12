@@ -35,17 +35,44 @@ function mcpHost(): string | null {
   }
 }
 
+// Former public hostnames of the app, comma separated (for example btcbookings.vercel.app).
+function legacyHosts(): string[] {
+  let appHost = "";
+  try {
+    appHost = new URL(process.env.APP_BASE_URL ?? "").host;
+  } catch {
+    return [];
+  }
+  return (process.env.APP_LEGACY_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => h && h !== appHost && /^[a-z0-9.-]+(:\d+)?$/.test(h));
+}
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async rewrites() {
     return { beforeFiles: [{ source: "/mcp", destination: "/api/mcp" }], afterFiles: [], fallback: [] };
   },
   async redirects() {
-    const host = mcpHost();
     const app = (process.env.APP_BASE_URL ?? "").replace(/\/+$/, "");
-    if (!host || !app) return [];
+    if (!app) return [];
+    const rules: { source: string; has: { type: "host"; value: string }[]; destination: string; permanent: boolean }[] = [];
     // A browser opening the MCP host lands on the connection instructions.
-    return [{ source: "/", has: [{ type: "host", value: host }], destination: `${app}/settings/integrations`, permanent: false }];
+    const host = mcpHost();
+    if (host) rules.push({ source: "/", has: [{ type: "host", value: host }], destination: `${app}/settings/integrations`, permanent: false });
+    // Pages opened on a former address (APP_LEGACY_HOSTS) move to APP_BASE_URL. API routes,
+    // webhooks, cron, the MCP endpoint, well-known documents and static assets keep answering
+    // on the old host, so integrations that still call it do not break.
+    for (const legacy of legacyHosts()) {
+      rules.push({
+        source: "/:path((?!api/|_next/|\\.well-known/|mcp(?:/|$)).*)",
+        has: [{ type: "host", value: legacy }],
+        destination: `${app}/:path`,
+        permanent: false,
+      });
+    }
+    return rules;
   },
   serverExternalPackages: ["postgres"],
   experimental: {

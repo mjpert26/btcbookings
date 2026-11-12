@@ -73,7 +73,8 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 
 | Variable | Required | Admin > Settings | Purpose |
 |---|---|---|---|
-| `APP_BASE_URL` | yes | no | Public base URL; used for OAuth redirects, Graph notification URLs and email links |
+| `APP_BASE_URL` | yes | no | Public base URL (production: `https://book.bigthinkcapital.com`); used for OAuth redirects, Graph notification URLs and email links |
+| `APP_LEGACY_HOSTS` | no | no | Former hostnames, comma separated (production: `btcbookings.vercel.app`). Page requests on them redirect to `APP_BASE_URL`; API routes, webhooks, cron, `/mcp`, `.well-known` and static assets keep answering there |
 | `MCP_BASE_URL` | no | no | Public origin of the MCP server; defaults to `APP_BASE_URL`. Leave unset in production: `mcp.bigthinkcapital.com` is the BTC MCP Gateway, which fronts this server |
 | `DATABASE_URL` | yes | no | Postgres connection (Supabase transaction pooler, port 6543, in production) |
 | `DATABASE_POOL_MAX` | no | no | Connections per instance (default 5) |

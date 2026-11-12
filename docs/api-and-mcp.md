@@ -2,7 +2,7 @@
 
 BTC Scheduler exposes the same capabilities two ways:
 
-- **MCP server** for AI assistants (Claude and other Model Context Protocol clients), at `<APP_BASE_URL>/mcp` (production: `https://btcbookings.vercel.app/mcp`). Employees normally reach it through the BTC MCP Gateway at `https://mcp.bigthinkcapital.com/mcp`, where it is the system `btc_scheduler`; see [BTC MCP Gateway](#btc-mcp-gateway).
+- **MCP server** for AI assistants (Claude and other Model Context Protocol clients), at `<APP_BASE_URL>/mcp` (production: `https://book.bigthinkcapital.com/mcp`). Employees normally reach it through the BTC MCP Gateway at `https://mcp.bigthinkcapital.com/mcp`, where it is the system `btc_scheduler`; see [BTC MCP Gateway](#btc-mcp-gateway).
 - **REST API** for scripts and automations, at `<APP_BASE_URL>/api/v1`. The description is at `/api/v1/openapi.json`.
 
 Both act as the signed-in user, with that user's current role and permissions. Both use the service layer in `src/server/api/services/`, under row-level security. Every change is recorded in the audit log with its channel (`api` or `mcp`). Bookings scheduled, rescheduled or cancelled through either write exactly one `booking.*` entry each, from the booking engine; see [`audit-log.md`](audit-log.md).
@@ -22,8 +22,8 @@ Team admins also manage their teams' members and pages. The matrix lives in `src
 ### Connecting
 
 - **Through the BTC MCP Gateway** (recommended): connect Claude to the gateway at `https://mcp.bigthinkcapital.com/mcp`, then open My connections on the gateway and connect BTC Scheduler. Its tools appear with the `btc_scheduler__` prefix.
-- **Directly** (claude.ai or the desktop app): Settings > Connectors > Add custom connector, then paste `https://btcbookings.vercel.app/mcp`. Sign in with Microsoft and approve the connection.
-- **Claude Code, directly**: `claude mcp add --transport http btc-scheduler https://btcbookings.vercel.app/mcp`
+- **Directly** (claude.ai or the desktop app): Settings > Connectors > Add custom connector, then paste `https://book.bigthinkcapital.com/mcp`. Sign in with Microsoft and approve the connection.
+- **Claude Code, directly**: `claude mcp add --transport http btc-scheduler https://book.bigthinkcapital.com/mcp`
 
 Each user sees and disconnects their connected apps under **Settings > Integrations**.
 
@@ -74,7 +74,7 @@ Every role sees the same tool list, and a tool the caller's role may not use is 
 
 | Setting | Value |
 |---|---|
-| Upstream URL | `https://btcbookings.vercel.app/mcp` (must equal `<APP_BASE_URL>/mcp`, the resource tokens are bound to) |
+| Upstream URL | `https://book.bigthinkcapital.com/mcp` (must equal `<APP_BASE_URL>/mcp`, the resource tokens are bound to) |
 | Auth | Per person (delegated OAuth). The gateway registers itself through dynamic client registration as a public client with PKCE S256 and scope `scheduler`. Nothing is pasted. |
 | Callback allowed here | `https://mcp.bigthinkcapital.com/api/connect/btc_scheduler/callback` (Admin > Integrations > Allowed callback URLs) |
 

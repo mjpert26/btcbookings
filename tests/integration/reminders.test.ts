@@ -477,6 +477,31 @@ describe("inbound SMS webhook", () => {
     );
     expect(await sql`select 1 from app.sms_opt_outs`).toHaveLength(0);
   });
+
+  it("acts only on replies received on the scheduler's sending line", async () => {
+    const h = new Headers({ "sb-signing-secret": SECRET });
+    const opts = { secret: SECRET, lineNumber: "+12125550100" };
+    // SendBlue delivers replies for every line on the account; a STOP sent to another line is not about the scheduler's texts.
+    const other = await handleInboundSms(h, JSON.stringify({ number: "+12125550142", content: "STOP", sendblue_number: "+13105550111", to_number: "+13105550111" }), opts);
+    expect(other).toEqual({ status: 200, body: { ok: true, action: "ignored_other_line" } });
+    const otherFlag = await handleInboundSms(h, JSON.stringify({ number: "+12125550142", opted_out: true, to_number: "+13105550111" }), opts);
+    expect(otherFlag.body.action).toBe("ignored_other_line");
+    expect(await sql`select 1 from app.sms_opt_outs`).toHaveLength(0);
+
+    const ours = await handleInboundSms(h, JSON.stringify({ number: "+12125550142", content: "STOP", sendblue_number: "+12125550100" }), opts);
+    expect(ours.body.action).toBe("opted_out");
+    // Without a receiving line in the payload, the reply is honoured.
+    const unknown = await handleInboundSms(h, JSON.stringify({ number: "+12125550143", content: "STOP" }), opts);
+    expect(unknown.body.action).toBe("opted_out");
+    // Without a configured sending line, every line counts, as before.
+    const unset = await handleInboundSms(h, JSON.stringify({ number: "+12125550144", content: "STOP", sendblue_number: "+13105550111" }), { secret: SECRET, lineNumber: null });
+    expect(unset.body.action).toBe("opted_out");
+    expect((await sql<{ phone_e164: string }[]>`select phone_e164 from app.sms_opt_outs order by phone_e164`).map((r) => r.phone_e164)).toEqual([
+      "+12125550142",
+      "+12125550143",
+      "+12125550144",
+    ]);
+  });
 });
 
 function fakeSlack() {

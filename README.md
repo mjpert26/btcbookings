@@ -88,9 +88,9 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `TURNSTILE_HOSTNAMES` | with Turnstile | no | Comma-separated frontend hostnames whose Turnstile tokens are accepted (production: `book.bigthinkcapital.com`). Defaults to the hostname of `APP_BASE_URL`; `localhost` and `127.0.0.1` are ignored in production. The widget in Cloudflare must list the same hostnames. Former hostnames (`APP_LEGACY_HOSTS`) do not belong here: their pages redirect, and form posts from them fail the same-origin check before Turnstile runs |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
-| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them, texts are logged instead of sent |
-| `SENDBLUE_FROM_NUMBER` | optional | yes | SendBlue sending line in E.164; required on shared-line plans |
-| `SENDBLUE_WEBHOOK_SECRET` | with SMS | yes | Secret SendBlue sends in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
+| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them (or without `SENDBLUE_FROM_NUMBER`), texts are logged instead of sent |
+| `SENDBLUE_FROM_NUMBER` | with SMS | yes | The only SendBlue line the app texts from (E.164). Texts are not sent without it; STOP / START replies received on other lines are ignored |
+| `SENDBLUE_WEBHOOK_SECRET` | with SMS | yes | Secret you choose and set on the SendBlue receive webhook; SendBlue sends it in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
 | `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH` | for SF | no | Where the app sends signed requests to n8n. Kept out of the app on purpose |
 | `N8N_SIGNING_SECRET` | for SF | yes | Signs outbound requests to n8n (Salesforce leads, Sync now) |
 | `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | yes | Inbound queue snapshot and push authentication |

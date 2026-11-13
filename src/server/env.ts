@@ -80,7 +80,7 @@ const schema = z.object({
   SLACK_BOT_TOKEN: rules.SLACK_BOT_TOKEN.optional(),
   SLACK_ADMIN_NOTIFY_CHANNEL: rules.SLACK_ADMIN_NOTIFY_CHANNEL.optional(),
 
-  // SendBlue SMS. Without the key and secret, text messages are logged and not sent.
+  // SendBlue SMS. Without the key, secret and sending number, text messages are logged and not sent.
   SENDBLUE_API_KEY: rules.SENDBLUE_API_KEY.optional(),
   SENDBLUE_API_SECRET: rules.SENDBLUE_API_SECRET.optional(),
   SENDBLUE_FROM_NUMBER: z.preprocess(emptyToUndefined, rules.SENDBLUE_FROM_NUMBER.optional()),

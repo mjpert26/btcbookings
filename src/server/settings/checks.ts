@@ -142,6 +142,10 @@ async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult
   if (!config.SENDBLUE_API_KEY || !config.SENDBLUE_API_SECRET) {
     return { ok: false, message: "Set the SendBlue API key ID and secret key first." };
   }
+  if (unreadable(config, "SENDBLUE_FROM_NUMBER")) return { ok: false, message: UNAVAILABLE_MESSAGE };
+  if (!config.SENDBLUE_FROM_NUMBER) {
+    return { ok: false, message: "Set the sending number first. Texts are sent only from that SendBlue line." };
+  }
   const { phone, optedOut } = await withUser(user.id, async (tx) => {
     const [settings] = await tx<{ sms_phone: string | null }[]>`select sms_phone from app.user_settings where user_id = ${user.id}`;
     const number = settings?.sms_phone ?? null;

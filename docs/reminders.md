@@ -70,8 +70,9 @@ The main worker (`/api/cron/jobs`) sends reminders. `/api/cron/reminders` is a s
 ## SendBlue setup
 
 1. In the SendBlue dashboard, create an API key. Set `SENDBLUE_API_KEY` (key ID) and `SENDBLUE_API_SECRET` (secret key) at **Admin > Settings** (Text messages), or in Vercel. A value set in Admin > Settings overrides Vercel and needs no redeploy; **Send test text** sends one text to your own number from Availability > Booking preferences (see `docs/settings.md`).
-2. Optional: set `SENDBLUE_FROM_NUMBER` to the sending line in E.164. It is required on shared-line plans.
-3. Add a receive webhook that points to `<APP_BASE_URL>/api/sms/inbound` and give it a signing secret of at least 16 characters. Set the same value as `SENDBLUE_WEBHOOK_SECRET`. SendBlue sends it in the `sb-signing-secret` header; requests without a matching header get HTTP 401, and the route returns 503 until the secret is configured.
+2. Set `SENDBLUE_FROM_NUMBER` to the line the scheduler texts from, in E.164. It is required: without it, texts are logged instead of sent, because SendBlue would otherwise pick any line on the account. Replies are read only from this line (step 3).
+3. Choose a signing secret of at least 16 random characters (for example from a password manager). In the SendBlue dashboard (**Developer > Webhooks**), **add** a receive webhook with the URL `<APP_BASE_URL>/api/sms/inbound` and that secret, limited to the sending line if the form offers it. Add it next to any existing receive webhooks; do not replace them (through the API, `POST /api/account/webhooks` appends, `PUT` replaces the whole list). Set the same secret as `SENDBLUE_WEBHOOK_SECRET`. SendBlue sends it in the `sb-signing-secret` header (SendBlue docs, "Security"); requests without a matching header get HTTP 401, and the route returns 503 until the secret is configured.
+4. Receive webhooks can cover every line on the SendBlue account. The app acts only on replies whose receiving line (`sendblue_number`, else `to_number`) is `SENDBLUE_FROM_NUMBER`; replies on other lines get `200` with `ignored_other_line`. A reply without a receiving line is still acted on.
 
 `SENDBLUE_FROM_NUMBER` and `SENDBLUE_WEBHOOK_SECRET` can also be set at **Admin > Settings**.
 
@@ -90,6 +91,7 @@ The client (`src/server/sms/sendblue.ts`) calls `POST https://api.sendblue.com/a
   This follows the FCC revocation rule (47 CFR 64.1200(a)(10)) and errs towards opting out: a reply such as `Please stop by at 3` also opts out, and the merchant can reply START to receive texts again.
 - A reply of exactly START, UNSTOP, SUBSCRIBE or OPTIN removes the number. A webhook payload with `opted_out: true` is also recorded. Other replies are ignored.
 - No text is sent to a number on the opt-out list, for merchants or agents.
+- SendBlue also detects opt-out replies itself (stop, unsubscribe, cancel, opt out, revoke, end, quit; start opts back in) and declines later sends to that number with `error_key` `OPTED_OUT` (SendBlue docs, "Security"). The app's own list does not depend on that: it skips the number before calling SendBlue, and a declined send fails the job without retrying.
 - Admins can read the opt-out list; only the service role writes it.
 - Message text and full phone numbers are never logged. Job logs show a redacted number such as `+1******0142`.
 

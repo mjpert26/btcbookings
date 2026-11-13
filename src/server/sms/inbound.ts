@@ -16,6 +16,10 @@ import { normalizeE164 } from "@/server/sms/phone";
  * Only opt-out keywords are acted on: STOP (and equivalents) adds the sender to
  * app.sms_opt_outs, START removes it. A payload with opted_out = true is also recorded.
  * Message text and phone numbers are never logged.
+ *
+ * SendBlue can deliver replies for every line on the account. When SENDBLUE_FROM_NUMBER is
+ * set, a reply that arrived on another line (sendblue_number, else to_number) is ignored: it
+ * is not about the scheduler's texts. A reply without a receiving line is still acted on.
  */
 export const SIGNING_SECRET_HEADER = "sb-signing-secret";
 
@@ -26,7 +30,15 @@ const inboundSchema = z.object({
   is_outbound: z.boolean().nullish(),
   opted_out: z.boolean().nullish(),
   message_handle: z.string().max(200).nullish(),
+  sendblue_number: z.string().max(40).nullish(),
+  to_number: z.string().max(40).nullish(),
 });
+
+/** Digits with a leading plus, for comparing two spellings of the same line number. */
+function lineKey(value: string | null | undefined): string | null {
+  const key = value?.replace(/[^\d+]/g, "") ?? "";
+  return key.length > 1 ? key : null;
+}
 
 export type InboundResult = { status: number; body: Record<string, unknown> };
 
@@ -40,9 +52,10 @@ export function checkSigningSecret(headerValue: string | null, secret: string | 
 export async function handleInboundSms(
   headers: Pick<Headers, "get">,
   raw: string,
-  opts: { db?: Db; secret?: string } = {},
+  opts: { db?: Db; secret?: string; lineNumber?: string | null } = {},
 ): Promise<InboundResult> {
-  const secret = opts.secret ?? (await integrationSettings()).SENDBLUE_WEBHOOK_SECRET;
+  const config = opts.secret === undefined || opts.lineNumber === undefined ? await integrationSettings() : null;
+  const secret = opts.secret ?? config?.SENDBLUE_WEBHOOK_SECRET;
   const auth = checkSigningSecret(headers.get(SIGNING_SECRET_HEADER), secret);
   if (auth === "not_configured") return { status: 503, body: { error: "not_configured" } };
   if (auth === "unauthorized") return { status: 401, body: { error: "unauthorized" } };
@@ -57,6 +70,10 @@ export async function handleInboundSms(
   if (!parsed.success) return { status: 400, body: { error: "invalid_body" } };
   const msg = parsed.data;
   if (msg.is_outbound) return { status: 200, body: { ok: true, action: "ignored_outbound" } };
+
+  const ourLine = lineKey(opts.lineNumber !== undefined ? opts.lineNumber : config?.SENDBLUE_FROM_NUMBER);
+  const receivedOn = lineKey(msg.sendblue_number ?? msg.to_number);
+  if (ourLine && receivedOn && receivedOn !== ourLine) return { status: 200, body: { ok: true, action: "ignored_other_line" } };
 
   // For received messages, `number` is the end user; from_number is the sender (the same person).
   const phone = normalizeE164(msg.number ?? msg.from_number ?? null);

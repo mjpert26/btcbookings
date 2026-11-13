@@ -562,6 +562,27 @@ describe("consumers use the panel value", () => {
     expect(old.ok).toBe(false);
   });
 
+  it("texts only from the configured sending number", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "SENDBLUE_API_KEY", "sb-panel-key-id");
+    await setIntegrationSetting(admin, "SENDBLUE_API_SECRET", "sb-panel-secret-key");
+    const sb = fakeFetch({ status: "QUEUED", message_handle: "mh_1" });
+    vi.stubGlobal("fetch", sb.fn);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      // Without a sending number SendBlue would choose a line, so nothing is sent.
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toEqual({ messageHandle: null, status: null, skipped: true });
+      expect(sb.calls).toHaveLength(0);
+      expect(info.mock.calls.flat().join(" ")).toContain("SENDBLUE_FROM_NUMBER not set");
+
+      await setIntegrationSetting(admin, "SENDBLUE_FROM_NUMBER", "+12125550100");
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toMatchObject({ messageHandle: "mh_1", skipped: false });
+      expect(JSON.parse(String(sb.calls[0].init.body))).toMatchObject({ number: "+12125550199", from_number: "+12125550100" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("builds the Slack client from the panel token", async () => {
     const admin = await adminSession();
     await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-JJJJ");
@@ -637,9 +658,10 @@ describe("test buttons", () => {
     expect(await runSettingsCheck(admin, "sms")).toMatchObject({ ok: false, message: expect.stringContaining("API key ID and secret key") });
     await setIntegrationSetting(admin, "SENDBLUE_API_KEY", "sb-panel-key-id");
     await setIntegrationSetting(admin, "SENDBLUE_API_SECRET", "sb-panel-secret-key");
+    const sb = fakeFetch({ status: "QUEUED", message_handle: "mh_1" });
+    expect(await runSettingsCheck(admin, "sms", { fetch: sb.fn })).toMatchObject({ ok: false, message: expect.stringContaining("sending number") });
     await setIntegrationSetting(admin, "SENDBLUE_FROM_NUMBER", "+15550001111");
 
-    const sb = fakeFetch({ status: "QUEUED", message_handle: "mh_1" });
     expect(await runSettingsCheck(admin, "sms", { fetch: sb.fn })).toMatchObject({ ok: false, message: expect.stringContaining("Availability > Booking preferences") });
     expect(sb.calls).toHaveLength(0);
 

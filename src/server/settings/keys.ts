@@ -77,11 +77,11 @@ export const KEY_INFO: Record<ManagedKey, KeyInfo> = {
     label: "From address",
     hint: "Sender of every email, for example BTC Scheduling <scheduling@bigthinkcapital.com>. The domain must be verified in Resend.",
   },
-  SENDBLUE_API_KEY: { label: "SendBlue API key ID", hint: "Without the key ID and secret, text messages are logged instead of sent." },
+  SENDBLUE_API_KEY: { label: "SendBlue API key ID", hint: "Without the key ID, secret and sending number, text messages are logged instead of sent." },
   SENDBLUE_API_SECRET: { label: "SendBlue API secret key", hint: "The secret key that belongs to the key ID." },
   SENDBLUE_FROM_NUMBER: {
     label: "Sending number",
-    hint: "The SendBlue line texts are sent from, in E.164 format. Required on shared-line plans.",
+    hint: "Required. The only SendBlue line the scheduler texts from, in E.164 format. Texts are not sent without it, and STOP or START replies that arrive on other lines are ignored.",
     invalid: "Use E.164 format: a plus sign and 8 to 15 digits, for example +15551234567.",
     placeholder: "+15551234567",
   },

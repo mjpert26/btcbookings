@@ -129,8 +129,10 @@ export function setSmsTransport(transport: SmsTransport | null): void {
 /**
  * Sends one text with the SendBlue settings (Admin > Settings, else Vercel). Without
  * SENDBLUE_API_KEY and SENDBLUE_API_SECRET it logs a redacted line and reports a skipped
- * send, so jobs complete normally. When a credential may be set in Admin > Settings but
- * could not be read, it throws IntegrationSettingUnavailableError so the job is retried.
+ * send, so jobs complete normally. Texts go only from SENDBLUE_FROM_NUMBER: without it,
+ * SendBlue would choose any line on the account, so the text is skipped the same way. When
+ * a setting may be set in Admin > Settings but could not be read, it throws
+ * IntegrationSettingUnavailableError so the job is retried.
  */
 export async function sendSms(msg: SmsMessage, tag: string): Promise<SmsSendResult> {
   if (override) return override(msg);
@@ -140,6 +142,11 @@ export async function sendSms(msg: SmsMessage, tag: string): Promise<SmsSendResu
       if (settingUnavailable(e, key)) throw new IntegrationSettingUnavailableError(key);
     }
     console.info(`[sms] SENDBLUE_API_KEY not set; not sent: ${tag} to ${redactPhone(msg.to)}`);
+    return { messageHandle: null, status: null, skipped: true };
+  }
+  if (!e.SENDBLUE_FROM_NUMBER) {
+    if (settingUnavailable(e, "SENDBLUE_FROM_NUMBER")) throw new IntegrationSettingUnavailableError("SENDBLUE_FROM_NUMBER");
+    console.info(`[sms] SENDBLUE_FROM_NUMBER not set; not sent: ${tag} to ${redactPhone(msg.to)}`);
     return { messageHandle: null, status: null, skipped: true };
   }
   const client = createSendblueClient({

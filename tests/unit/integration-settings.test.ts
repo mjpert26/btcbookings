@@ -20,7 +20,8 @@ import {
   TURNSTILE_TEST_KEY_MESSAGE,
 } from "@/server/settings/keys";
 
-const MIGRATION = readFileSync(join(__dirname, "../../supabase/migrations/20261112120000_integration_settings.sql"), "utf8");
+/** The latest migration that defines the key check constraints of app.integration_settings. */
+const MIGRATION = readFileSync(join(__dirname, "../../supabase/migrations/20261113120000_twilio_settings.sql"), "utf8");
 
 /** The quoted key names inside the first `check (... in (...))` list that follows `marker`. */
 function quotedListAfter(marker: string): string[] {
@@ -39,6 +40,7 @@ describe("integration settings catalog", () => {
         "SENDBLUE_API_KEY",
         "SENDBLUE_API_SECRET",
         "SENDBLUE_WEBHOOK_SECRET",
+        "TWILIO_AUTH_TOKEN",
         "SLACK_BOT_TOKEN",
         "TURNSTILE_SECRET_KEY",
         "N8N_SIGNING_SECRET",
@@ -46,7 +48,9 @@ describe("integration settings catalog", () => {
         "SF_QUEUE_PUSH_BEARER",
       ].sort(),
     );
-    expect([...PLAIN_KEYS].sort()).toEqual(["EMAIL_FROM", "SENDBLUE_FROM_NUMBER", "SLACK_ADMIN_NOTIFY_CHANNEL", "TURNSTILE_SITE_KEY"].sort());
+    expect([...PLAIN_KEYS].sort()).toEqual(
+      ["EMAIL_FROM", "SENDBLUE_FROM_NUMBER", "TWILIO_ACCOUNT_SID", "TWILIO_FROM_NUMBER", "SLACK_ADMIN_NOTIFY_CHANNEL", "TURNSTILE_SITE_KEY"].sort(),
+    );
     for (const k of SECRET_KEYS) expect(isSecretKey(k)).toBe(true);
     for (const k of PLAIN_KEYS) expect(isSecretKey(k)).toBe(false);
   });
@@ -60,8 +64,8 @@ describe("integration settings catalog", () => {
   });
 
   it("matches the check constraints of the migration", () => {
-    expect(quotedListAfter("key text primary key").sort()).toEqual([...MANAGED_KEYS].sort());
-    expect(quotedListAfter("integration_settings_secret_kind_check").sort()).toEqual([...SECRET_KEYS].sort());
+    expect(quotedListAfter("add constraint integration_settings_key_check").sort()).toEqual([...MANAGED_KEYS].sort());
+    expect(quotedListAfter("add constraint integration_settings_secret_kind_check").sort()).toEqual([...SECRET_KEYS].sort());
   });
 
   it("puts every key in exactly one group and describes every key", () => {
@@ -69,7 +73,14 @@ describe("integration settings catalog", () => {
     expect([...grouped].sort()).toEqual([...MANAGED_KEYS].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
     for (const k of MANAGED_KEYS) expect(KEY_INFO[k].label.length).toBeGreaterThan(0);
-    expect(SETTING_GROUPS.map((g) => g.title)).toEqual(["Email (Resend)", "Text messages (SendBlue)", "Slack", "Bot protection (Turnstile)", "Salesforce and n8n"]);
+    expect(SETTING_GROUPS.map((g) => g.title)).toEqual([
+      "Email (Resend)",
+      "Text messages (Twilio)",
+      "Text messages (SendBlue)",
+      "Slack",
+      "Bot protection (Turnstile)",
+      "Salesforce and n8n",
+    ]);
   });
 });
 
@@ -100,6 +111,16 @@ describe("parseSettingValue", () => {
     expect(parseSettingValue("SENDBLUE_FROM_NUMBER", "+0555123456")).toMatchObject({ ok: false });
     expect(parseSettingValue("SENDBLUE_FROM_NUMBER", "+1 555 123 4567")).toMatchObject({ ok: false });
     expect(parseSettingValue("SENDBLUE_WEBHOOK_SECRET", "short-secret")).toEqual({ ok: false, error: "Use at least 16 characters." });
+  });
+
+  it("checks the shape of the Twilio settings", () => {
+    const sid = "AC" + "0123456789abcdef".repeat(2);
+    expect(parseSettingValue("TWILIO_ACCOUNT_SID", ` ${sid} `)).toEqual({ ok: true, value: sid });
+    expect(parseSettingValue("TWILIO_ACCOUNT_SID", "SK" + sid.slice(2))).toMatchObject({ ok: false, error: expect.stringContaining("Account SID") });
+    expect(parseSettingValue("TWILIO_AUTH_TOKEN", "a".repeat(32))).toMatchObject({ ok: true });
+    expect(parseSettingValue("TWILIO_AUTH_TOKEN", "a".repeat(31))).toMatchObject({ ok: false, error: expect.stringContaining("32-character") });
+    expect(parseSettingValue("TWILIO_FROM_NUMBER", "+18885550100")).toMatchObject({ ok: true });
+    expect(parseSettingValue("TWILIO_FROM_NUMBER", "888-555-0100")).toMatchObject({ ok: false, error: expect.stringContaining("E.164") });
   });
 
   it("refuses Cloudflare's Turnstile test keys in production only", () => {

@@ -12,8 +12,10 @@ import { enqueueAllReminders, DEFAULT_REMINDER_SETTINGS } from "@/server/booking
 import { handleEmailSend } from "@/server/email/jobs";
 import { setEmailTransport, type OutgoingEmail } from "@/server/email/send";
 import { handleSmsSend } from "@/server/sms/jobs";
-import { setSmsTransport, type SmsMessage } from "@/server/sms/sendblue";
+import { setSmsTransport, type SmsMessage } from "@/server/sms/send";
 import { handleInboundSms } from "@/server/sms/inbound";
+import { EMPTY_TWIML, handleTwilioInbound } from "@/server/sms/twilio-inbound";
+import { twilioSignature } from "@/server/sms/twilio";
 import { createSlackClient, SlackNotConfiguredError } from "@/server/slack/client";
 import { handleSlackDm } from "@/server/slack/dm-jobs";
 
@@ -457,6 +459,54 @@ describe("reminder schema", () => {
     expect(await withUser(agent.id, (tx) => tx`select phone_e164 from app.sms_opt_outs`)).toHaveLength(0);
     expect(await withUser(admin.id, (tx) => tx`select phone_e164 from app.sms_opt_outs`)).toHaveLength(1);
     await expect(withUser(admin.id, (tx) => tx`insert into app.sms_opt_outs (phone_e164, keyword) values ('+12125550143', 'STOP')`)).rejects.toThrow();
+  });
+});
+
+describe("Twilio incoming-message webhook", () => {
+  const TOKEN = "c".repeat(32);
+  const URL_ = "http://localhost:3000/api/sms/twilio";
+  const signed = (params: Record<string, string>, url = URL_) => {
+    const body = new URLSearchParams(params);
+    return { raw: body.toString(), headers: new Headers({ "x-twilio-signature": twilioSignature(TOKEN, url, body) }) };
+  };
+  const opts = { authToken: TOKEN, fromNumber: "+18885550100" };
+
+  it("rejects requests without a valid signature, and answers 503 until configured", async () => {
+    const { raw, headers } = signed({ From: "+12125550142", To: "+18885550100", Body: "STOP" });
+    expect((await handleTwilioInbound(URL_, headers, raw, { authToken: "", fromNumber: null })).status).toBe(503);
+    expect((await handleTwilioInbound(URL_, new Headers({ "x-twilio-signature": "bm9wZQ==" }), raw, opts)).status).toBe(401);
+    expect((await handleTwilioInbound(URL_, new Headers(), raw, opts)).status).toBe(401);
+    // A body changed after signing fails.
+    expect((await handleTwilioInbound(URL_, headers, raw.replace("STOP", "START"), opts)).status).toBe(401);
+    expect(await sql`select 1 from app.sms_opt_outs`).toHaveLength(0);
+  });
+
+  it("records STOP and START replies to the sending number and answers with empty TwiML", async () => {
+    const stop = signed({ From: "+12125550142", To: "+18885550100", Body: "Stop", MessageSid: "SM1", AccountSid: "AC1" });
+    expect(await handleTwilioInbound(URL_, stop.headers, stop.raw, opts)).toEqual({ status: 200, body: EMPTY_TWIML, contentType: "text/xml" });
+    expect((await sql`select phone_e164, keyword from app.sms_opt_outs`)[0]).toEqual({ phone_e164: "+12125550142", keyword: "STOP" });
+
+    const start = signed({ From: "+12125550142", To: "+18885550100", Body: "Yes please", OptOutType: "START" });
+    expect((await handleTwilioInbound(URL_, start.headers, start.raw, opts)).status).toBe(200);
+    expect(await sql`select 1 from app.sms_opt_outs`).toHaveLength(0);
+
+    // Twilio's Advanced Opt-Out flag counts even when the text has no keyword of ours.
+    const flagged = signed({ From: "+12125550143", To: "+18885550100", Body: "Arret", OptOutType: "STOP" });
+    await handleTwilioInbound(URL_, flagged.headers, flagged.raw, opts);
+    expect((await sql`select keyword from app.sms_opt_outs where phone_e164 = '+12125550143'`)[0]).toEqual({ keyword: "PROVIDER" });
+  });
+
+  it("ignores replies to other numbers on the account", async () => {
+    const other = signed({ From: "+12125550144", To: "+13105550111", Body: "STOP" });
+    expect((await handleTwilioInbound(URL_, other.headers, other.raw, opts)).status).toBe(200);
+    expect(await sql`select 1 from app.sms_opt_outs where phone_e164 = '+12125550144'`).toHaveLength(0);
+  });
+
+  it("accepts a signature made for the APP_BASE_URL address of the route", async () => {
+    // Twilio signs the URL configured on the number; the request may arrive with another host.
+    const { raw, headers } = signed({ From: "+12125550145", To: "+18885550100", Body: "STOP" }, URL_);
+    expect((await handleTwilioInbound("http://internal-host:8080/api/sms/twilio", headers, raw, opts)).status).toBe(200);
+    expect(await sql`select 1 from app.sms_opt_outs where phone_e164 = '+12125550145'`).toHaveLength(1);
   });
 });
 

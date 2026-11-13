@@ -6,7 +6,7 @@ import { DEFAULT_EMAIL_FROM, resetEnvCache } from "@/server/env";
 import { encryptSecret, encryptWith, parseKeyRing } from "@/server/crypto/aes";
 import { sendEmail, type ResendLike } from "@/server/email/send";
 import { verifyTurnstile } from "@/server/http/turnstile";
-import { sendSms } from "@/server/sms/sendblue";
+import { sendSms } from "@/server/sms/send";
 import { slackClientFromSettings, SlackNotConfiguredError } from "@/server/slack/client";
 import { checkPushBearer } from "@/server/sync/http";
 import {
@@ -18,7 +18,7 @@ import {
   resetIntegrationSettingsCache,
 } from "@/server/settings/integrations";
 import { listIntegrationSettings, removeIntegrationSetting, setIntegrationSetting, SettingsError, type SettingView } from "@/server/settings/admin";
-import { runSettingsCheck, TEST_SMS_TEXT, TURNSTILE_DUMMY_TOKEN } from "@/server/settings/checks";
+import { runSettingsCheck, TEST_SMS_TEXT, TEST_SMS_TEXT_TWILIO, TURNSTILE_DUMMY_TOKEN } from "@/server/settings/checks";
 import { MANAGED_KEYS, settingAad } from "@/server/settings/keys";
 
 let sql: Sql;
@@ -386,7 +386,7 @@ describe("admin functions", () => {
     await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-HHHH");
     await setIntegrationSetting(admin, "SENDBLUE_FROM_NUMBER", "+15551234567");
     const views = Object.fromEntries((await listIntegrationSettings(admin)).map((v) => [v.key, v]));
-    expect(Object.keys(views)).toHaveLength(13);
+    expect(Object.keys(views)).toHaveLength(MANAGED_KEYS.length);
     expect(views.SLACK_BOT_TOKEN).toMatchObject({ source: "panel", isSecret: true, last4: "HHHH", value: null, updatedByName: "Ada Admin" });
     expect(views.SLACK_BOT_TOKEN.updatedAt).toBeInstanceOf(Date);
     expect(views.N8N_SIGNING_SECRET).toMatchObject({ source: "vercel", last4: "cret", value: null, updatedAt: null });
@@ -583,6 +583,41 @@ describe("consumers use the panel value", () => {
     }
   });
 
+  it("sends every text through Twilio once the Twilio Account SID is set", async () => {
+    const admin = await adminSession();
+    const sid = "AC" + "0123456789abcdef".repeat(2);
+    await setIntegrationSetting(admin, "SENDBLUE_API_KEY", "sb-panel-key-id");
+    await setIntegrationSetting(admin, "SENDBLUE_API_SECRET", "sb-panel-secret-key");
+    await setIntegrationSetting(admin, "SENDBLUE_FROM_NUMBER", "+12125550100");
+    const http = fakeFetch({ sid: "SM1", status: "queued" }, 201);
+    vi.stubGlobal("fetch", http.fn);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await setIntegrationSetting(admin, "TWILIO_ACCOUNT_SID", sid);
+      // Twilio is chosen but incomplete: nothing is sent, and SendBlue is not used instead.
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toMatchObject({ skipped: true });
+      await setIntegrationSetting(admin, "TWILIO_AUTH_TOKEN", "a".repeat(32));
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toMatchObject({ skipped: true });
+      expect(http.calls).toHaveLength(0);
+      expect(info.mock.calls.flat().join(" ")).toContain("TWILIO_FROM_NUMBER not set");
+
+      await setIntegrationSetting(admin, "TWILIO_FROM_NUMBER", "+18885550100");
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toEqual({ messageHandle: "SM1", status: "queued", skipped: false });
+      expect(http.calls).toHaveLength(1);
+      expect(http.calls[0].url).toBe(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`);
+      expect(Object.fromEntries(new URLSearchParams(String(http.calls[0].init.body)))).toEqual({ To: "+12125550199", From: "+18885550100", Body: "Hi" });
+
+      // Removing the Account SID returns to SendBlue.
+      await removeIntegrationSetting(admin, "TWILIO_ACCOUNT_SID");
+      const sb = fakeFetch({ status: "QUEUED", message_handle: "mh_2" });
+      vi.stubGlobal("fetch", sb.fn);
+      expect(await sendSms({ to: "+12125550199", content: "Hi" }, "test")).toMatchObject({ messageHandle: "mh_2" });
+      expect(sb.calls[0].url).toContain("api.sendblue.com");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("builds the Slack client from the panel token", async () => {
     const admin = await adminSession();
     await setIntegrationSetting(admin, "SLACK_BOT_TOKEN", "xoxb-panel-token-JJJJ");
@@ -683,6 +718,29 @@ describe("test buttons", () => {
     const failed = await runSettingsCheck(admin, "sms", { fetch: rejected.fn });
     expect(failed.ok).toBe(false);
     expect(failed.message).not.toContain("sb-panel");
+  });
+
+  it("sends the Twilio test text only to the admin's own number", async () => {
+    const admin = await adminSession();
+    expect(await runSettingsCheck(admin, "twilio")).toMatchObject({ ok: false, message: expect.stringContaining("Account SID and auth token") });
+    const sid = "AC" + "0123456789abcdef".repeat(2);
+    await setIntegrationSetting(admin, "TWILIO_ACCOUNT_SID", sid);
+    await setIntegrationSetting(admin, "TWILIO_AUTH_TOKEN", "b".repeat(32));
+    expect(await runSettingsCheck(admin, "twilio")).toMatchObject({ ok: false, message: expect.stringContaining("sending number") });
+    await setIntegrationSetting(admin, "TWILIO_FROM_NUMBER", "+18885550100");
+
+    const tw = fakeFetch({ sid: "SM7", status: "queued" }, 201);
+    expect(await runSettingsCheck(admin, "twilio", { fetch: tw.fn })).toMatchObject({ ok: false, message: expect.stringContaining("Availability > Booking preferences") });
+    expect(tw.calls).toHaveLength(0);
+
+    await sql`insert into app.user_settings (user_id, sms_phone) values (${admin.id}, '+12125550199')`;
+    expect(await runSettingsCheck(admin, "twilio", { fetch: tw.fn })).toEqual({ ok: true, message: "Test text sent through Twilio to your number ***-0199." });
+    expect(Object.fromEntries(new URLSearchParams(String(tw.calls[0].init.body)))).toEqual({ To: "+12125550199", From: "+18885550100", Body: TEST_SMS_TEXT_TWILIO });
+
+    const rejected = fakeFetch({ code: 20003, message: "Authenticate" }, 401);
+    const failed = await runSettingsCheck(admin, "twilio", { fetch: rejected.fn });
+    expect(failed).toMatchObject({ ok: false, message: expect.stringContaining("code_20003") });
+    expect(failed.message).not.toContain("b".repeat(32));
   });
 
   it("is for admins only and records each check without values", async () => {

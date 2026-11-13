@@ -28,6 +28,8 @@ A key counts as unavailable when it may be set in the panel but its value cannot
 |---|---|---|
 | Email (Resend) | `RESEND_API_KEY` | secret |
 | Email (Resend) | `EMAIL_FROM` | plain |
+| Text messages (Twilio) | `TWILIO_AUTH_TOKEN` | secret |
+| Text messages (Twilio) | `TWILIO_ACCOUNT_SID`, `TWILIO_FROM_NUMBER` (E.164) | plain |
 | Text messages (SendBlue) | `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SENDBLUE_WEBHOOK_SECRET` | secret |
 | Text messages (SendBlue) | `SENDBLUE_FROM_NUMBER` (E.164) | plain |
 | Slack | `SLACK_BOT_TOKEN` | secret |

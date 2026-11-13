@@ -67,6 +67,26 @@ Agent reminder keys do not include an assignment counter. When a host is removed
 
 The main worker (`/api/cron/jobs`) sends reminders. `/api/cron/reminders` is a safety net that drains every `email_send`, `sms_send` and `slack_dm_send` job, so it also sends confirmation, reschedule, cancellation and host notice emails that are due.
 
+## Text message provider
+
+Texts go through **Twilio** when `TWILIO_ACCOUNT_SID` is set, and through **SendBlue** otherwise (`smsProvider()` in `src/server/sms/send.ts`). Once the Twilio Account SID is set, SendBlue is never used, even while Twilio's other settings are missing; those texts are logged instead of sent. Both providers send only from their configured sending number, and replies to either provider update the same opt-out list.
+
+Twilio is the recommended provider. SendBlue holds back links until the recipient has replied, and every merchant reminder carries the booking's manage link.
+
+## Twilio setup
+
+1. In the Twilio Console, buy a toll-free number with SMS capability and complete **toll-free verification** for it (Messaging > Regulatory Compliance > Toll-Free Verification). Until Twilio approves the verification, the number cannot text US and Canadian numbers. The use case is appointment reminders; the opt-in is the optional consent checkbox on the booking form (`booking.smsConsent` and `booking.smsDisclosure` in `messages/en.json`), and every merchant text ends with "Reply STOP to opt out". Prepared answers for the verification form: `docs/twilio-toll-free-verification.md`.
+2. On the number's configuration page, set **A message comes in** to Webhook, `POST`, `<APP_BASE_URL>/api/sms/twilio` (production: `https://book.bigthinkcapital.com/api/sms/twilio`).
+3. At **Admin > Settings > Text messages (Twilio)**, set `TWILIO_ACCOUNT_SID` (starts with `AC`), `TWILIO_AUTH_TOKEN` (32 characters, Console > Account Info) and `TWILIO_FROM_NUMBER` (the toll-free number in E.164, for example `+18885551234`). They can also be set in Vercel. Then press **Send test text**, which texts only your own number from Availability > Booking preferences.
+4. Reply STOP to the test text, check that your number appears in the opt-out list, then reply START.
+
+How it works:
+
+- The client (`src/server/sms/twilio.ts`) calls `POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json` with basic authentication and the form fields `To`, `From` and `Body`. Requests time out after 15 seconds. HTTP 429 and error 20429 retry later; 5xx responses, timeouts and network failures retry with the worker's backoff; other 4xx responses (for example 21211 invalid number, 21610 recipient replied STOP, 20003 wrong credentials) and messages created as `failed` fail the job without retrying. Error messages contain only the HTTP status and Twilio error code.
+- The webhook (`src/app/api/sms/twilio/route.ts`, `src/server/sms/twilio-inbound.ts`) verifies the `X-Twilio-Signature` header with the auth token: HMAC-SHA1 over the request URL followed by the sorted form parameters. Twilio signs the URL configured on the number, so the route accepts a signature for the URL as received or for the same path on `APP_BASE_URL`. Without the auth token it answers 503; with a wrong signature, 401.
+- Replies are matched like SendBlue replies (stop and start keywords below). Twilio's Advanced Opt-Out field `OptOutType` (`STOP`, `START`) is honoured too. Replies to another number than `TWILIO_FROM_NUMBER` are ignored. The webhook answers with an empty TwiML response, so the app never replies; Twilio answers STOP and HELP itself and refuses later sends to a number that replied STOP (error 21610).
+- Twilio has no idempotency key either, so a send that times out after Twilio accepted it can be delivered twice when the job retries.
+
 ## SendBlue setup
 
 1. In the SendBlue dashboard, create an API key. Set `SENDBLUE_API_KEY` (key ID) and `SENDBLUE_API_SECRET` (secret key) at **Admin > Settings** (Text messages), or in Vercel. A value set in Admin > Settings overrides Vercel and needs no redeploy; **Send test text** sends one text to your own number from Availability > Booking preferences (see `docs/settings.md`).
@@ -76,7 +96,7 @@ The main worker (`/api/cron/jobs`) sends reminders. `/api/cron/reminders` is a s
 
 `SENDBLUE_FROM_NUMBER` and `SENDBLUE_WEBHOOK_SECRET` can also be set at **Admin > Settings**.
 
-Without the key and secret, text jobs complete with a "not sent" log line and nothing is sent, the same way email works without `RESEND_API_KEY`.
+Without the provider's credentials or sending number, text jobs complete with a "not sent" log line and nothing is sent, the same way email works without `RESEND_API_KEY`.
 
 The client (`src/server/sms/sendblue.ts`) calls `POST https://api.sendblue.com/api/send-message` with the `sb-api-key-id` and `sb-api-secret-key` headers. Each request times out after 15 seconds (Slack Web API calls use the same limit), so a stalled request fails and is retried with backoff instead of the 60 second function being stopped while the job is running. Rate limits (HTTP 429 and line capacity declines) are retried later; validation errors, blacklisted numbers and `ERROR` or `DECLINED` statuses fail the job without retrying. SendBlue has no idempotency key, so a send that times out after SendBlue accepted it can be delivered twice when the job retries.
 

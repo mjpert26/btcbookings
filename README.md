@@ -33,9 +33,11 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 Browser ──> Next.js (Vercel) ──> Postgres (Supabase, schema "app", RLS on every table)
                │    ▲
                │    └── inbound, verified: Graph change notifications (clientState),
-               │        queue snapshot / push (HMAC or bearer), n8n
+               │        queue snapshot / push (HMAC or bearer), n8n,
+               │        text replies (Twilio signature or SendBlue secret)
                └──────> outbound via the jobs outbox: Microsoft Graph, Resend,
-                        Slack Web API, n8n (Salesforce through the SF Token Broker)
+                        Twilio or SendBlue, Slack Web API,
+                        n8n (Salesforce through the SF Token Broker)
 ```
 
 | Concern | Approach |
@@ -88,6 +90,7 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `TURNSTILE_HOSTNAMES` | with Turnstile | no | Comma-separated frontend hostnames whose Turnstile tokens are accepted (production: `book.bigthinkcapital.com`). Defaults to the hostname of `APP_BASE_URL`; `localhost` and `127.0.0.1` are ignored in production. The widget in Cloudflare must list the same hostnames. Former hostnames (`APP_LEGACY_HOSTS`) do not belong here: their pages redirect, and form posts from them fail the same-origin check before Turnstile runs |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | optional | yes | Twilio text reminders (recommended). When `TWILIO_ACCOUNT_SID` is set, every text goes through Twilio from `TWILIO_FROM_NUMBER` and SendBlue is not used. The auth token also verifies `X-Twilio-Signature` on replies posted to `/api/sms/twilio` (STOP / START). See `docs/reminders.md` |
 | `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them (or without `SENDBLUE_FROM_NUMBER`), texts are logged instead of sent |
 | `SENDBLUE_FROM_NUMBER` | with SMS | yes | The only SendBlue line the app texts from (E.164). Texts are not sent without it; STOP / START replies received on other lines are ignored |
 | `SENDBLUE_WEBHOOK_SECRET` | with SMS | yes | Secret you choose and set on the SendBlue receive webhook; SendBlue sends it in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |

@@ -35,7 +35,7 @@ const inboundSchema = z.object({
 });
 
 /** Digits with a leading plus, for comparing two spellings of the same line number. */
-function lineKey(value: string | null | undefined): string | null {
+export function lineKey(value: string | null | undefined): string | null {
   const key = value?.replace(/[^\d+]/g, "") ?? "";
   return key.length > 1 ? key : null;
 }
@@ -76,22 +76,36 @@ export async function handleInboundSms(
   if (ourLine && receivedOn && receivedOn !== ourLine) return { status: 200, body: { ok: true, action: "ignored_other_line" } };
 
   // For received messages, `number` is the end user; from_number is the sender (the same person).
-  const phone = normalizeE164(msg.number ?? msg.from_number ?? null);
-  if (!phone) return { status: 200, body: { ok: true, action: "ignored_no_number" } };
+  const action = await applyReply(opts.db ?? service(), msg.number ?? msg.from_number ?? null, msg.content, msg.opted_out ? "stop" : null);
+  return { status: 200, body: { ok: true, action } };
+}
 
-  const db = opts.db ?? service();
-  const keyword = parseOptKeyword(msg.content);
+export type ReplyAction = "opted_out" | "opted_in" | "ignored" | "ignored_no_number";
+
+/**
+ * Applies one inbound reply to the opt-out list, for every provider. A stop keyword in the
+ * text adds the sender, a start keyword removes it. Without a keyword, `providerFlag` (the
+ * provider's own opt-out report) decides. Never logs the text or the number.
+ */
+export async function applyReply(db: Db, sender: string | null, content: string | null | undefined, providerFlag: "stop" | "start" | null): Promise<ReplyAction> {
+  const phone = normalizeE164(sender);
+  if (!phone) return "ignored_no_number";
+  const keyword = parseOptKeyword(content);
   if (keyword?.action === "stop") {
     await recordOptOut(db, phone, keyword.keyword);
-    return { status: 200, body: { ok: true, action: "opted_out" } };
+    return "opted_out";
   }
   if (keyword?.action === "start") {
     await clearOptOut(db, phone);
-    return { status: 200, body: { ok: true, action: "opted_in" } };
+    return "opted_in";
   }
-  if (msg.opted_out) {
+  if (providerFlag === "stop") {
     await recordOptOut(db, phone, "PROVIDER");
-    return { status: 200, body: { ok: true, action: "opted_out" } };
+    return "opted_out";
   }
-  return { status: 200, body: { ok: true, action: "ignored" } };
+  if (providerFlag === "start") {
+    await clearOptOut(db, phone);
+    return "opted_in";
+  }
+  return "ignored";
 }

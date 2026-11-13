@@ -22,6 +22,9 @@ export const integrationValueRules = {
   SENDBLUE_API_SECRET: z.string(),
   SENDBLUE_FROM_NUMBER: z.string().regex(E164_RE),
   SENDBLUE_WEBHOOK_SECRET: z.string().min(16),
+  TWILIO_ACCOUNT_SID: z.string().regex(/^AC[0-9a-fA-F]{32}$/),
+  TWILIO_AUTH_TOKEN: z.string().regex(/^[0-9A-Za-z]{32}$/),
+  TWILIO_FROM_NUMBER: z.string().regex(E164_RE),
   N8N_SIGNING_SECRET: z.string(),
   SF_SYNC_SIGNING_SECRET: z.string(),
   SF_QUEUE_PUSH_BEARER: z.string(),
@@ -29,6 +32,12 @@ export const integrationValueRules = {
 
 const rules = integrationValueRules;
 const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
+/**
+ * Trims a string and maps an empty result to undefined. Used for optional integration values
+ * with a strict format, so a value pasted with a stray space or line break does not make
+ * env() (and with it the whole app) fail.
+ */
+const trimmedOrUndefined = (v: unknown) => (typeof v === "string" ? v.trim() || undefined : v);
 
 /**
  * Server environment. Validated lazily on first access so that `next build` does not
@@ -83,9 +92,16 @@ const schema = z.object({
   // SendBlue SMS. Without the key, secret and sending number, text messages are logged and not sent.
   SENDBLUE_API_KEY: rules.SENDBLUE_API_KEY.optional(),
   SENDBLUE_API_SECRET: rules.SENDBLUE_API_SECRET.optional(),
-  SENDBLUE_FROM_NUMBER: z.preprocess(emptyToUndefined, rules.SENDBLUE_FROM_NUMBER.optional()),
+  SENDBLUE_FROM_NUMBER: z.preprocess(trimmedOrUndefined, rules.SENDBLUE_FROM_NUMBER.optional()),
   // Shared secret SendBlue sends in the sb-signing-secret header of inbound webhooks.
-  SENDBLUE_WEBHOOK_SECRET: z.preprocess(emptyToUndefined, rules.SENDBLUE_WEBHOOK_SECRET.optional()),
+  SENDBLUE_WEBHOOK_SECRET: z.preprocess(trimmedOrUndefined, rules.SENDBLUE_WEBHOOK_SECRET.optional()),
+
+  // Twilio SMS. When TWILIO_ACCOUNT_SID is set, every text goes through Twilio from
+  // TWILIO_FROM_NUMBER and SendBlue is not used. The auth token also verifies the
+  // X-Twilio-Signature of replies posted to /api/sms/twilio.
+  TWILIO_ACCOUNT_SID: z.preprocess(trimmedOrUndefined, rules.TWILIO_ACCOUNT_SID.optional()),
+  TWILIO_AUTH_TOKEN: z.preprocess(trimmedOrUndefined, rules.TWILIO_AUTH_TOKEN.optional()),
+  TWILIO_FROM_NUMBER: z.preprocess(trimmedOrUndefined, rules.TWILIO_FROM_NUMBER.optional()),
 
   N8N_BASE_URL: z.string().url().default("https://api.bigthinkcapital.com"),
   N8N_LEAD_WEBHOOK_PATH: z.string().default("/webhook/btc-scheduler/lead"),

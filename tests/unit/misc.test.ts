@@ -96,4 +96,24 @@ describe("env", () => {
       mod.resetEnvCache();
     }
   });
+
+  it("trims optional texting values pasted with stray whitespace instead of failing the whole environment", async () => {
+    const mod = await import("@/server/env");
+    const saved = { ...process.env };
+    try {
+      process.env.TWILIO_ACCOUNT_SID = ` AC${"0123456789abcdef".repeat(2)}\n`;
+      process.env.TWILIO_AUTH_TOKEN = `${"a".repeat(32)}\n`;
+      process.env.TWILIO_FROM_NUMBER = " +18885550100 ";
+      process.env.SENDBLUE_FROM_NUMBER = "   ";
+      mod.resetEnvCache();
+      const e = mod.env();
+      expect(e.TWILIO_ACCOUNT_SID).toBe(`AC${"0123456789abcdef".repeat(2)}`);
+      expect(e.TWILIO_AUTH_TOKEN).toBe("a".repeat(32));
+      expect(e.TWILIO_FROM_NUMBER).toBe("+18885550100");
+      expect(e.SENDBLUE_FROM_NUMBER).toBeUndefined();
+    } finally {
+      process.env = saved;
+      mod.resetEnvCache();
+    }
+  });
 });

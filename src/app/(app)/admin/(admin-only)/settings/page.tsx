@@ -30,6 +30,11 @@ const SOURCE: Record<SettingSource, { tone: BadgeTone; label: string }> = {
 /** Test button per group. Each one reaches only the signed-in admin, or no one. */
 const TESTS: Partial<Record<SettingGroupId, { service: CheckService; label: string; note: string }>> = {
   email: { service: "email", label: "Send test email", note: "Sends one test email to your own address." },
+  twilio: {
+    service: "twilio",
+    label: "Send test text",
+    note: "Sends one test text through Twilio to your own mobile number from Availability > Booking preferences.",
+  },
   sms: {
     service: "sms",
     label: "Send test text",

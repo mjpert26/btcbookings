@@ -5,7 +5,8 @@ import { integrationValueRules } from "@/server/env";
 /**
  * The integration keys that Admin > Settings manages, how they are grouped on the page, and
  * how a submitted value is validated. The list must match the check constraints of
- * app.integration_settings (migration 20261112120000_integration_settings.sql).
+ * app.integration_settings (migrations 20261112120000_integration_settings.sql and
+ * 20261113120000_twilio_settings.sql).
  *
  * URLs the app sends signed requests to (N8N_BASE_URL, N8N_LEAD_WEBHOOK_PATH) and bootstrap
  * secrets are deliberately not managed here: they stay in the Vercel environment.
@@ -17,6 +18,7 @@ export const SECRET_KEYS = [
   "SENDBLUE_API_KEY",
   "SENDBLUE_API_SECRET",
   "SENDBLUE_WEBHOOK_SECRET",
+  "TWILIO_AUTH_TOKEN",
   "SLACK_BOT_TOKEN",
   "TURNSTILE_SECRET_KEY",
   "N8N_SIGNING_SECRET",
@@ -25,7 +27,14 @@ export const SECRET_KEYS = [
 ] as const;
 
 /** Keys that are not secret. They are stored and shown in full. */
-export const PLAIN_KEYS = ["EMAIL_FROM", "SENDBLUE_FROM_NUMBER", "SLACK_ADMIN_NOTIFY_CHANNEL", "TURNSTILE_SITE_KEY"] as const;
+export const PLAIN_KEYS = [
+  "EMAIL_FROM",
+  "SENDBLUE_FROM_NUMBER",
+  "TWILIO_ACCOUNT_SID",
+  "TWILIO_FROM_NUMBER",
+  "SLACK_ADMIN_NOTIFY_CHANNEL",
+  "TURNSTILE_SITE_KEY",
+] as const;
 
 export const MANAGED_KEYS = [...SECRET_KEYS, ...PLAIN_KEYS] as const;
 
@@ -90,6 +99,23 @@ export const KEY_INFO: Record<ManagedKey, KeyInfo> = {
     hint: "The secret SendBlue sends in the sb-signing-secret header to /api/sms/inbound (STOP and START replies).",
     invalid: "Use at least 16 characters.",
   },
+  TWILIO_ACCOUNT_SID: {
+    label: "Account SID",
+    hint: "Starts with AC (Twilio Console, Account Info). Setting it sends every text through Twilio instead of SendBlue.",
+    invalid: "Use the Account SID: AC followed by 32 letters and digits.",
+    placeholder: "AC…",
+  },
+  TWILIO_AUTH_TOKEN: {
+    label: "Auth token",
+    hint: "From Twilio Console, Account Info. Sends texts and verifies the signature of replies posted to /api/sms/twilio.",
+    invalid: "Use the 32-character auth token.",
+  },
+  TWILIO_FROM_NUMBER: {
+    label: "Sending number",
+    hint: "Required. The only Twilio number the scheduler texts from (the toll-free number), in E.164 format. Texts are not sent without it, and replies to other numbers are ignored.",
+    invalid: "Use E.164 format: a plus sign and 8 to 15 digits, for example +18885551234.",
+    placeholder: "+18885551234",
+  },
   SLACK_BOT_TOKEN: { label: "Bot token", hint: "The xoxb- token of the BTC Scheduler Slack app.", placeholder: "xoxb-…" },
   SLACK_ADMIN_NOTIFY_CHANNEL: {
     label: "Admin notice channel",
@@ -112,16 +138,22 @@ export const KEY_INFO: Record<ManagedKey, KeyInfo> = {
   },
 };
 
-export type SettingGroupId = "email" | "sms" | "slack" | "turnstile" | "salesforce";
+export type SettingGroupId = "email" | "twilio" | "sms" | "slack" | "turnstile" | "salesforce";
 
 export type SettingGroup = { id: SettingGroupId; title: string; description: string; keys: readonly ManagedKey[] };
 
 export const SETTING_GROUPS: readonly SettingGroup[] = [
   { id: "email", title: "Email (Resend)", description: "Booking confirmations, reminders and host notices.", keys: ["RESEND_API_KEY", "EMAIL_FROM"] },
   {
+    id: "twilio",
+    title: "Text messages (Twilio)",
+    description: "Merchant and agent text reminders, and STOP / START replies. Used for every text when the Account SID is set.",
+    keys: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"],
+  },
+  {
     id: "sms",
     title: "Text messages (SendBlue)",
-    description: "Merchant and agent text reminders, and STOP / START replies.",
+    description: "Used for text reminders only while no Twilio Account SID is set. SendBlue holds back links until the person has replied.",
     keys: ["SENDBLUE_API_KEY", "SENDBLUE_API_SECRET", "SENDBLUE_FROM_NUMBER", "SENDBLUE_WEBHOOK_SECRET"],
   },
   { id: "slack", title: "Slack", description: "Channel and user group sync, admin notices and agent reminder messages.", keys: ["SLACK_BOT_TOKEN", "SLACK_ADMIN_NOTIFY_CHANNEL"] },

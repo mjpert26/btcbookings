@@ -9,7 +9,7 @@ import { loadAgentReminderData, reminderDisabledReason, reminderSkipReason } fro
 import { loadReminderSettings } from "@/server/booking/side-effects";
 import { isOptedOut } from "@/server/sms/opt-out";
 import { normalizeE164, redactPhone } from "@/server/sms/phone";
-import { sendSms } from "@/server/sms/sendblue";
+import { sendSms } from "@/server/sms/send";
 import { agentReminderSms, merchantReminderSms } from "@/server/sms/templates";
 
 const payloadSchema = z.object({

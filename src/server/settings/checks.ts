@@ -6,6 +6,7 @@ import type { SessionUser } from "@/server/auth/session";
 import { sendEmail, type ResendLike } from "@/server/email/send";
 import { siteverify } from "@/server/http/turnstile";
 import { createSendblueClient } from "@/server/sms/sendblue";
+import { createTwilioClient } from "@/server/sms/twilio";
 import { createSlackClient, type FetchLike } from "@/server/slack/client";
 import { integrationSettings, settingUnavailable, type IntegrationConfig } from "@/server/settings/integrations";
 import { SettingsError } from "@/server/settings/admin";
@@ -21,20 +22,20 @@ import type { ManagedKey } from "@/server/settings/keys";
  *   the secret is wrong; invalid-input-response means the secret was accepted. A secret that
  *   accepts the dummy token is a Cloudflare test key, which lets every request pass, so the
  *   check fails.
- * - Text messages: the SendBlue client has no read-only request, so one test text is sent to
- *   the admin's own mobile number (Availability > Booking preferences), unless it opted out.
+ * - Text messages (SendBlue and Twilio): one test text through that provider to the admin's
+ *   own mobile number (Availability > Booking preferences), unless it opted out.
  *
  * Results and audit entries never contain a key, secret or token.
  */
 
-export const CHECK_SERVICES = ["email", "sms", "slack", "turnstile"] as const;
+export const CHECK_SERVICES = ["email", "sms", "twilio", "slack", "turnstile"] as const;
 
 export type CheckService = (typeof CHECK_SERVICES)[number];
 
 export type CheckResult = { ok: boolean; message: string };
 
 export type CheckDeps = {
-  /** Replaces fetch for Slack, Turnstile and SendBlue. */
+  /** Replaces fetch for Slack, Turnstile, SendBlue and Twilio. */
   fetch?: FetchLike;
   /** Builds the Resend client for the email check. */
   resend?: (apiKey: string) => ResendLike;
@@ -44,6 +45,8 @@ export type CheckDeps = {
 export const TURNSTILE_DUMMY_TOKEN = "btc-scheduler-settings-check";
 
 export const TEST_SMS_TEXT = "BTC Scheduler: test message from Admin > Settings. Your SendBlue settings work.";
+
+export const TEST_SMS_TEXT_TWILIO = "BTC Scheduler: test message from Admin > Settings. Your Twilio settings work. Reply STOP to opt out.";
 
 async function assertAdmin(user: SessionUser): Promise<void> {
   const ok = await withUser(user.id, async (tx) => (await tx<{ ok: boolean }[]>`select app.is_admin() as ok`)[0]?.ok);
@@ -136,16 +139,8 @@ async function checkTurnstile(deps: CheckDeps): Promise<CheckResult> {
   return { ok: false, message: `Cloudflare answered with ${result.errorCodes.join(", ") || "an unexpected response"}.` };
 }
 
-async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult> {
-  const config = await integrationSettings({ fresh: true });
-  if (unreadable(config, "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET")) return { ok: false, message: UNAVAILABLE_MESSAGE };
-  if (!config.SENDBLUE_API_KEY || !config.SENDBLUE_API_SECRET) {
-    return { ok: false, message: "Set the SendBlue API key ID and secret key first." };
-  }
-  if (unreadable(config, "SENDBLUE_FROM_NUMBER")) return { ok: false, message: UNAVAILABLE_MESSAGE };
-  if (!config.SENDBLUE_FROM_NUMBER) {
-    return { ok: false, message: "Set the sending number first. Texts are sent only from that SendBlue line." };
-  }
+/** The admin's own mobile number and whether it opted out, or a result explaining why no test text can be sent. */
+async function ownNumber(user: SessionUser): Promise<{ phone: string } | CheckResult> {
   const { phone, optedOut } = await withUser(user.id, async (tx) => {
     const [settings] = await tx<{ sms_phone: string | null }[]>`select sms_phone from app.user_settings where user_id = ${user.id}`;
     const number = settings?.sms_phone ?? null;
@@ -160,6 +155,22 @@ async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult
     };
   }
   if (optedOut) return { ok: false, message: `Your number ${maskPhone(phone)} replied STOP. Text START to the sending number, then try again.` };
+  return { phone };
+}
+
+async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult> {
+  const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET")) return { ok: false, message: UNAVAILABLE_MESSAGE };
+  if (!config.SENDBLUE_API_KEY || !config.SENDBLUE_API_SECRET) {
+    return { ok: false, message: "Set the SendBlue API key ID and secret key first." };
+  }
+  if (unreadable(config, "SENDBLUE_FROM_NUMBER")) return { ok: false, message: UNAVAILABLE_MESSAGE };
+  if (!config.SENDBLUE_FROM_NUMBER) {
+    return { ok: false, message: "Set the sending number first. Texts are sent only from that SendBlue line." };
+  }
+  const own = await ownNumber(user);
+  if (!("phone" in own)) return own;
+  const { phone } = own;
   try {
     const client = createSendblueClient({
       apiKey: config.SENDBLUE_API_KEY,
@@ -174,12 +185,44 @@ async function checkSms(user: SessionUser, deps: CheckDeps): Promise<CheckResult
   }
 }
 
+async function checkTwilio(user: SessionUser, deps: CheckDeps): Promise<CheckResult> {
+  const config = await integrationSettings({ fresh: true });
+  if (unreadable(config, "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER")) return { ok: false, message: UNAVAILABLE_MESSAGE };
+  if (!config.TWILIO_ACCOUNT_SID || !config.TWILIO_AUTH_TOKEN) {
+    return { ok: false, message: "Set the Twilio Account SID and auth token first." };
+  }
+  if (!config.TWILIO_FROM_NUMBER) {
+    return { ok: false, message: "Set the sending number first. Texts are sent only from that Twilio number." };
+  }
+  const own = await ownNumber(user);
+  if (!("phone" in own)) return own;
+  try {
+    await createTwilioClient({
+      accountSid: config.TWILIO_ACCOUNT_SID,
+      authToken: config.TWILIO_AUTH_TOKEN,
+      fromNumber: config.TWILIO_FROM_NUMBER,
+      fetch: deps.fetch,
+    }).sendMessage({ to: own.phone, content: TEST_SMS_TEXT_TWILIO });
+    return { ok: true, message: `Test text sent through Twilio to your number ${maskPhone(own.phone)}.` };
+  } catch (err) {
+    return { ok: false, message: `Twilio did not send the test text: ${safeError(err)}` };
+  }
+}
+
 /** Runs one test button's check for an admin and records it in the audit log. */
 export async function runSettingsCheck(user: SessionUser, service: CheckService, deps: CheckDeps = {}): Promise<CheckResult> {
   if (!CHECK_SERVICES.includes(service)) throw new SettingsError("unknown_key", "Unknown check.");
   await assertAdmin(user);
   const result =
-    service === "email" ? await checkEmail(user, deps) : service === "slack" ? await checkSlack(deps) : service === "turnstile" ? await checkTurnstile(deps) : await checkSms(user, deps);
+    service === "email"
+      ? await checkEmail(user, deps)
+      : service === "slack"
+        ? await checkSlack(deps)
+        : service === "turnstile"
+          ? await checkTurnstile(deps)
+          : service === "twilio"
+            ? await checkTwilio(user, deps)
+            : await checkSms(user, deps);
   await recordCheck(user, service, result.ok);
   return result;
 }

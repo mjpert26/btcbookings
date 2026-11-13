@@ -50,7 +50,7 @@ These stay in Vercel and cannot be changed in the app: `DATABASE_URL`, `TOKEN_EN
 - Decryption happens only in the resolver, on the service connection.
 - Check constraints allow only the managed key names and require `value_enc` for secrets and `value_plain` for plain keys.
 
-Migration: `supabase/migrations/20261112120000_integration_settings.sql`.
+Migrations: `supabase/migrations/20261112120000_integration_settings.sql`; `supabase/migrations/20261113120000_twilio_settings.sql` adds `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM_NUMBER` to the allowed keys. Saving a Twilio key fails until it is applied.
 
 ## The page
 
@@ -63,7 +63,8 @@ Test buttons reach only the signed-in admin, or no one:
 | Group | Test | What it does |
 |---|---|---|
 | Email | Send test email | Sends one email to the admin's own address. |
-| Text messages | Send test text | The SendBlue client has no read-only request, so this sends one text to the admin's own mobile number (Availability > Booking preferences). A number that replied STOP is not texted. |
+| Text messages (Twilio) | Send test text | Sends one text through the Twilio Messages API from `TWILIO_FROM_NUMBER` to the admin's own mobile number (Availability > Booking preferences). A number that replied STOP is not texted. |
+| Text messages (SendBlue) | Send test text | The SendBlue client has no read-only request, so this sends one text to the admin's own mobile number (Availability > Booking preferences). A number that replied STOP is not texted. |
 | Slack | Check token | Calls `auth.test`. Nothing is posted. |
 | Turnstile | Check secret key | Calls `siteverify` with the secret and a dummy token. `invalid-input-secret` means the secret is wrong; `invalid-input-response` means the secret is valid. A secret that accepts the dummy token is a Cloudflare test key that lets every request pass, so the check fails. |
 
@@ -85,6 +86,16 @@ Every change is written in the same transaction as the change, with entity type 
 2. Set it in Admin > Settings and use the test button where there is one. Other server instances keep using the old value for up to 30 seconds.
 3. For shared secrets (`N8N_SIGNING_SECRET`, `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER`, `SENDBLUE_WEBHOOK_SECRET`), update the other side (n8n, Salesforce or SendBlue) right after. Requests signed with the old value fail until both sides match, including on instances that still hold the old value.
 4. Wait at least 30 seconds, then revoke the old key with the provider. If the old value is also in Vercel, remove or replace it there too: the app falls back to the Vercel value when the panel value is removed or cannot be read.
+
+### Twilio auth token
+
+`TWILIO_AUTH_TOKEN` both sends texts and verifies `X-Twilio-Signature` on `/api/sms/twilio`. Twilio signs webhooks with the primary auth token only, and promoting the secondary token replaces the old primary. Rotate at a quiet time:
+
+1. Create the secondary auth token in the Twilio Console.
+2. Set it as `TWILIO_AUTH_TOKEN` in Admin > Settings and run **Send test text** for Twilio (the secondary token is accepted for sending).
+3. Wait 30 seconds so every instance uses the new token, then promote the secondary token in Twilio straight away.
+
+Replies that arrive between saving and promoting fail with 401 and are not recorded (a STOP or START in that window is lost). Do not promote before saving: texts sent with the replaced token fail permanently (Twilio error 20003). If the old token is also in Vercel, replace it there too.
 
 ### Turnstile keys
 

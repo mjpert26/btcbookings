@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createTwilioClient, twilioSignature, TWILIO_TIMEOUT_MS, validTwilioSignature } from "@/server/sms/twilio";
+import { signedUrlCandidates } from "@/server/sms/twilio-inbound";
 import { PermanentJobError, RetryAfterError } from "@/server/jobs/types";
 
 const SID = "AC" + "0123456789abcdef".repeat(2);
@@ -33,6 +34,15 @@ describe("twilioSignature", () => {
     // A changed parameter breaks the signature.
     const tampered = new URLSearchParams({ Body: "START", From: "+12125550142", To: "+18885550100" });
     expect(validTwilioSignature(TOKEN, good, ["https://book.bigthinkcapital.com/api/sms/twilio"], tampered)).toBe(false);
+  });
+
+  it("accepts a signature made over the URL with the default port written out", () => {
+    const params = new URLSearchParams({ Body: "STOP", From: "+12125550142", To: "+18885550100" });
+    const withPort = twilioSignature(TOKEN, "https://book.bigthinkcapital.com:443/api/sms/twilio?x=1", params);
+    const candidates = signedUrlCandidates("https://book.bigthinkcapital.com/api/sms/twilio?x=1");
+    expect(candidates).toContain("https://book.bigthinkcapital.com/api/sms/twilio?x=1");
+    expect(candidates).toContain("https://book.bigthinkcapital.com:443/api/sms/twilio?x=1");
+    expect(validTwilioSignature(TOKEN, withPort, candidates, params)).toBe(true);
   });
 });
 

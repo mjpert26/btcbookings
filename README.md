@@ -91,9 +91,9 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | optional | yes | Twilio text reminders (recommended). When `TWILIO_ACCOUNT_SID` is set, every text goes through Twilio from `TWILIO_FROM_NUMBER` and SendBlue is not used. The auth token also verifies `X-Twilio-Signature` on replies posted to `/api/sms/twilio` (STOP / START). See `docs/reminders.md` |
-| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders; without them (or without `SENDBLUE_FROM_NUMBER`), texts are logged instead of sent |
-| `SENDBLUE_FROM_NUMBER` | with SMS | yes | The only SendBlue line the app texts from (E.164). Texts are not sent without it; STOP / START replies received on other lines are ignored |
-| `SENDBLUE_WEBHOOK_SECRET` | with SMS | yes | Secret you choose and set on the SendBlue receive webhook; SendBlue sends it in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
+| `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` | optional | yes | SendBlue text reminders, used only while `TWILIO_ACCOUNT_SID` is not set; without them (or without `SENDBLUE_FROM_NUMBER`), texts are then logged instead of sent |
+| `SENDBLUE_FROM_NUMBER` | with SendBlue | yes | The only SendBlue line the app texts from (E.164). Texts are not sent without it; STOP / START replies received on other lines are ignored |
+| `SENDBLUE_WEBHOOK_SECRET` | with SendBlue | yes | Secret you choose and set on the SendBlue receive webhook; SendBlue sends it in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
 | `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH` | for SF | no | Where the app sends signed requests to n8n. Kept out of the app on purpose |
 | `N8N_SIGNING_SECRET` | for SF | yes | Signs outbound requests to n8n (Salesforce leads, Sync now) |
 | `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | yes | Inbound queue snapshot and push authentication |
@@ -122,7 +122,7 @@ Each booking page sets its own reminders in the editor (**Reminders** section):
 - Merchant (invitee) reminders by email and/or text message at the chosen times. Default: email at 1 day and 1 hour before, as before.
 - Agent (host) reminders by email, Slack direct message and/or text message, at 5, 15, 30, 60 minutes or 1 day before. Default: off.
 
-Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through SendBlue. Merchants get texts only when they enter a phone number and check the consent box that the booking form shows on pages with text reminders; they can reply STOP to opt out and START to opt back in. Agents set their own number under **Availability > Booking preferences**. Turning a channel or reminder time off also stops reminders already scheduled for existing bookings. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
+Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through Twilio when `TWILIO_ACCOUNT_SID` is set, and through SendBlue otherwise. Merchants get texts only when they enter a phone number and check the consent box that the booking form shows on pages with text reminders; they can reply STOP to opt out and START to opt back in. Agents set their own number under **Availability > Booking preferences**. Turning a channel or reminder time off also stops reminders already scheduled for existing bookings. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
 
 ## Salesforce and n8n
 
@@ -175,7 +175,7 @@ Admins send signed booking events (`booking.created`, `booking.rescheduled`, `bo
 
 ## Integration settings
 
-Global admins manage the keys for Resend, SendBlue, Slack, Turnstile and the Salesforce / n8n shared secrets at **Admin > Settings** (`/admin/settings`), without Vercel access or a redeploy. A value set there overrides the Vercel variable of the same name and applies within 30 seconds; removing it falls back to Vercel. Secrets are encrypted with the app key ring and are write-only (only the last four characters of secrets of 16 or more characters are shown), every change is audited without the value, and each service has a test button that reaches only the signed-in admin. Bootstrap variables (database, encryption keys, Entra, cron, base URLs, admin and domain lists, n8n URLs) stay in Vercel; the page shows only whether each is set. Requires migration `20261112120000_integration_settings.sql`. Details: [`docs/settings.md`](docs/settings.md).
+Global admins manage the keys for Resend, Twilio, SendBlue, Slack, Turnstile and the Salesforce / n8n shared secrets at **Admin > Settings** (`/admin/settings`), without Vercel access or a redeploy. A value set there overrides the Vercel variable of the same name and applies within 30 seconds; removing it falls back to Vercel. Secrets are encrypted with the app key ring and are write-only (only the last four characters of secrets of 16 or more characters are shown), every change is audited without the value, and each service has a test button that reaches only the signed-in admin. Bootstrap variables (database, encryption keys, Entra, cron, base URLs, admin and domain lists, n8n URLs) stay in Vercel; the page shows only whether each is set. Requires migrations `20261112120000_integration_settings.sql` and `20261113120000_twilio_settings.sql` (Twilio keys). Details: [`docs/settings.md`](docs/settings.md).
 
 ## Importing from Calendly
 
@@ -244,7 +244,7 @@ src/server/scheduling   pure slot engine, round-robin, variant resolution
 src/server/booking      booking transaction, manage links, reassignment
 src/server/sync         Salesforce Queue snapshot diffing, safety rail, run history and sync status
 src/server/slack        Slack channel and user group sync, agent reminder direct messages
-src/server/sms          SendBlue client, SMS reminders, opt-outs
+src/server/sms          Twilio and SendBlue clients, provider selection, SMS reminders, opt-outs
 src/server/teams        partner page branding and logos
 src/server/webhooks     outbound booking webhooks (dispatch, signed delivery, admin)
 src/server/salesforce   Lead payload mapping and outbox handler

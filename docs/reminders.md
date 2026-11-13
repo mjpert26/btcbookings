@@ -1,6 +1,6 @@
 # Reminders, SMS and partner names
 
-This page covers booking reminders for merchants (invitees) and agents (hosts), text messages through SendBlue, SMS opt-outs, and the partner name shown in notifications.
+This page covers booking reminders for merchants (invitees) and agents (hosts), text messages through Twilio or SendBlue, SMS opt-outs, and the partner name shown in notifications.
 
 ## Booking page settings
 
@@ -77,13 +77,13 @@ Twilio is the recommended provider. SendBlue holds back links until the recipien
 
 1. In the Twilio Console, buy a toll-free number with SMS capability and complete **toll-free verification** for it (Messaging > Regulatory Compliance > Toll-Free Verification). Until Twilio approves the verification, the number cannot text US and Canadian numbers. The use case is appointment reminders; the opt-in is the optional consent checkbox on the booking form (`booking.smsConsent` and `booking.smsDisclosure` in `messages/en.json`), and every merchant text ends with "Reply STOP to opt out". Prepared answers for the verification form: `docs/twilio-toll-free-verification.md`.
 2. On the number's configuration page, set **A message comes in** to Webhook, `POST`, `<APP_BASE_URL>/api/sms/twilio` (production: `https://book.bigthinkcapital.com/api/sms/twilio`).
-3. At **Admin > Settings > Text messages (Twilio)**, set `TWILIO_ACCOUNT_SID` (starts with `AC`), `TWILIO_AUTH_TOKEN` (32 characters, Console > Account Info) and `TWILIO_FROM_NUMBER` (the toll-free number in E.164, for example `+18885551234`). They can also be set in Vercel. Then press **Send test text**, which texts only your own number from Availability > Booking preferences.
-4. Reply STOP to the test text, check that your number appears in the opt-out list, then reply START.
+3. At **Admin > Settings > Text messages (Twilio)**, set `TWILIO_AUTH_TOKEN` (32 characters, Console > Account Info) and `TWILIO_FROM_NUMBER` (the toll-free number in E.164, for example `+18885551234`) first, and `TWILIO_ACCOUNT_SID` (starts with `AC`) last. Saving the Account SID switches every text to Twilio at once; while the auth token or sending number is missing, texts are skipped and not retried. The keys can also be set in Vercel (all three in one deployment). The settings need migration `20261113120000_twilio_settings.sql`. Then press **Send test text**, which texts only your own number from Availability > Booking preferences.
+4. Reply STOP to the test text and press **Send test text** again. It should answer "Your number ***-NNNN replied STOP. Text START to the sending number, then try again.", which shows the reply reached `/api/sms/twilio` and was recorded. Then reply START and press **Send test text** once more; the test text is sent again.
 
 How it works:
 
 - The client (`src/server/sms/twilio.ts`) calls `POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json` with basic authentication and the form fields `To`, `From` and `Body`. Requests time out after 15 seconds. HTTP 429 and error 20429 retry later; 5xx responses, timeouts and network failures retry with the worker's backoff; other 4xx responses (for example 21211 invalid number, 21610 recipient replied STOP, 20003 wrong credentials) and messages created as `failed` fail the job without retrying. Error messages contain only the HTTP status and Twilio error code.
-- The webhook (`src/app/api/sms/twilio/route.ts`, `src/server/sms/twilio-inbound.ts`) verifies the `X-Twilio-Signature` header with the auth token: HMAC-SHA1 over the request URL followed by the sorted form parameters. Twilio signs the URL configured on the number, so the route accepts a signature for the URL as received or for the same path on `APP_BASE_URL`. Without the auth token it answers 503; with a wrong signature, 401.
+- The webhook (`src/app/api/sms/twilio/route.ts`, `src/server/sms/twilio-inbound.ts`) verifies the `X-Twilio-Signature` header with the auth token: HMAC-SHA1 over the request URL followed by the sorted form parameters. Twilio signs the URL configured on the number, so the route accepts a signature for the URL as received or for the same path on `APP_BASE_URL`, each with or without an explicit default port (`:443`). Without the auth token it answers 503; with a wrong signature, 401.
 - Replies are matched like SendBlue replies (stop and start keywords below). Twilio's Advanced Opt-Out field `OptOutType` (`STOP`, `START`) is honoured too. Replies to another number than `TWILIO_FROM_NUMBER` are ignored. The webhook answers with an empty TwiML response, so the app never replies; Twilio answers STOP and HELP itself and refuses later sends to a number that replied STOP (error 21610).
 - Twilio has no idempotency key either, so a send that times out after Twilio accepted it can be delivered twice when the job retries.
 

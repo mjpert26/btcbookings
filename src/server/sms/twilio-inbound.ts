@@ -27,15 +27,24 @@ export type TwilioInboundResult = { status: number; body: string; contentType: "
 
 const json = (status: number, error: string): TwilioInboundResult => ({ status, body: JSON.stringify({ error }), contentType: "application/json" });
 
-/** URLs Twilio may have signed: the URL as received and the same path on APP_BASE_URL. */
+/**
+ * URLs Twilio may have signed: the URL as received and the same path on APP_BASE_URL, each
+ * also with the default port written out (Twilio's helper libraries accept both forms).
+ */
 export function signedUrlCandidates(requestUrl: string): string[] {
   const received = new URL(requestUrl);
-  const candidates = [received.toString()];
+  const origins = [received.origin];
   try {
-    const base = new URL(env().APP_BASE_URL);
-    candidates.push(`${base.origin}${received.pathname}${received.search}`);
+    origins.push(new URL(env().APP_BASE_URL).origin);
   } catch {
     // APP_BASE_URL is validated by env(); without it, only the received URL is checked.
+  }
+  const candidates: string[] = [];
+  for (const origin of new Set(origins)) {
+    const url = new URL(`${origin}${received.pathname}${received.search}`);
+    candidates.push(url.toString());
+    const defaultPort = url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : null;
+    if (!url.port && defaultPort) candidates.push(`${url.protocol}//${url.host}:${defaultPort}${url.pathname}${url.search}`);
   }
   return candidates;
 }

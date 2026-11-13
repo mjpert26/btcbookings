@@ -101,7 +101,7 @@ export const KEY_INFO: Record<ManagedKey, KeyInfo> = {
   },
   TWILIO_ACCOUNT_SID: {
     label: "Account SID",
-    hint: "Starts with AC (Twilio Console, Account Info). Setting it sends every text through Twilio instead of SendBlue.",
+    hint: "Starts with AC (Twilio Console, Account Info). Set it last: saving it sends every text through Twilio instead of SendBlue, and texts are skipped while the auth token or sending number is missing.",
     invalid: "Use the Account SID: AC followed by 32 letters and digits.",
     placeholder: "AC…",
   },
@@ -148,7 +148,7 @@ export const SETTING_GROUPS: readonly SettingGroup[] = [
     id: "twilio",
     title: "Text messages (Twilio)",
     description: "Merchant and agent text reminders, and STOP / START replies. Used for every text when the Account SID is set.",
-    keys: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER"],
+    keys: ["TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "TWILIO_ACCOUNT_SID"],
   },
   {
     id: "sms",

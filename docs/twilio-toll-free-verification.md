@@ -20,7 +20,7 @@ Fields marked **[fill in]** need company details that are not in this repository
 | Use case category | Appointment reminders (account notifications, if no appointment category is offered) |
 | Estimated monthly volume | **[choose]** About two texts per booking that opted in. Start with the lowest tier above the expected volume. |
 | Opt-in type | Web form |
-| Use case description | Big Think Capital uses BTC Scheduler (https://book.bigthinkcapital.com) for business owners to book calls with our funding advisors. When booking, the business owner may optionally check a box to receive text reminders about that one meeting. We send one or two reminder texts before the meeting with the date and time and a link to reschedule or cancel. Advisors also receive reminder texts for their own meetings at a mobile number they enter themselves. No marketing messages are sent, and texts are never a condition of booking. |
+| Use case description | Big Think Capital uses BTC Scheduler (https://book.bigthinkcapital.com) for business owners to book calls with our funding advisors. When booking, the business owner may optionally check a box to receive text reminders about that one meeting. We send one or two reminder texts before the meeting with the date and time, the Microsoft Teams join link for online meetings, and a link to reschedule or cancel. Advisors also receive reminder texts for their own meetings at a mobile number they enter themselves. No marketing messages are sent, and texts are never a condition of booking. |
 
 ## Opt-in workflow
 
@@ -50,16 +50,20 @@ Merchant reminder (Spanish):
 
 > Recordatorio de Big Think Capital: Funding consultation el mar, 17 de nov a las 2:00 p.m. EST. Reprogramar o cancelar: https://book.bigthinkcapital.com/b/… Responda STOP para no recibir más mensajes.
 
+Merchant reminder for a Microsoft Teams meeting:
+
+> Reminder from Big Think Capital: Funding consultation on Tue, Nov 17 at 2:00 PM EST. Join: https://teams.microsoft.com/l/meetup-join/… Reschedule or cancel: https://book.bigthinkcapital.com/b/… Reply STOP to opt out.
+
 Advisor reminder:
 
 > Reminder: Funding consultation with Pat Smith (Acme ISO) on Tue, Nov 17 at 2:00 PM EST. Phone: (212) 555-0142. Details: https://book.bigthinkcapital.com/bookings/…
 
-Links always use the company's own domain (book.bigthinkcapital.com), never a public link shortener.
+Links point to the company's own domain (book.bigthinkcapital.com) and, for online meetings, to the Microsoft Teams join link (teams.microsoft.com). No public link shortener is used.
 
 ## After approval
 
 1. Set the number's **A message comes in** webhook to `POST https://book.bigthinkcapital.com/api/sms/twilio`.
 2. In BTC Scheduler, **Admin > Settings > Text messages (Twilio)**: set the Account SID, auth token and sending number, then press **Send test text**.
-3. Reply STOP to the test text, confirm the number is on the opt-out list, then reply START.
+3. Reply STOP to the test text and press **Send test text** again: it should say your number replied STOP. Reply START, and the test text sends again.
 
 The template wording above comes from `messages/en.json`, `messages/es.json` (`sms`, `booking.smsConsent`, `booking.smsDisclosure`) and `src/server/sms/templates.ts`. If those change, update this page and the verification.

@@ -274,6 +274,31 @@ describe("resolver", () => {
     expect(warn.mock.calls.flat().join(" ")).toContain("55P03");
   });
 
+  it("does not fall back to SendBlue while the Twilio Account SID cannot be read", async () => {
+    const admin = await adminSession();
+    await setIntegrationSetting(admin, "TWILIO_ACCOUNT_SID", "AC" + "0123456789abcdef".repeat(2));
+    vi.stubEnv("SENDBLUE_API_KEY", "sb-env-key-id");
+    vi.stubEnv("SENDBLUE_API_SECRET", "sb-env-secret-key");
+    vi.stubEnv("SENDBLUE_FROM_NUMBER", "+12125550100");
+    resetEnvCache();
+    // No earlier good read, so the panel is unknown.
+    resetIntegrationSettingsCache();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const http = fakeFetch({ status: "QUEUED", message_handle: "mh_1" });
+    vi.stubGlobal("fetch", http.fn);
+    setServiceClient(refusingClient());
+    try {
+      await expect(sendSms({ to: "+12125550199", content: "Hi" }, "test")).rejects.toMatchObject({
+        name: "IntegrationSettingUnavailableError",
+        key: "TWILIO_ACCOUNT_SID",
+      });
+      expect(http.calls).toHaveLength(0);
+    } finally {
+      setServiceClient(sql);
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not let a missing key look deliberately unset while the settings cannot be read", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubEnv("SLACK_BOT_TOKEN", "");

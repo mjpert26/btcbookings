@@ -86,7 +86,7 @@ Every change is written in the same transaction as the change, with entity type 
 
 1. Create the new key with the provider.
 2. Set it in Admin > Settings and use the test button where there is one. Other server instances keep using the old value for up to 30 seconds.
-3. For shared secrets (`N8N_SIGNING_SECRET`, `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER`, `SENDBLUE_WEBHOOK_SECRET`), update the other side (n8n, Salesforce or SendBlue) right after. Requests signed with the old value fail until both sides match, including on instances that still hold the old value.
+3. For shared secrets (`N8N_SIGNING_SECRET`, `N8N_LOOKUP_TOKEN`, `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER`, `SENDBLUE_WEBHOOK_SECRET`), update the other side (n8n, Salesforce or SendBlue) right after. Requests signed with the old value fail until both sides match, including on instances that still hold the old value. For `N8N_LOOKUP_TOKEN`, update the n8n Header Auth credential "BTC Scheduler lookup token" (value `Bearer <token>`) at the same time. A mismatch does not show an error to visitors: n8n rejects every lookup and the home page quietly routes every visitor as new (see `docs/home-page.md`).
 4. Wait at least 30 seconds, then revoke the old key with the provider. If the old value is also in Vercel, remove or replace it there too: the app falls back to the Vercel value when the panel value is removed or cannot be read.
 
 ### Twilio auth token
@@ -104,7 +104,7 @@ Replies that arrive between saving and promoting fail with 401 and are not recor
 The site key and the secret key belong to one Cloudflare widget and must match. Each is saved on its own, and every instance picks up a change within 30 seconds, so the order matters:
 
 - **New secret for the same widget.** Only the secret changes. Save it, run the test button, and keep the old secret valid at Cloudflare for at least a minute if Cloudflare offers that. If the old secret stops working at once, verifications on instances that still hold it fail for up to 30 seconds.
-- **Switch to a different widget.** Saving one key before the other makes public bookings, reschedules and cancellations fail with `verification_failed` until both match everywhere. To switch without failures (assuming Vercel has no Turnstile keys; otherwise removing the panel value falls back to the Vercel secret):
+- **Switch to a different widget.** Saving one key before the other makes public bookings, reschedules, cancellations and home page email lookups fail with `verification_failed` until both match everywhere. To switch without failures (assuming Vercel has no Turnstile keys; otherwise removing the panel value falls back to the Vercel secret):
   1. Remove `TURNSTILE_SECRET_KEY` and wait 30 seconds. Verification is now skipped everywhere.
   2. Replace `TURNSTILE_SITE_KEY` with the new widget's site key and wait 30 seconds. Every public page now shows the new widget.
   3. Set `TURNSTILE_SECRET_KEY` to the new widget's secret key and run the test button. Verification is on again within 30 seconds.
@@ -113,7 +113,7 @@ The site key and the secret key belong to one Cloudflare widget and must match. 
 
 ### Turnstile checks
 
-The public forms send a Turnstile token with a fixed action: the booking form sends `book`, the reschedule form `reschedule`, and the cancel form `cancel` (`src/components/public/Turnstile.tsx`). When `TURNSTILE_SECRET_KEY` is set, `verifyTurnstile()` (`src/server/http/turnstile.ts`) accepts a token only when Cloudflare's siteverify reports success, the token's action equals the form's action, and the token was issued on a hostname in `TURNSTILE_HOSTNAMES` (Vercel only; defaults to the hostname of `APP_BASE_URL`, and `localhost` and `127.0.0.1` are ignored in production). Tokens are single-use: a replayed token is refused (`timeout-or-duplicate`). Siteverify errors, non-2xx answers and timeouts (10 seconds) refuse the request.
+The public forms send a Turnstile token with a fixed action: the booking form sends `book`, the reschedule form `reschedule`, the cancel form `cancel`, and the home page email form `lookup` (`src/components/public/Turnstile.tsx`). When `TURNSTILE_SECRET_KEY` is set, `verifyTurnstile()` (`src/server/http/turnstile.ts`) accepts a token only when Cloudflare's siteverify reports success, the token's action equals the form's action, and the token was issued on a hostname in `TURNSTILE_HOSTNAMES` (Vercel only; defaults to the hostname of `APP_BASE_URL`, and `localhost` and `127.0.0.1` are ignored in production). Tokens are single-use: a replayed token is refused (`timeout-or-duplicate`). Siteverify errors, non-2xx answers and timeouts (10 seconds) refuse the request.
 
 Every hostname in `TURNSTILE_HOSTNAMES` must also be listed under Hostname management on the widget in the Cloudflare dashboard, or the widget does not issue tokens there.
 

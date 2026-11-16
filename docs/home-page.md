@@ -109,6 +109,8 @@ Workflow settings: execution order v1; successful and failed execution data are 
 5. Activate the workflow. Use **Admin > Home page > Test an email** with an employee test record to check the lookup (Salesforce answered) and the routing.
 6. Configure the new-business page, the renewal pages and the excluded owners in Admin > Home page.
 
+To rotate the token, follow "Rotating a key" in `docs/settings.md` and update the n8n credential at the same time as `N8N_LOOKUP_TOKEN`. While the two differ, n8n rejects every lookup and every visitor is routed as new without an error on the page. Run **Test an email** afterwards to confirm.
+
 ## Privacy and abuse
 
 The redirect is instant, like Calendly's routing form: anyone who knows a customer's email can open that customer's advisor's booking page. That page is public anyway; the response never confirms whether the email exists in Salesforce and never reveals names, emails, the route or the book. Abuse is limited by the same-origin check, Turnstile (when configured), per-IP and per-email rate limits, and the daily lookup cap, after which no Salesforce lookups are made.

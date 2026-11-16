@@ -1,11 +1,30 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { Turnstile, type TurnstileHandle } from "./Turnstile";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const NARROW_QUERY = "(max-width: 399px)";
+const noopSubscribe = () => () => {};
+
+function subscribeNarrow(onChange: () => void) {
+  const mq = window.matchMedia(NARROW_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
+
+/** True on viewports too narrow for the 300px Turnstile widget plus the card padding. */
+function useNarrowViewport(): boolean {
+  return useSyncExternalStore(subscribeNarrow, () => window.matchMedia(NARROW_QUERY).matches, () => false);
+}
+
+/** False during server rendering and before hydration, true once the client has hydrated. */
+function useHydrated(): boolean {
+  return useSyncExternalStore(noopSubscribe, () => true, () => false);
+}
 
 type ErrorKey = "required" | "invalid_email" | "rateLimited" | "verification" | "generic";
 
@@ -25,6 +44,8 @@ export function HomeLookup(props: { turnstileSiteKey: string | null; websiteUrl:
   const turnstile = useRef<TurnstileHandle>(null);
   const input = useRef<HTMLInputElement>(null);
   const fallbackHeading = useRef<HTMLHeadingElement>(null);
+  const narrow = useNarrowViewport();
+  const hydrated = useHydrated();
 
   function fail(key: ErrorKey) {
     setError(key);
@@ -82,7 +103,6 @@ export function HomeLookup(props: { turnstileSiteKey: string | null; websiteUrl:
           <input
             ref={input}
             id="home-email"
-            name="email"
             type="email"
             inputMode="email"
             autoComplete="email"
@@ -99,17 +119,27 @@ export function HomeLookup(props: { turnstileSiteKey: string | null; websiteUrl:
             aria-describedby={error ? "home-email-error" : undefined}
             className="h-12 w-full min-w-0 rounded-xl border border-white/40 sm:flex-1 bg-white px-4 text-base text-ink shadow-sm placeholder:text-muted/80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white aria-invalid:border-danger"
           />
+          {/* Disabled until hydration so a native submit cannot put the email in the URL. The
+              input also has no name attribute for the same reason. */}
           <button
             type="submit"
+            disabled={!hydrated}
             aria-disabled={busy || undefined}
-            className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-6 text-base font-semibold text-navy shadow-lg shadow-black/20 hover:bg-white/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-6 text-base font-semibold text-navy shadow-lg shadow-black/20 hover:bg-white/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:opacity-70"
           >
             {busy ? <span aria-hidden="true" className="size-4 animate-spin rounded-full border-2 border-current border-r-transparent" /> : null}
             {status === "submitting" ? t("submitting") : status === "redirecting" ? t("redirecting") : t("submit")}
           </button>
         </div>
         {props.turnstileSiteKey ? (
-          <Turnstile ref={turnstile} siteKey={props.turnstileSiteKey} action="lookup" language={locale} onToken={setTurnstileToken} />
+          <Turnstile
+            ref={turnstile}
+            siteKey={props.turnstileSiteKey}
+            action="lookup"
+            language={locale}
+            size={narrow ? "compact" : "normal"}
+            onToken={setTurnstileToken}
+          />
         ) : null}
         <div aria-live="assertive" className="min-h-5">
           {error ? (

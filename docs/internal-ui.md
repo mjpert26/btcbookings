@@ -7,7 +7,7 @@ English-only pages under `src/app/(app)` plus the sign-in page. Server component
 | Route | Access | Purpose |
 |---|---|---|
 | `/login` | public | Microsoft sign-in, `?error=` codes, `?signedOut=1` notice |
-| `/` | public | Redirects to `/dashboard` or `/login` |
+| `/` | public | Signed-in users are redirected to `/dashboard`; everyone else sees the public home page (email lookup and "New here?", see `docs/home-page.md`). Staff sign in at `/login`. |
 | `/dashboard` | user | Next 7 days, calendar status (reconnect or disconnect Outlook), booking link, teams |
 | `/bookings`, `/bookings/[id]` | user (RLS) | Upcoming/past, filters, detail, history timeline, host cancel |
 | `/event-types`, `/new`, `/[id]`, `/[id]/variants` | owner or team admin | Editor, questions, host pool, public links (English and `/es`), Spanish variants and inheritance |

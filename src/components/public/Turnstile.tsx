@@ -38,15 +38,24 @@ function loadScript(): Promise<void> {
 
 export type TurnstileHandle = { reset: () => void };
 
+/** Cloudflare widget sizes: normal is 300x65, compact is 150x140, flexible fills the container (min 300px). */
+export type TurnstileSize = "normal" | "compact" | "flexible";
+
 /**
  * Cloudflare Turnstile widget. Rendered only when a site key is configured; without one
  * the server skips verification outside production.
  */
 export const Turnstile = forwardRef<
   TurnstileHandle,
-  { siteKey: string; action: "book" | "reschedule" | "cancel" | "lookup"; language: string; onToken: (t: string | null) => void }
+  {
+    siteKey: string;
+    action: "book" | "reschedule" | "cancel" | "lookup";
+    language: string;
+    size?: TurnstileSize;
+    onToken: (t: string | null) => void;
+  }
 >(
-  function Turnstile({ siteKey, action, language, onToken }, ref) {
+  function Turnstile({ siteKey, action, language, size = "normal", onToken }, ref) {
     const el = useRef<HTMLDivElement>(null);
     const widget = useRef<string | null>(null);
     const tokenCb = useRef(onToken);
@@ -70,6 +79,7 @@ export const Turnstile = forwardRef<
             sitekey: siteKey,
             action,
             language,
+            size,
             callback: (token: string) => tokenCb.current(token),
             "expired-callback": () => tokenCb.current(null),
             "error-callback": () => tokenCb.current(null),
@@ -81,8 +91,8 @@ export const Turnstile = forwardRef<
         if (widget.current) window.turnstile?.remove(widget.current);
         widget.current = null;
       };
-    }, [siteKey, action, language]);
+    }, [siteKey, action, language, size]);
 
-    return <div ref={el} className="min-h-[65px]" />;
+    return <div ref={el} className={size === "compact" ? "min-h-[140px]" : "min-h-[65px]"} />;
   },
 );

@@ -44,7 +44,7 @@ export type TurnstileHandle = { reset: () => void };
  */
 export const Turnstile = forwardRef<
   TurnstileHandle,
-  { siteKey: string; action: "book" | "reschedule" | "cancel"; language: string; onToken: (t: string | null) => void }
+  { siteKey: string; action: "book" | "reschedule" | "cancel" | "lookup"; language: string; onToken: (t: string | null) => void }
 >(
   function Turnstile({ siteKey, action, language, onToken }, ref) {
     const el = useRef<HTMLDivElement>(null);

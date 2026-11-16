@@ -179,7 +179,7 @@ export async function OwnerListingPage(props: { kind: "user" | "team"; ownerSlug
 }
 
 /** Same page for every unknown or inactive address, so nothing can be enumerated. */
-export async function PublicNotFound({ employeeLink = false }: { employeeLink?: boolean } = {}) {
+export async function PublicNotFound() {
   const t = await getTranslations({ locale: "en", namespace: "public" });
   return (
     <PublicShell locale="en">
@@ -203,11 +203,6 @@ export async function PublicNotFound({ employeeLink = false }: { employeeLink?: 
           <a href={brand.websiteUrl} rel="noopener" className="font-semibold text-primary hover:underline">
             {brand.websiteUrl.replace(/^https?:\/\/(www\.)?/, "")}
           </a>
-          {employeeLink ? (
-            <Link href="/dashboard" lang="en" className="font-semibold text-primary hover:underline">
-              Employee sign-in
-            </Link>
-          ) : null}
         </div>
         </div>
       </Card>

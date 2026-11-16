@@ -33,6 +33,7 @@ export type IntegrationConfig = {
   TURNSTILE_SITE_KEY: string | undefined;
   TURNSTILE_SECRET_KEY: string | undefined;
   N8N_SIGNING_SECRET: string | undefined;
+  N8N_LOOKUP_TOKEN: string | undefined;
   SF_SYNC_SIGNING_SECRET: string | undefined;
   SF_QUEUE_PUSH_BEARER: string | undefined;
   /**
@@ -246,6 +247,7 @@ export async function integrationSettings(opts: { fresh?: boolean } = {}): Promi
     TURNSTILE_SITE_KEY: p.TURNSTILE_SITE_KEY ?? e.TURNSTILE_SITE_KEY,
     TURNSTILE_SECRET_KEY: p.TURNSTILE_SECRET_KEY ?? e.TURNSTILE_SECRET_KEY,
     N8N_SIGNING_SECRET: p.N8N_SIGNING_SECRET ?? e.N8N_SIGNING_SECRET,
+    N8N_LOOKUP_TOKEN: p.N8N_LOOKUP_TOKEN ?? e.N8N_LOOKUP_TOKEN,
     SF_SYNC_SIGNING_SECRET: p.SF_SYNC_SIGNING_SECRET ?? e.SF_SYNC_SIGNING_SECRET,
     SF_QUEUE_PUSH_BEARER: p.SF_QUEUE_PUSH_BEARER ?? e.SF_QUEUE_PUSH_BEARER,
     unavailable: panel.known ? panel.unreadable : MANAGED_KEYS,

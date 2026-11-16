@@ -36,11 +36,11 @@ A key counts as unavailable when it may be set in the panel but its value cannot
 | Slack | `SLACK_ADMIN_NOTIFY_CHANNEL` | plain |
 | Bot protection (Turnstile) | `TURNSTILE_SECRET_KEY` | secret |
 | Bot protection (Turnstile) | `TURNSTILE_SITE_KEY` | plain |
-| Salesforce and n8n | `N8N_SIGNING_SECRET`, `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | secret |
+| Salesforce and n8n | `N8N_SIGNING_SECRET`, `N8N_LOOKUP_TOKEN` (at least 32 characters), `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | secret |
 
 Values are validated with the same rules `src/server/env.ts` applies to the variable (`integrationValueRules`), after trimming. Empty values, values longer than 4096 characters and values with line breaks or other control characters are refused. In production, Cloudflare's Turnstile test keys (site and secret keys that start with `1x`, `2x` or `3x` followed by zeros) are refused as well: they either let every request pass or block every booking.
 
-These stay in Vercel and cannot be changed in the app: `DATABASE_URL`, `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID`, `ENTRA_*`, `CRON_SECRET`, `IP_HASH_SALT`, `APP_BASE_URL`, `MCP_BASE_URL`, `ADMIN_EMAILS`, `ALLOWED_EMAIL_DOMAINS`, `N8N_BASE_URL` and `N8N_LEAD_WEBHOOK_PATH`. The n8n URLs are excluded on purpose: the app sends signed payloads to them, so an editable URL would let anyone with admin access redirect those requests. The page lists these variables as Set or Missing, never with their values.
+These stay in Vercel and cannot be changed in the app: `DATABASE_URL`, `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID`, `ENTRA_*`, `CRON_SECRET`, `IP_HASH_SALT`, `APP_BASE_URL`, `MCP_BASE_URL`, `ADMIN_EMAILS`, `ALLOWED_EMAIL_DOMAINS`, `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH` and `N8N_LOOKUP_WEBHOOK_PATH`. The n8n URLs are excluded on purpose: the app sends signed payloads and the lookup bearer token to them, so an editable URL would let anyone with admin access redirect those requests. The page lists these variables as Set or Missing, never with their values.
 
 ## Storage and access
 
@@ -50,7 +50,9 @@ These stay in Vercel and cannot be changed in the app: `DATABASE_URL`, `TOKEN_EN
 - Decryption happens only in the resolver, on the service connection.
 - Check constraints allow only the managed key names and require `value_enc` for secrets and `value_plain` for plain keys.
 
-Migrations: `supabase/migrations/20261112120000_integration_settings.sql`; `supabase/migrations/20261113120000_twilio_settings.sql` adds `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM_NUMBER` to the allowed keys. Saving a Twilio key fails until it is applied.
+Migrations: `supabase/migrations/20261112120000_integration_settings.sql`; `supabase/migrations/20261113120000_twilio_settings.sql` adds `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM_NUMBER` to the allowed keys. Saving a Twilio key fails until it is applied. `supabase/migrations/20261116120000_home_routing.sql` adds `N8N_LOOKUP_TOKEN` (secret) and creates the home page routing table; saving `N8N_LOOKUP_TOKEN` fails until it is applied.
+
+`N8N_LOOKUP_TOKEN` is the bearer token the app sends to the n8n account-manager lookup used by the public home page. It must equal the value of the Header Auth credential **BTC Scheduler lookup token** in n8n (`Bearer <token>`). Without it, the home page skips the lookup and offers the new-business page. See `docs/home-page.md`.
 
 ## The page
 

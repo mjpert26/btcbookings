@@ -21,7 +21,7 @@ import {
 } from "@/server/settings/keys";
 
 /** The latest migration that defines the key check constraints of app.integration_settings. */
-const MIGRATION = readFileSync(join(__dirname, "../../supabase/migrations/20261113120000_twilio_settings.sql"), "utf8");
+const MIGRATION = readFileSync(join(__dirname, "../../supabase/migrations/20261116120000_home_routing.sql"), "utf8");
 
 /** The quoted key names inside the first `check (... in (...))` list that follows `marker`. */
 function quotedListAfter(marker: string): string[] {
@@ -44,6 +44,7 @@ describe("integration settings catalog", () => {
         "SLACK_BOT_TOKEN",
         "TURNSTILE_SECRET_KEY",
         "N8N_SIGNING_SECRET",
+        "N8N_LOOKUP_TOKEN",
         "SF_SYNC_SIGNING_SECRET",
         "SF_QUEUE_PUSH_BEARER",
       ].sort(),
@@ -56,7 +57,7 @@ describe("integration settings catalog", () => {
   });
 
   it("never manages bootstrap secrets or the URLs the app sends signed requests to", () => {
-    for (const name of ["DATABASE_URL", "TOKEN_ENCRYPTION_KEYS", "TOKEN_ENCRYPTION_ACTIVE_KID", "ENTRA_CLIENT_SECRET", "CRON_SECRET", "IP_HASH_SALT", "APP_BASE_URL", "MCP_BASE_URL", "ADMIN_EMAILS", "ALLOWED_EMAIL_DOMAINS", "N8N_BASE_URL", "N8N_LEAD_WEBHOOK_PATH"]) {
+    for (const name of ["DATABASE_URL", "TOKEN_ENCRYPTION_KEYS", "TOKEN_ENCRYPTION_ACTIVE_KID", "ENTRA_CLIENT_SECRET", "CRON_SECRET", "IP_HASH_SALT", "APP_BASE_URL", "MCP_BASE_URL", "ADMIN_EMAILS", "ALLOWED_EMAIL_DOMAINS", "N8N_BASE_URL", "N8N_LEAD_WEBHOOK_PATH", "N8N_LOOKUP_WEBHOOK_PATH"]) {
       expect(isManagedKey(name)).toBe(false);
     }
     const managed = new Set<string>(MANAGED_KEYS);
@@ -111,6 +112,11 @@ describe("parseSettingValue", () => {
     expect(parseSettingValue("SENDBLUE_FROM_NUMBER", "+0555123456")).toMatchObject({ ok: false });
     expect(parseSettingValue("SENDBLUE_FROM_NUMBER", "+1 555 123 4567")).toMatchObject({ ok: false });
     expect(parseSettingValue("SENDBLUE_WEBHOOK_SECRET", "short-secret")).toEqual({ ok: false, error: "Use at least 16 characters." });
+  });
+
+  it("requires at least 32 characters for the n8n lookup token", () => {
+    expect(parseSettingValue("N8N_LOOKUP_TOKEN", ` ${"t".repeat(32)} `)).toEqual({ ok: true, value: "t".repeat(32) });
+    expect(parseSettingValue("N8N_LOOKUP_TOKEN", "t".repeat(31))).toEqual({ ok: false, error: "Use at least 32 characters." });
   });
 
   it("checks the shape of the Twilio settings", () => {

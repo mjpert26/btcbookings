@@ -336,7 +336,8 @@ test.describe("not found", () => {
     const res = await page.goto("/no/such/page/here");
     expect(res?.status()).toBe(404);
     await expect(page.getByRole("img", { name: "Big Think Capital" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Employee sign-in" })).toBeVisible();
+    // Staff sign in at /login; the public 404 page has no employee link.
+    await expect(page.getByRole("link", { name: "Employee sign-in" })).toHaveCount(0);
     await page.screenshot({ path: path.join(SHOTS, "not-found.png"), fullPage: true });
   });
 });

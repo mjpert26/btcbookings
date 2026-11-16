@@ -5,7 +5,7 @@ import { integrationSettings, settingUnavailable } from "@/server/settings/integ
 export type TurnstileResult = { ok: true } | { ok: false; reason: string };
 
 /** The action each protected public form sends with its widget (data-action), checked here. */
-export const TURNSTILE_ACTIONS = ["book", "reschedule", "cancel"] as const;
+export const TURNSTILE_ACTIONS = ["book", "reschedule", "cancel", "lookup"] as const;
 export type TurnstileAction = (typeof TURNSTILE_ACTIONS)[number];
 
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);

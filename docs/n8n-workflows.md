@@ -1,6 +1,14 @@
 # n8n workflows
 
-BTC Scheduler talks to Salesforce only through n8n on api.bigthinkcapital.com. Both workflows authenticate to Salesforce through the existing SF Token Broker sub-workflow (`7wen5ULQg7DBlCvC`). Importable JSON is in `/n8n`.
+BTC Scheduler talks to Salesforce only through n8n on api.bigthinkcapital.com. All three workflows authenticate to Salesforce through the existing SF Token Broker sub-workflow (`7wen5ULQg7DBlCvC`). Importable JSON is in `/n8n`.
+
+All BTC Scheduler workflows live in the n8n folder **book.bigthinkcapital.com** in Mike Perticone's personal project (`tPYBDOQFrX8Bp1vZ`), the project that owns the SF Token Broker. Import new versions there.
+
+| Workflow | File | Webhook or trigger |
+|---|---|---|
+| BTC Scheduler - SF Lead Create | `n8n/sf-lead-create.json` | `POST /webhook/btc-scheduler/lead` (HMAC) |
+| BTC Scheduler - SF Queue Snapshot Poller | `n8n/sf-queue-snapshot-poller.json` | every 2 minutes, and Sync now |
+| BTC Scheduler - Account Manager Lookup | `n8n/account-manager-lookup.json` | `POST /webhook/btc-scheduler/lookup` (Header Auth) |
 
 ## Salesforce leads
 
@@ -321,6 +329,32 @@ Responses contain counts only, never emails.
 - Safety rail: when a snapshot would pause more than the team's `mass_removal_threshold_pct` of its active queue members, or a linked queue that previously had members comes back empty, nothing is applied, the team's `sync_health` becomes `blocked`, and a `mass_removal_blocked` alert is raised (updated, not duplicated, on later polls). An admin can resolve the alert with "approve", which lets the next snapshot within 30 minutes apply once.
 - Unlinking a queue does not change members immediately. The next snapshot pauses members who were only in that queue, subject to the safety rail.
 
+## Account manager lookup (home page)
+
+File: `n8n/account-manager-lookup.json`. Workflow name: `BTC Scheduler - Account Manager Lookup`. Used by the public home page (`/api/public/lookup` in the app) to find where a visitor belongs. The full contract, the routing rules and the setup steps are in [`docs/home-page.md`](home-page.md).
+
+### Flow
+
+```
+Lookup Webhook (Header Auth) → Validate Email → Email Valid? ── no → Respond (400 invalid_email)
+  → Get SF Token → Query Opportunities → Query Leads → Shape Response → Respond (200, or 502 lookup_failed)
+```
+
+- Request: `POST /webhook/btc-scheduler/lookup`, `Authorization: Bearer <token>`, body `{ "email": "..." }`. The webhook's Header Auth credential **BTC Scheduler lookup token** (header name `Authorization`, value `Bearer <token>`) checks the token; the app sends the same token from `N8N_LOOKUP_TOKEN`.
+- Opportunities: `csbs__Owner__r.Email` or `csbs__Owner_2__r.Email` equal to the email, open or in the stages Funded and Renewal Prospecting, newest first, at most 50. Leads: unconverted, with that email, newest first, at most 10. The email is escaped for SOQL like the lead workflow (backslash first, then the single quote).
+- Response: `{ opportunities: [{ open, renewal, funded, lastModified, owner, renewalCloser, book }], leads: [{ createdAt, owner }] }`. No Salesforce Ids, names, stages or merchant fields.
+- Each query has a 4-second timeout and no retries: the app waits at most 5 seconds and routes the visitor as new on any failure.
+- Settings: execution data is not saved, for successful, failed or manual executions (requests contain merchant emails); callable only by workflows from the same owner; error workflow `Q3Ld5IrQCtGimErY`.
+
+### Import and activate
+
+1. Import the file into Mike Perticone's personal project, folder **book.bigthinkcapital.com**.
+2. Create the Header Auth credential **BTC Scheduler lookup token** (header name `Authorization`, value `Bearer <token>`, a token of at least 32 characters) and select it on **Lookup Webhook**. The file carries the placeholder credential id `REPLACE_WITH_CREDENTIAL_ID`.
+3. Set the same token as `N8N_LOOKUP_TOKEN` in BTC Scheduler **Admin > Settings**.
+4. Confirm that **Get SF Token** points at `7wen5ULQg7DBlCvC`, activate the workflow, and check it with **Admin > Home page > Test an email**.
+
+App environment: `N8N_BASE_URL`, `N8N_LOOKUP_WEBHOOK_PATH` (default `/webhook/btc-scheduler/lookup`), `N8N_LOOKUP_TOKEN`.
+
 ## Known limitations and follow-ups
 
 - **Lead create timeout race.** The lead workflow writes its Redis idempotency record only after the Lead insert succeeds. If a request takes longer than the app's 20-second timeout, the app retries while the first execution may still be running, and a second Lead can be inserted (Salesforce duplicate rules and `DuplicateCheckHandler` usually catch it). Recommended change at import time: as the first step after signature verification, set an "in-flight" key `btc-scheduler:lead-inflight:<bookingId>` with a short TTL (for example 120 seconds) only if it does not already exist (Redis `SET ... NX EX`, available through the Redis node's custom command or a Code node), and respond `{status: "error", retryable: true}` when it already exists. A booking-ID custom field on Lead (for example `External_Booking_Id__c`, unique, external ID) would also allow a SOQL idempotency check and is recommended.
@@ -329,4 +363,5 @@ Responses contain counts only, never emails.
 - **Converted and skipped invitees.** A booking whose invitee only has a converted Lead, or that has no open Lead in update-only mode, is skipped without any Salesforce write; the job result names the converted Lead. Calendly flags unmapped bookings for review; BTC Scheduler has no such queue, so admins review skipped jobs on Admin > Salesforce lead jobs.
 - **Queue IDs.** The app normalizes queue IDs to 18 characters when an admin links them. The poller only accepts 18-character IDs.
 - **Not yet imported.** Neither workflow has been imported or run on api.bigthinkcapital.com. Confirm the Webhook node's raw-body option and the HTTP Request pagination settings on the live instance during import. Both workflows must live in the same n8n project as the SF Token Broker, which only accepts calls from workflows with the same owner, and the lead workflow must also be allowed to call the shared Meeting Booked writer.
-- **Offline tests.** `tests/unit/n8n-sf-lead-workflow.test.ts` checks the node graph and runs the Code nodes of the lead workflow with stand-ins for the n8n globals (decision rules, SOQL escaping, writer input, response contract). It does not replace a test run on the n8n instance.
+- **Offline tests.** `tests/unit/n8n-sf-lead-workflow.test.ts` checks the node graph and runs the Code nodes of the lead workflow with stand-ins for the n8n globals (decision rules, SOQL escaping, writer input, response contract). `tests/unit/n8n-lookup-workflow.test.ts` does the same for the account-manager lookup (email validation, SOQL escaping, response shape, no Ids leaked). They do not replace a test run on the n8n instance.
+- **Account manager lookup not yet imported.** Confirm on the live instance that the relationship fields `csbs__Owner__r`, `csbs__Owner_2__r`, `Renewal_Closer__r` and `Account.Renewal_Book__c`, and `Is_Renewal_Type__c`, are readable by the integration user behind the SF Token Broker, and that the Lead `Owner` fields (`Type`, `Email`, `IsActive`) resolve for queue owners.

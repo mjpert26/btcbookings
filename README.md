@@ -13,6 +13,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Slack app](#slack-app)
 - [Queue to booking page to Slack sync](#queue-to-booking-page-to-slack-sync)
 - [Reminders and SMS](#reminders-and-sms)
+- [Public home page](#public-home-page)
 - [Salesforce and n8n](#salesforce-and-n8n)
 - [Deploying to Vercel](#deploying-to-vercel)
 - [Cron jobs](#cron-jobs)
@@ -86,7 +87,7 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `TOKEN_ENCRYPTION_KEYS`, `TOKEN_ENCRYPTION_ACTIVE_KID` | yes | no | AES-256-GCM key ring for secrets at rest, including the keys saved in Admin > Settings |
 | `IP_HASH_SALT` | yes | no | Salt for hashed client IPs |
 | `CRON_SECRET` | yes | no | Vercel Cron bearer secret |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | yes | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | optional | yes | Cloudflare Turnstile bot check on the public booking, reschedule and cancel forms and the home page email lookup. Without them the check is skipped and the forms rely on the same-origin check, rate limits and daily caps |
 | `TURNSTILE_HOSTNAMES` | with Turnstile | no | Comma-separated frontend hostnames whose Turnstile tokens are accepted (production: `book.bigthinkcapital.com`). Defaults to the hostname of `APP_BASE_URL`; `localhost` and `127.0.0.1` are ignored in production. The widget in Cloudflare must list the same hostnames. Former hostnames (`APP_LEGACY_HOSTS`) do not belong here: their pages redirect, and form posts from them fail the same-origin check before Turnstile runs |
 | `RESEND_API_KEY`, `EMAIL_FROM` | production | yes | Transactional email; without a key, emails are logged instead of sent |
 | `SLACK_BOT_TOKEN`, `SLACK_ADMIN_NOTIFY_CHANNEL` | optional | yes | Slack channel sync and agent reminder direct messages |
@@ -95,6 +96,8 @@ Variables marked **yes** under "Admin > Settings" can also be set, replaced and 
 | `SENDBLUE_FROM_NUMBER` | with SendBlue | yes | The only SendBlue line the app texts from (E.164). Texts are not sent without it; STOP / START replies received on other lines are ignored |
 | `SENDBLUE_WEBHOOK_SECRET` | with SendBlue | yes | Secret you choose and set on the SendBlue receive webhook; SendBlue sends it in `sb-signing-secret` to `/api/sms/inbound` (STOP / START replies) |
 | `N8N_BASE_URL`, `N8N_LEAD_WEBHOOK_PATH` | for SF | no | Where the app sends signed requests to n8n. Kept out of the app on purpose |
+| `N8N_LOOKUP_WEBHOOK_PATH` | no | no | Path of the n8n account-manager lookup used by the home page (default `/webhook/btc-scheduler/lookup`). Kept out of the app like the other n8n URLs |
+| `N8N_LOOKUP_TOKEN` | for the home page lookup | yes | Bearer token (at least 32 characters) the app sends to the n8n account-manager lookup; must equal the value of the Header Auth credential "BTC Scheduler lookup token" in n8n. Without it the home page skips the lookup and offers the new-business page. See `docs/home-page.md` |
 | `N8N_SIGNING_SECRET` | for SF | yes | Signs outbound requests to n8n (Salesforce leads, Sync now) |
 | `SF_SYNC_SIGNING_SECRET`, `SF_QUEUE_PUSH_BEARER` | for SF | yes | Inbound queue snapshot and push authentication |
 | `SF_LEAD_MAX_ATTEMPTS`, `QUEUE_POLL_STALE_MINUTES` | no | no | Tuning (defaults 8 and 10) |
@@ -124,9 +127,15 @@ Each booking page sets its own reminders in the editor (**Reminders** section):
 
 Team pages show the partner (team) name in merchant emails, texts, agent reminders and the Outlook event. Text messages go through Twilio when `TWILIO_ACCOUNT_SID` is set, and through SendBlue otherwise. Merchants get texts only when they enter a phone number and check the consent box that the booking form shows on pages with text reminders; they can reply STOP to opt out and START to opt back in. Agents set their own number under **Availability > Booking preferences**. Turning a channel or reminder time off also stops reminders already scheduled for existing bookings. Setup, the webhook and the job keys: [`docs/reminders.md`](docs/reminders.md).
 
+## Public home page
+
+The public root (`/`) asks visitors for their email ("Already applied or already a customer?"), looks it up in Salesforce through n8n and opens the right booking page at once: the account manager's page for an open opportunity or open lead, the renewal page of the customer's renewal book (or a renewal rep's own page) for funded and renewal deals, and otherwise the new-business page. "New here?" opens the new-business page directly. The page is in English and Spanish. The response never reveals whether an email was found; the endpoint is protected by a same-origin check, Turnstile, per-IP and per-email rate limits and a daily lookup cap.
+
+Configure it at **Admin > Home page** (`/admin/home-routing`): the new-business page, the renewal page per book and a default, and the Salesforce owners that never count as an account manager. The same page can test an email. Requires migration `20261116120000_home_routing.sql`, the n8n workflow `n8n/account-manager-lookup.json` and `N8N_LOOKUP_TOKEN`. Every page involved must be active and its reps must have connected Outlook. Details: [`docs/home-page.md`](docs/home-page.md).
+
 ## Salesforce and n8n
 
-- n8n workflows (Salesforce leads, queue snapshot poller), with importable JSON in [`/n8n`](n8n): [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
+- n8n workflows (Salesforce leads, queue snapshot poller, home page account-manager lookup), with importable JSON in [`/n8n`](n8n): [`docs/n8n-workflows.md`](docs/n8n-workflows.md). All BTC Scheduler workflows live in the n8n folder "book.bigthinkcapital.com" in Mike Perticone's personal project.
 - Salesforce changes for BTC to apply (Named Credential, optional Flow HTTP Callout, `QueueManagementController` change): [`docs/salesforce-changes.md`](docs/salesforce-changes.md). Nothing is deployed to Salesforce by this repository.
 - Sending bookings to Salesforce is off by default and is enabled per booking page by an admin. "Lead source" is the ISO (`csbs__ISO__c`).
 - **Lead handling** per booking page: *Update the invitee's Lead, or create one* (`match_or_create`, the default for new pages, like the Calendly flow), *Update the invitee's Lead only* (`update_only`) or *Always create a new Lead* (`create`, the original behavior, kept by pages configured before lead modes). Updates go through the shared n8n writer "Calendly — SF Meeting Booked (shared)" (status, Meeting Booked fields, owner, note and task), and reschedules update the Lead in every mode except `create`. Importing the lead workflow requires that writer to accept calls from it; see [`docs/n8n-workflows.md`](docs/n8n-workflows.md).
@@ -144,7 +153,7 @@ Team pages show the partner (team) name in merchant emails, texts, agent reminde
 
 ### Employee sign-in
 
-The public root (`/`) is a minimal branded landing page with a "Team sign in" link; it does not describe internal features. Employees sign in at `<APP_BASE_URL>/login` with their Big Think Capital Microsoft 365 account. The first sign-in creates their account automatically (any address in `ALLOWED_EMAIL_DOMAINS`) and connects their Outlook calendar. Grant tenant-wide admin consent for the Entra app so employees are not prompted for consent individually.
+The public root (`/`) is the visitor home page (see [Public home page](#public-home-page)); it does not describe internal features and has no sign-in link. Employees sign in at `<APP_BASE_URL>/login` with their Big Think Capital Microsoft 365 account; signed-in employees who open `/` are sent to their dashboard. The first sign-in creates their account automatically (any address in `ALLOWED_EMAIL_DOMAINS`) and connects their Outlook calendar. Grant tenant-wide admin consent for the Entra app so employees are not prompted for consent individually.
 
 ## Cron jobs
 
@@ -175,7 +184,7 @@ Admins send signed booking events (`booking.created`, `booking.rescheduled`, `bo
 
 ## Integration settings
 
-Global admins manage the keys for Resend, Twilio, SendBlue, Slack, Turnstile and the Salesforce / n8n shared secrets at **Admin > Settings** (`/admin/settings`), without Vercel access or a redeploy. A value set there overrides the Vercel variable of the same name and applies within 30 seconds; removing it falls back to Vercel. Secrets are encrypted with the app key ring and are write-only (only the last four characters of secrets of 16 or more characters are shown), every change is audited without the value, and each service has a test button that reaches only the signed-in admin. Bootstrap variables (database, encryption keys, Entra, cron, base URLs, admin and domain lists, n8n URLs) stay in Vercel; the page shows only whether each is set. Requires migrations `20261112120000_integration_settings.sql` and `20261113120000_twilio_settings.sql` (Twilio keys). Details: [`docs/settings.md`](docs/settings.md).
+Global admins manage the keys for Resend, Twilio, SendBlue, Slack, Turnstile and the Salesforce / n8n shared secrets at **Admin > Settings** (`/admin/settings`), without Vercel access or a redeploy. A value set there overrides the Vercel variable of the same name and applies within 30 seconds; removing it falls back to Vercel. Secrets are encrypted with the app key ring and are write-only (only the last four characters of secrets of 16 or more characters are shown), every change is audited without the value, and each service has a test button that reaches only the signed-in admin. Bootstrap variables (database, encryption keys, Entra, cron, base URLs, admin and domain lists, n8n URLs) stay in Vercel; the page shows only whether each is set. Requires migrations `20261112120000_integration_settings.sql`, `20261113120000_twilio_settings.sql` (Twilio keys) and `20261116120000_home_routing.sql` (`N8N_LOOKUP_TOKEN`). Details: [`docs/settings.md`](docs/settings.md).
 
 ## Importing from Calendly
 
@@ -252,6 +261,7 @@ src/server/email        Resend sending and templates
 src/server/jobs         outbox, worker, job contracts
 src/server/errors       error log: redaction, fingerprinting, logError(), admin queries
 src/server/settings     Admin > Settings integration keys: resolver, admin functions, test buttons
+src/server/home         public home page: Salesforce lookup through n8n, routing rules, destinations, Admin > Home page
 supabase/migrations     schema and RLS
 n8n/                    importable n8n workflows
 docs/                   plan, setup guides, runbook
@@ -259,4 +269,4 @@ docs/                   plan, setup guides, runbook
 
 ## Future work
 
-Not in v1: payments, Google Calendar, routing forms and pre-booking qualification, languages beyond English and Spanish (adding one is configuration plus a message catalog).
+Not in v1: payments, Google Calendar, routing forms beyond the home page email lookup, pre-booking qualification, languages beyond English and Spanish (adding one is configuration plus a message catalog).

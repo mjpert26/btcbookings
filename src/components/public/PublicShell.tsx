@@ -12,9 +12,9 @@ import { accentStyle, headerParts, type PartnerDisplay } from "./branding";
 const CATALOGS = { en, es } as const;
 
 /** Only the namespaces the public client islands use are sent to the browser. */
-function clientMessages(locale: Locale) {
+export function clientMessages(locale: Locale) {
   const c = CATALOGS[locale];
-  return { common: c.common, public: c.public, booking: c.booking };
+  return { common: c.common, public: c.public, booking: c.booking, home: c.home };
 }
 
 /**

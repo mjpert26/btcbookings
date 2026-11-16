@@ -164,5 +164,32 @@
     "join": "Unirse: {url}",
     "manage": "Reprogramar o cancelar: {url}",
     "optOut": "Responda STOP para no recibir más mensajes."
+  },
+  "home": {
+    "title": "Hablemos de su negocio.",
+    "intro": "Encuentre a la persona indicada en unos segundos.",
+    "returningHeading": "¿Ya presentó una solicitud o ya es cliente?",
+    "returningBody": "Ingrese su correo electrónico y abriremos el calendario de su asesor.",
+    "emailLabel": "Correo electrónico",
+    "emailPlaceholder": "usted@empresa.com",
+    "submit": "Buscar a mi asesor",
+    "submitting": "Buscando…",
+    "redirecting": "Abriendo su página de citas…",
+    "privacy": "Usamos su correo electrónico solo para encontrar su página de citas.",
+    "newHeading": "¿Es nuevo aquí?",
+    "newBody": "Agende una llamada con el próximo asesor disponible.",
+    "newButton": "Agendar con el próximo asesor disponible",
+    "fallbackTitle": "No hay un calendario disponible en este momento",
+    "fallbackBody": "Visite nuestro sitio web y nuestro equipo le ayudará desde allí.",
+    "visitWebsite": "Visitar {site}",
+    "languageLabel": "Idioma",
+    "switchTo": "English",
+    "errors": {
+      "required": "Ingrese su correo electrónico.",
+      "invalid_email": "Ingrese un correo electrónico válido.",
+      "rateLimited": "Demasiados intentos. Espere unos minutos e inténtelo de nuevo.",
+      "verification": "Complete la verificación e inténtelo de nuevo.",
+      "generic": "Algo salió mal. Inténtelo de nuevo."
+    }
   }
 }

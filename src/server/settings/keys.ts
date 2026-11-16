@@ -5,10 +5,11 @@ import { integrationValueRules } from "@/server/env";
 /**
  * The integration keys that Admin > Settings manages, how they are grouped on the page, and
  * how a submitted value is validated. The list must match the check constraints of
- * app.integration_settings (migrations 20261112120000_integration_settings.sql and
- * 20261113120000_twilio_settings.sql).
+ * app.integration_settings (migrations 20261112120000_integration_settings.sql,
+ * 20261113120000_twilio_settings.sql and 20261116120000_home_routing.sql).
  *
- * URLs the app sends signed requests to (N8N_BASE_URL, N8N_LEAD_WEBHOOK_PATH) and bootstrap
+ * URLs the app sends signed requests to (N8N_BASE_URL, N8N_LEAD_WEBHOOK_PATH,
+ * N8N_LOOKUP_WEBHOOK_PATH) and bootstrap
  * secrets are deliberately not managed here: they stay in the Vercel environment.
  */
 
@@ -22,6 +23,7 @@ export const SECRET_KEYS = [
   "SLACK_BOT_TOKEN",
   "TURNSTILE_SECRET_KEY",
   "N8N_SIGNING_SECRET",
+  "N8N_LOOKUP_TOKEN",
   "SF_SYNC_SIGNING_SECRET",
   "SF_QUEUE_PUSH_BEARER",
 ] as const;
@@ -128,6 +130,11 @@ export const KEY_INFO: Record<ManagedKey, KeyInfo> = {
     label: "App-to-n8n signing secret",
     hint: "Signs Salesforce lead requests and Sync now requests to n8n. Must equal BTC_SCHEDULER_N8N_SIGNING_SECRET in n8n.",
   },
+  N8N_LOOKUP_TOKEN: {
+    label: "Account manager lookup token",
+    hint: "Bearer token the app sends to the n8n account-manager lookup; must equal the Header Auth credential on that workflow.",
+    invalid: "Use at least 32 characters.",
+  },
   SF_SYNC_SIGNING_SECRET: {
     label: "Queue sync signing secret",
     hint: "Verifies queue snapshots and pushes signed by n8n or Apex. Must equal BTC_SCHEDULER_SIGNING_SECRET in n8n.",
@@ -160,14 +167,14 @@ export const SETTING_GROUPS: readonly SettingGroup[] = [
   {
     id: "turnstile",
     title: "Bot protection (Turnstile)",
-    description: "Cloudflare Turnstile check on the public booking, reschedule and cancel forms. Without both keys the check is skipped.",
+    description: "Cloudflare Turnstile check on the public booking, reschedule and cancel forms and the home page email lookup. Without both keys the check is skipped.",
     keys: ["TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"],
   },
   {
     id: "salesforce",
     title: "Salesforce and n8n",
     description: "Shared secrets for requests between the app, n8n and Salesforce. The n8n URLs stay in Vercel.",
-    keys: ["N8N_SIGNING_SECRET", "SF_SYNC_SIGNING_SECRET", "SF_QUEUE_PUSH_BEARER"],
+    keys: ["N8N_SIGNING_SECRET", "N8N_LOOKUP_TOKEN", "SF_SYNC_SIGNING_SECRET", "SF_QUEUE_PUSH_BEARER"],
   },
 ];
 
@@ -231,6 +238,7 @@ export const BOOTSTRAP_KEYS: readonly { name: string; required: boolean }[] = [
   { name: "ALLOWED_EMAIL_DOMAINS", required: false },
   { name: "N8N_BASE_URL", required: false },
   { name: "N8N_LEAD_WEBHOOK_PATH", required: false },
+  { name: "N8N_LOOKUP_WEBHOOK_PATH", required: false },
 ];
 
 /** Whether each bootstrap variable has a non-empty value. Never returns values. */

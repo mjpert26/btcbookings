@@ -1,0 +1,331 @@
+{
+  "name": "BTC Scheduler - Account Manager Lookup",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## BTC Scheduler - Account manager lookup\n\nCalled only by the BTC Scheduler home page (POST /api/public/lookup on the app side). Contract: docs/home-page.md.\n\n- Auth: Header Auth credential **BTC Scheduler lookup token** (header `Authorization`, value `Bearer <token>`). The same token is N8N_LOOKUP_TOKEN in BTC Scheduler Admin > Settings. Bind the credential after import.\n- Body: `{ \"email\": \"...\" }`. Not a plausible email: 400 `{ error: \"invalid_email\" }`.\n- Queries Opportunities where the email is csbs__Owner__r or csbs__Owner_2__r (open, or Funded / Renewal Prospecting) and open Leads with that email.\n- Answers 200 `{ opportunities, leads }` with booleans, dates, owner emails and the renewal book only: no Salesforce Ids, names, stages or merchant fields. Any failure: 502 `{ error: \"lookup_failed\" }`.\n- The app waits at most 5 seconds and treats every failure as \"new applicant\".\n- Execution data is not saved (requests contain merchant emails).\n- The SF Token Broker must allow calls from this workflow's owner.",
+        "height": 420,
+        "width": 640
+      },
+      "id": "bc7d232f-9be0-5a1f-b472-3ddb2c29f466",
+      "name": "Sticky Contract",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "btc-scheduler/lookup",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "06523e8d-f839-593b-a944-2b0a0b529900",
+      "name": "Lookup Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "0f0c8f8c-abaa-510c-9f58-dcbd6566ef89",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "BTC Scheduler lookup token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validates the request from BTC Scheduler. The webhook's Header Auth credential\n// (\"BTC Scheduler lookup token\") has already checked the bearer token.\n// Anything that is not a plausible email gets a 400 JSON response and no Salesforce call.\nconst body = $input.first().json.body || {};\nconst email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';\nconst EMAIL = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\nconst CONTROL = /[\\u0000-\\u001f\\u007f]/;\nif (!email || email.length > 254 || CONTROL.test(email) || !EMAIL.test(email)) {\n  return [{ json: { ok: false, httpCode: 400, response: { error: 'invalid_email' } } }];\n}\n\n// SOQL string escaping, the same as the lead workflow: backslash first, then quote.\nconst esc = s => String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"\\\\'\");\nreturn [{ json: {\n  ok: true,\n  emailEsc: esc(email),\n  sf_base: 'https://bigthink.my.salesforce.com/services/data/v60.0'\n} }];\n"
+      },
+      "id": "97657a66-e547-5fec-963b-51607356b6c3",
+      "name": "Validate Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cad46ade-c722-523d-9347-b19822e13463",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "b027c490-819f-5af3-97ab-fe28669b3000",
+      "name": "Email Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "7wen5ULQg7DBlCvC",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {}
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "5ce0a5b3-4d19-57d0-93c7-5825b698e3d2",
+      "name": "Get SF Token",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        200
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Validate Email').first().json.sf_base }}/query?q={{ encodeURIComponent(`SELECT StageName, IsClosed, Is_Renewal_Type__c, LastModifiedDate, Owner.Email, Owner.IsActive, Owner.UserType, Renewal_Closer__r.Email, Renewal_Closer__r.IsActive, Account.Renewal_Book__c FROM Opportunity WHERE (csbs__Owner__r.Email = '${$('Validate Email').first().json.emailEsc}' OR csbs__Owner_2__r.Email = '${$('Validate Email').first().json.emailEsc}') AND (IsClosed = false OR StageName IN ('Funded','Renewal Prospecting')) ORDER BY IsClosed ASC, LastModifiedDate DESC LIMIT 50`) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 4000
+        }
+      },
+      "id": "a2740eb2-187f-557d-b920-2d4a13bdda40",
+      "name": "Query Opportunities",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        880,
+        200
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Validate Email').first().json.sf_base }}/query?q={{ encodeURIComponent(`SELECT CreatedDate, Owner.Type, Owner.Email, Owner.IsActive FROM Lead WHERE Email = '${$('Validate Email').first().json.emailEsc}' AND IsConverted = false ORDER BY CreatedDate DESC LIMIT 10`) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Get SF Token').first().json.access_token }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 4000
+        }
+      },
+      "id": "2c693dee-4a89-5ad1-840e-300f5d84c9c2",
+      "name": "Query Leads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1100,
+        200
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Maps the two Salesforce query results to the BTC Scheduler lookup contract\n// (docs/home-page.md). Only what the routing rules need leaves this workflow: no Salesforce\n// Ids, names, stages or merchant fields. Any failed query answers 502 lookup_failed.\nconst failed = [{ json: { httpCode: 502, response: { error: 'lookup_failed' } } }];\nconst records = (name) => {\n  let res;\n  try { res = $(name).first().json; } catch (e) { return null; }\n  if (!res || res.statusCode !== 200 || !res.body || !Array.isArray(res.body.records)) return null;\n  return res.body.records;\n};\nconst opps = records('Query Opportunities');\nconst leads = records('Query Leads');\nif (!opps || !leads) return failed;\n\nconst email = v => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase().slice(0, 254) : null);\nconst iso = v => {\n  const t = Date.parse(v);\n  return Number.isNaN(t) ? '' : new Date(t).toISOString();\n};\nconst FUNDED = ['Funded', 'Renewal Prospecting'];\n\nconst opportunities = opps.slice(0, 50).map(o => {\n  const owner = o.Owner && email(o.Owner.Email)\n    ? { email: email(o.Owner.Email), active: o.Owner.IsActive === true, standard: o.Owner.UserType === 'Standard' }\n    : null;\n  const rc = o.Renewal_Closer__r;\n  const renewalCloser = rc && email(rc.Email) ? { email: email(rc.Email), active: rc.IsActive === true } : null;\n  const rawBook = o.Account ? o.Account.Renewal_Book__c : null;\n  const book = typeof rawBook === 'string' && rawBook.trim() ? rawBook.trim().slice(0, 100) : null;\n  return {\n    open: !o.IsClosed,\n    renewal: o.Is_Renewal_Type__c === true || o.StageName === 'Renewal',\n    funded: FUNDED.includes(o.StageName),\n    lastModified: iso(o.LastModifiedDate),\n    owner,\n    renewalCloser,\n    book\n  };\n});\n\nconst leadList = leads.slice(0, 10).map(l => ({\n  createdAt: iso(l.CreatedDate),\n  owner: l.Owner && email(l.Owner.Email)\n    ? { email: email(l.Owner.Email), active: l.Owner.IsActive === true, isUser: l.Owner.Type === 'User' }\n    : null\n}));\n\nreturn [{ json: { httpCode: 200, response: { opportunities, leads: leadList } } }];\n"
+      },
+      "id": "420b5593-39fb-53a3-b6fc-b0a6a2b37598",
+      "name": "Shape Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {
+          "responseCode": "={{ $json.httpCode }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a57579b9-abb2-5817-89d2-c5da18b77a1c",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Lookup Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Email": {
+      "main": [
+        [
+          {
+            "node": "Email Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get SF Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get SF Token": {
+      "main": [
+        [
+          {
+            "node": "Query Opportunities",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Opportunities": {
+      "main": [
+        [
+          {
+            "node": "Query Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Leads": {
+      "main": [
+        [
+          {
+            "node": "Shape Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Q3Ld5IrQCtGimErY",
+    "timezone": "America/New_York"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -164,5 +164,32 @@
     "join": "Join: {url}",
     "manage": "Reschedule or cancel: {url}",
     "optOut": "Reply STOP to opt out."
+  },
+  "home": {
+    "title": "Let's talk about your business.",
+    "intro": "Find the right person to talk to in a few seconds.",
+    "returningHeading": "Already applied or already a customer?",
+    "returningBody": "Enter your email and we will open your advisor's calendar.",
+    "emailLabel": "Email address",
+    "emailPlaceholder": "you@company.com",
+    "submit": "Find my advisor",
+    "submitting": "Looking you up…",
+    "redirecting": "Opening your booking page…",
+    "privacy": "We use your email only to find your booking page.",
+    "newHeading": "New here?",
+    "newBody": "Book a call with the next available advisor.",
+    "newButton": "Book with the next available advisor",
+    "fallbackTitle": "No calendar is available right now",
+    "fallbackBody": "Please visit our website and our team will help you from there.",
+    "visitWebsite": "Visit {site}",
+    "languageLabel": "Language",
+    "switchTo": "Español",
+    "errors": {
+      "required": "Enter your email address.",
+      "invalid_email": "Enter a valid email address.",
+      "rateLimited": "Too many attempts. Please wait a few minutes and try again.",
+      "verification": "Please complete the verification and try again.",
+      "generic": "Something went wrong. Please try again."
+    }
   }
 }

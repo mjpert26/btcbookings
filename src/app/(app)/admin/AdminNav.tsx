@@ -10,6 +10,7 @@ const ITEMS: { href: string; label: string; exact?: boolean; capability?: Capabi
   { href: "/admin", label: "Overview", exact: true },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/sync", label: "Sync status" },
+  { href: "/admin/home-routing", label: "Home page" },
   { href: "/admin/salesforce/lead-routing", label: "Lead routing (ISO)" },
   { href: "/admin/salesforce/jobs", label: "Salesforce jobs" },
   { href: "/admin/integrations", label: "Integrations" },

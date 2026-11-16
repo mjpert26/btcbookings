@@ -26,6 +26,7 @@ export const integrationValueRules = {
   TWILIO_AUTH_TOKEN: z.string().regex(/^[0-9A-Za-z]{32}$/),
   TWILIO_FROM_NUMBER: z.string().regex(E164_RE),
   N8N_SIGNING_SECRET: z.string(),
+  N8N_LOOKUP_TOKEN: z.string().min(32),
   SF_SYNC_SIGNING_SECRET: z.string(),
   SF_QUEUE_PUSH_BEARER: z.string(),
 } as const;
@@ -106,6 +107,11 @@ const schema = z.object({
   N8N_BASE_URL: z.string().url().default("https://api.bigthinkcapital.com"),
   N8N_LEAD_WEBHOOK_PATH: z.string().default("/webhook/btc-scheduler/lead"),
   N8N_SIGNING_SECRET: rules.N8N_SIGNING_SECRET.optional(),
+  // Account-manager lookup for the public home page (n8n workflow "BTC Scheduler - Account
+  // Manager Lookup"). The app sends N8N_LOOKUP_TOKEN as a bearer token; without it the home
+  // page skips the lookup and offers the new-business page.
+  N8N_LOOKUP_WEBHOOK_PATH: z.string().default("/webhook/btc-scheduler/lookup"),
+  N8N_LOOKUP_TOKEN: z.preprocess(trimmedOrUndefined, rules.N8N_LOOKUP_TOKEN.optional()),
   SF_SYNC_SIGNING_SECRET: rules.SF_SYNC_SIGNING_SECRET.optional(),
   SF_QUEUE_PUSH_BEARER: rules.SF_QUEUE_PUSH_BEARER.optional(),
   SF_LEAD_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),

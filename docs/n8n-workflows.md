@@ -4,11 +4,16 @@ BTC Scheduler talks to Salesforce only through n8n on api.bigthinkcapital.com. A
 
 All BTC Scheduler workflows live in the n8n folder **book.bigthinkcapital.com** in Mike Perticone's personal project (`tPYBDOQFrX8Bp1vZ`), the project that owns the SF Token Broker. Import new versions there.
 
-| Workflow | File | Webhook or trigger |
-|---|---|---|
-| BTC Scheduler - SF Lead Create | `n8n/sf-lead-create.json` | `POST /webhook/btc-scheduler/lead` (HMAC) |
-| BTC Scheduler - SF Queue Snapshot Poller | `n8n/sf-queue-snapshot-poller.json` | every 2 minutes, and Sync now |
-| BTC Scheduler - Account Manager Lookup | `n8n/account-manager-lookup.json` | `POST /webhook/btc-scheduler/lookup` (Header Auth) |
+| Workflow | File | Webhook or trigger | n8n id (api.bigthinkcapital.com) |
+|---|---|---|---|
+| BTC Scheduler - SF Lead Create | `n8n/sf-lead-create.json` | `POST /webhook/btc-scheduler/lead` (HMAC) | `f53rD8OvnumcQXXU` |
+| BTC Scheduler - SF Queue Snapshot Poller | `n8n/sf-queue-snapshot-poller.json` | every 2 minutes, and Sync now | `kNNgM3xJmKC4C3LL` |
+| BTC Scheduler - Account Manager Lookup | `n8n/account-manager-lookup.json` | `POST /webhook/btc-scheduler/lookup` (Header Auth) | `qlZV2sZbpq5cs7Pi` |
+
+Status on 2026-11-16: all three were imported through the n8n API into Mike Perticone's personal project and are **inactive**. The API cannot place workflows in folders, so moving them into **book.bigthinkcapital.com** is a step in the n8n UI. Before activation:
+
+- Lead Create and the poller read `BTC_SCHEDULER_N8N_SIGNING_SECRET`, `BTC_SCHEDULER_SIGNING_SECRET` and `BTC_SCHEDULER_BASE_URL` from the n8n server environment, which needs a restart of the n8n instance.
+- The lookup needs the Header Auth credential "BTC Scheduler lookup token" selected on its webhook node (the imported placeholder credential id is not valid) and the same token set as `N8N_LOOKUP_TOKEN` in Admin > Settings. No restart is needed.
 
 ## Salesforce leads
 

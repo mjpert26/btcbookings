@@ -1495,6 +1495,10 @@
   },
   "settings": {
     "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "Q3Ld5IrQCtGimErY",
     "timezone": "America/New_York"
   },
   "pinData": {},

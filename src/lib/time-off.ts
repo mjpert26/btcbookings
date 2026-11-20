@@ -74,9 +74,11 @@ export function parseTimeOff(input: TimeOffInput, opts: { zone: string; now: num
   const errors: Record<string, string> = {};
   if (!isValidTimeZone(opts.zone)) errors._form = "The time zone for this person is not valid.";
   const startDate = (input.startDate ?? "").trim();
-  const endDate = (input.endDate ?? "").trim() || startDate;
+  // The end date is optional and defaults to the start date, so only a typed value is checked.
+  const typedEnd = (input.endDate ?? "").trim();
+  const endDate = typedEnd || startDate;
   if (!isDate(startDate)) errors.startDate = "Choose a start date.";
-  if (!isDate(endDate)) errors.endDate = "Choose an end date.";
+  if (typedEnd && !isDate(typedEnd)) errors.endDate = "Enter a valid end date.";
   const startTime = (input.startTime ?? "").trim();
   const endTime = (input.endTime ?? "").trim();
   if (!input.allDay) {
@@ -87,12 +89,14 @@ export function parseTimeOff(input: TimeOffInput, opts: { zone: string; now: num
   if (note.length > TIME_OFF_NOTE_MAX) errors.note = `Keep the note to ${TIME_OFF_NOTE_MAX} characters or fewer.`;
   if (Object.keys(errors).length) return { ok: false, errors };
 
-  if (input.allDay && endDate < startDate) {
+  if (endDate < startDate) {
     return { ok: false, errors: { endDate: "The end date must be on or after the start date." } };
   }
   const { startsAt, endsAt } = timeOffRange({ allDay: input.allDay, startDate, endDate, startTime, endTime }, opts.zone);
   if (!(endsAt > startsAt)) {
-    return { ok: false, errors: { [input.allDay ? "endDate" : "endTime"]: "The end must be after the start." } };
+    if (input.allDay) return { ok: false, errors: { endDate: "The end must be after the start." } };
+    const message = typedEnd ? "The end must be after the start." : "The end must be after the start. To end after midnight, choose an end date.";
+    return { ok: false, errors: { endTime: message } };
   }
   if (endsAt - startsAt > TIME_OFF_MAX_DAYS * DAY_MS) {
     return { ok: false, errors: { endDate: `Time off can last at most ${TIME_OFF_MAX_DAYS} days.` } };

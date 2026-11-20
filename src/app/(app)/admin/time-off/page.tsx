@@ -55,7 +55,9 @@ export default async function AdminTimeOffPage({ searchParams }: { searchParams:
             : "Read-only list of current and upcoming time off. A person on time off is unavailable on every booking page they host."
         }
       />
-      <form method="get" className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end" aria-label="Filter time off by person">
+      {/* Keyed on the selection: search-param navigations keep this tree mounted, and a native
+          select keeps its old choice when only defaultValue changes. */}
+      <form key={selected ?? "all"} method="get" className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end" aria-label="Filter time off by person">
         <Select
           label="Person"
           name="user"
@@ -96,7 +98,14 @@ export default async function AdminTimeOffPage({ searchParams }: { searchParams:
             <CardHeader id="time-off-add-h" title="Add time off" description={data.person ? `For ${data.person.name}.` : undefined} />
             <CardBody>
               {data.person && data.zone ? (
-                <TimeOffForm key={data.person.id} action={adminAddTimeOffAction} minDate={minDate} timezone={data.zone} userId={data.person.id} />
+                <TimeOffForm
+                  key={data.person.id}
+                  action={adminAddTimeOffAction}
+                  minDate={minDate}
+                  timezone={data.zone}
+                  userId={data.person.id}
+                  blockIds={data.blocks.map((b) => b.id)}
+                />
               ) : (
                 <p className="text-sm text-muted">Choose a person above to add time off for them. Dates and times are entered in that person&apos;s time zone.</p>
               )}

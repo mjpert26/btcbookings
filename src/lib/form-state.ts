@@ -8,6 +8,8 @@ export type ActionState = {
   fieldErrors?: Record<string, string>;
   /** Follow-up items to show with a success message, for example bookings to reschedule. */
   warnings?: string[];
+  /** Id of the record a successful create added, so related notices can follow its lifetime. */
+  createdId?: string;
   /** Changes on every response so repeated identical messages are still announced. */
   ts?: number;
 };

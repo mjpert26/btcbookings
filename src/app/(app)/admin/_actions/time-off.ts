@@ -20,7 +20,7 @@ export async function adminAddTimeOffAction(_prev: ActionState, fd: FormData): P
   const res = await withUser(admin.id, (tx) => createTimeOff(tx, { actorUserId: admin.id, userId, input, ipHash }));
   if (!res.ok) return fail(res.message, res.errors);
   revalidatePath("/admin/time-off");
-  return timeOffSavedState(res.overlapping, res.block.timezone);
+  return timeOffSavedState(res.block.id, res.overlapping, res.block.timezone);
 }
 
 /** Deletes any time-off block. Global admins only. */
@@ -30,7 +30,8 @@ export async function adminDeleteTimeOffAction(_prev: ActionState, fd: FormData)
   if (!isUuid(id)) return fail("Invalid time off.");
   const ipHash = await requestIpHash();
   const removed = await withUser(admin.id, (tx) => deleteTimeOff(tx, { actorUserId: admin.id, id, ipHash }));
-  if (!removed) return fail("Time off not found.");
   revalidatePath("/admin/time-off");
-  return ok("Time off deleted.");
+  // A block already deleted elsewhere (another tab or another admin) is reported as done
+  // so the stale row disappears on refresh instead of failing silently.
+  return ok(removed ? "Time off deleted." : "Time off was already deleted.");
 }

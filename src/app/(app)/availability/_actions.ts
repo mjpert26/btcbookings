@@ -220,7 +220,7 @@ export async function addTimeOffAction(_prev: ActionState, fd: FormData): Promis
   const res = await withUser(user.id, (tx) => createTimeOff(tx, { actorUserId: user.id, userId: user.id, input, ipHash }));
   if (!res.ok) return fail(res.message, res.errors);
   revalidatePath("/availability");
-  return timeOffSavedState(res.overlapping, res.block.timezone);
+  return timeOffSavedState(res.block.id, res.overlapping, res.block.timezone);
 }
 
 /** Deletes one of the signed-in user's own time-off blocks. Availability returns at once. */
@@ -230,7 +230,8 @@ export async function deleteTimeOffAction(_prev: ActionState, fd: FormData): Pro
   if (!isUuid(id)) return fail("Invalid time off.");
   const ipHash = await requestIpHash();
   const removed = await withUser(user.id, (tx) => deleteTimeOff(tx, { actorUserId: user.id, id, userId: user.id, ipHash }));
-  if (!removed) return fail("Time off not found.");
   revalidatePath("/availability");
-  return ok("Time off deleted.");
+  // A block already deleted elsewhere (another tab or another admin) is reported as done
+  // so the stale row disappears on refresh instead of failing silently.
+  return ok(removed ? "Time off deleted." : "Time off was already deleted.");
 }

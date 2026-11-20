@@ -84,7 +84,7 @@ export default async function AvailabilityPage() {
             />
             <CardBody className="space-y-5">
               <TimeOffList blocks={data.timeOff} deleteAction={deleteTimeOffAction} overlaps={overlaps} now={now} />
-              <TimeOffForm action={addTimeOffAction} minDate={today} timezone={tz} />
+              <TimeOffForm action={addTimeOffAction} minDate={today} timezone={tz} blockIds={data.timeOff.map((b) => b.id)} />
             </CardBody>
           </Card>
         </div>

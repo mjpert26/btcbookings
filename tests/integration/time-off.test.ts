@@ -7,7 +7,7 @@ import { withUser, type Sql } from "@/server/db/client";
 import { getAvailableSlots } from "@/server/booking/slots";
 import { createBooking } from "@/server/booking/create";
 import { SlotTakenError, type BookingInput } from "@/server/booking/types";
-import { createTimeOff, deleteTimeOff, listTimeOff, overlappingBookings } from "@/server/time-off";
+import { bookingsInsideBlocks, createTimeOff, deleteTimeOff, listTimeOff, overlappingBookings } from "@/server/time-off";
 import { TIME_OFF_MAX_FUTURE, type TimeOffInput } from "@/lib/time-off";
 
 let sql: Sql;
@@ -241,6 +241,33 @@ describe("time off: overlapping bookings warning", () => {
       overlappingBookings(tx, host.id, { startsAt: res.block.startsAt, endsAt: res.block.endsAt }, new Date(at(10, 30).getTime() + 1)),
     );
     expect(past).toEqual([]);
+  });
+
+  it("groups bookings by block and applies the limit per block, not across the span between blocks", async () => {
+    const host = await makeHost(sql);
+    const ev = await makeEvent(sql, { userId: host.id });
+    const day = DateTime.fromISO(futureSlot(3, 15), { zone: NY }).set({ hour: 0, minute: 0 });
+    const at = (d: number, h: number, m = 0) => day.plus({ days: d }).set({ hour: h, minute: m }).toJSDate();
+
+    const early = await addOwn(host.id, { allDay: false, startDate: day.toISODate()!, startTime: "09:00", endTime: "10:00" });
+    const empty = await addOwn(host.id, { allDay: false, startDate: day.plus({ days: 1 }).toISODate()!, startTime: "09:00", endTime: "10:00" });
+    const late = await addOwn(host.id, { allDay: false, startDate: day.plus({ days: 2 }).toISODate()!, startTime: "09:00", endTime: "10:00" });
+
+    const inEarly = await makeBooking(sql, { eventTypeId: ev.id, hosts: [{ userId: host.id }], start: at(0, 9), end: at(0, 9, 30), inviteeName: "Early" });
+    // A second booking in the first block is cut by the per-block limit of 1.
+    await makeBooking(sql, { eventTypeId: ev.id, hosts: [{ userId: host.id }], start: at(0, 9, 30), end: at(0, 10), inviteeName: "Early 2" });
+    // Bookings between the blocks must not count toward any block's limit.
+    for (const h of [12, 13, 14]) {
+      await makeBooking(sql, { eventTypeId: ev.id, hosts: [{ userId: host.id }], start: at(0, h), end: at(0, h, 30), inviteeName: "Between" });
+    }
+    const inLate = await makeBooking(sql, { eventTypeId: ev.id, hosts: [{ userId: host.id }], start: at(2, 9, 30), end: at(2, 10), inviteeName: "Late" });
+
+    const blocks = [early.block, empty.block, late.block];
+    const res = await withUser(host.id, (tx) => bookingsInsideBlocks(tx, host.id, blocks, new Date(), 1));
+    expect(Object.keys(res).sort()).toEqual([early.block.id, late.block.id].sort());
+    expect(res[early.block.id].map((b) => b.bookingId)).toEqual([inEarly]);
+    expect(res[late.block.id]).toEqual([{ bookingId: inLate, startAt: at(2, 9, 30), endAt: at(2, 10), inviteeName: "Late" }]);
+    expect(res[empty.block.id]).toBeUndefined();
   });
 });
 

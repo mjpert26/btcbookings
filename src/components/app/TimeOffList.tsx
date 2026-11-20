@@ -70,7 +70,7 @@ export function TimeOffList({
                 </div>
               ) : null}
             </div>
-            {deleteAction ? <DeleteTimeOff action={deleteAction} id={b.id} label={label} /> : null}
+            {deleteAction ? <DeleteTimeOff action={deleteAction} id={b.id} label={showUser ? `${b.userName}, ${label}` : label} /> : null}
           </li>
         );
       })}

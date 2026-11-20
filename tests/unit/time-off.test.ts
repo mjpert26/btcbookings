@@ -99,18 +99,41 @@ describe("parseTimeOff: validation", () => {
   });
 
   it("rejects a window whose end is not after its start", () => {
-    expect(parse({ allDay: false, startDate: "2026-12-07", startTime: "15:00", endTime: "15:00" })).toEqual({
+    expect(parse({ allDay: false, startDate: "2026-12-07", endDate: "2026-12-07", startTime: "15:00", endTime: "15:00" })).toEqual({
       ok: false,
       errors: { endTime: "The end must be after the start." },
     });
-    expect(parse({ allDay: false, startDate: "2026-12-07", startTime: "15:00", endTime: "09:00" }).ok).toBe(false);
+    // With no end date, suggest choosing one for a window that runs past midnight.
+    expect(parse({ allDay: false, startDate: "2026-12-07", startTime: "15:00", endTime: "09:00" })).toEqual({
+      ok: false,
+      errors: { endTime: "The end must be after the start. To end after midnight, choose an end date." },
+    });
+  });
+
+  it("puts an end date before the start date on the end date field for a time window", () => {
+    expect(parse({ allDay: false, startDate: "2026-12-10", endDate: "2026-12-09", startTime: "09:00", endTime: "17:00" })).toEqual({
+      ok: false,
+      errors: { endDate: "The end date must be on or after the start date." },
+    });
   });
 
   it("requires times for a time window and valid dates", () => {
     const res = parse({ allDay: false, startDate: "2026-13-40", startTime: "", endTime: "25:00" });
     expect(res.ok).toBe(false);
     if (res.ok) return;
-    expect(Object.keys(res.errors).sort()).toEqual(["endDate", "endTime", "startDate", "startTime"]);
+    // The end date is optional, so an empty one is not flagged.
+    expect(Object.keys(res.errors).sort()).toEqual(["endTime", "startDate", "startTime"]);
+  });
+
+  it("flags only the start date when both dates are empty", () => {
+    expect(parse({ allDay: true, startDate: "", endDate: "" })).toEqual({ ok: false, errors: { startDate: "Choose a start date." } });
+  });
+
+  it("flags a typed end date that is not a valid date", () => {
+    expect(parse({ allDay: true, startDate: "2026-12-07", endDate: "2026-02-31" })).toEqual({
+      ok: false,
+      errors: { endDate: "Enter a valid end date." },
+    });
   });
 
   it("rejects a block that has already ended", () => {

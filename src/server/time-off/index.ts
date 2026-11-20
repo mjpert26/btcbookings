@@ -123,24 +123,40 @@ export async function overlappingBookings(
 
 /**
  * For one person's blocks, the confirmed upcoming bookings inside each block, keyed by
- * block id. Blocks with no bookings inside are left out.
+ * block id. Blocks with no bookings inside are left out. The limit applies per block, so
+ * bookings that fall between blocks never crowd out bookings inside a later block.
  */
 export async function bookingsInsideBlocks(
   tx: Tx,
   userId: string,
   blocks: { id: string; startsAt: Date; endsAt: Date }[],
   now: Date = new Date(),
+  perBlockLimit = 200,
 ): Promise<Record<string, OverlappingBooking[]>> {
   const out: Record<string, OverlappingBooking[]> = {};
   if (!blocks.length) return out;
-  const span = {
-    startsAt: new Date(Math.min(...blocks.map((b) => b.startsAt.getTime()))),
-    endsAt: new Date(Math.max(...blocks.map((b) => b.endsAt.getTime()))),
-  };
-  const bookings = await overlappingBookings(tx, userId, span, now, 1000);
-  for (const b of blocks) {
-    const inside = bookings.filter((x) => x.startAt < b.endsAt && x.endAt > b.startsAt);
-    if (inside.length) out[b.id] = inside;
+  const ids = blocks.map((b) => b.id);
+  const starts = blocks.map((b) => b.startsAt.toISOString());
+  const ends = blocks.map((b) => b.endsAt.toISOString());
+  const rows = await tx<{ block_id: string; id: string; start_at: Date; end_at: Date; invitee_name: string }[]>`
+    select block_id, id, start_at, end_at, invitee_name
+    from (
+      select blk.id as block_id, b.id, b.start_at, b.end_at, b.invitee_name,
+             row_number() over (partition by blk.id order by b.start_at, b.id) as rn
+      from unnest(${ids}::uuid[], ${starts}::timestamptz[], ${ends}::timestamptz[]) as blk(id, s, e)
+      join app.bookings b on b.start_at < blk.e and b.end_at > blk.s
+      where b.status = 'confirmed'
+        and b.end_at > ${now}
+        and exists (
+          select 1 from app.booking_hosts bh
+          where bh.booking_id = b.id and bh.active and bh.user_id = ${userId}
+        )
+    ) x
+    where rn <= ${perBlockLimit}
+    order by block_id, start_at, id
+  `;
+  for (const r of rows) {
+    (out[r.block_id] ??= []).push({ bookingId: r.id, startAt: r.start_at, endAt: r.end_at, inviteeName: r.invitee_name });
   }
   return out;
 }

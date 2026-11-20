@@ -9,10 +9,14 @@ import { Notice } from "@/components/ui/Toast";
 import type { FormAction } from "@/lib/form-state";
 import { TIME_OFF_NOTE_MAX } from "@/lib/time-off";
 
-/** Lists the bookings inside a block that was just saved, so they can be rescheduled. */
-function OverlapWarning() {
+/**
+ * Lists the bookings inside a block that was just saved, so they can be rescheduled.
+ * Hidden once that block is no longer in `blockIds` (for example after it is deleted).
+ */
+function OverlapWarning({ blockIds }: { blockIds: string[] }) {
   const { state } = useFormState();
   if (state.status !== "success" || !state.warnings?.length) return null;
+  if (!state.createdId || !blockIds.includes(state.createdId)) return null;
   return (
     <Notice tone="warning" title="These bookings are inside the time off" className="mt-3">
       <p className="text-sm">They were not cancelled or moved. Reschedule them or let the invitees know.</p>
@@ -42,17 +46,20 @@ function ResetOnSuccess({ onReset }: { onReset: () => void }) {
 /**
  * Adds a time-off block: whole days (All day on) or a time window. Dates and times are read
  * in `timezone` on the server. Pass `userId` when an admin adds time off for someone else.
+ * `blockIds` are the ids of the blocks currently listed on the page.
  */
 export function TimeOffForm({
   action,
   minDate,
   timezone,
   userId,
+  blockIds,
 }: {
   action: FormAction;
   minDate: string;
   timezone: string;
   userId?: string;
+  blockIds: string[];
 }) {
   const [allDay, setAllDay] = useState(true);
   const [startDate, setStartDate] = useState("");
@@ -95,7 +102,7 @@ export function TimeOffForm({
       />
       <p className="text-xs text-muted">Times are in {timezone}. Existing bookings are not changed.</p>
       <SubmitButton>Add time off</SubmitButton>
-      <OverlapWarning />
+      <OverlapWarning blockIds={blockIds} />
       <ResetOnSuccess onReset={() => setStartDate("")} />
     </ActionForm>
   );

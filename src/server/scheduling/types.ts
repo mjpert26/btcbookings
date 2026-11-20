@@ -43,6 +43,8 @@ export type HostAvailabilityInput = {
   busy: BusyBlock[];
   /** Existing active bookings for this host, as blocked ranges (buffers already included). */
   booked: Range[];
+  /** Time-off blocks (app.time_off). They block like busy events, whatever the showAs setting. */
+  timeOff?: Range[];
   /** Counts of confirmed bookings per local date (host's zone) for daily caps. */
   bookingsPerDay: Record<string, number>;
   dailyCap: number | null;

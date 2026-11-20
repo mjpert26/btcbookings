@@ -11,8 +11,9 @@
  *   so a rule touching the gap never yields slots inside it. Ambiguous local times
  *   (fall-back overlap) resolve to the earlier offset. Results are deduplicated by start.
  * - Blocked range = [start - bufferBefore, end + bufferAfter). A host is free when the
- *   blocked range intersects no busy block whose showAs is in host.unavailableShowAs and
- *   no existing booked range (which already includes that booking's buffers).
+ *   blocked range intersects no busy block whose showAs is in host.unavailableShowAs, no
+ *   time-off block (host.timeOff, always blocking) and no existing booked range (which
+ *   already includes that booking's buffers).
  * - All-day events follow the same showAs rule; the stored range is authoritative.
  *   All-day events whose showAs is not in the unavailable set (e.g. "free") never block.
  * - Host schedule: when host.schedule is non-null, the host is available only where BOTH
@@ -192,7 +193,7 @@ function prepareHost(host: HostAvailabilityInput, from: number, to: number): Pre
     .map((b) => ({ start: b.start, end: b.end }));
   return {
     host,
-    blocking: mergeRanges([...busy, ...host.booked]),
+    blocking: mergeRanges([...busy, ...(host.timeOff ?? []), ...host.booked]),
     ownSchedule: host.schedule ? mergeRanges(expandSchedule(host.schedule, from, to)) : null,
     dayKeys: new Map(),
   };

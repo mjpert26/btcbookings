@@ -10,6 +10,8 @@ import { bool, fail, invalid, isUuid, json, ok, requestIpHash, str, zodFieldErro
 import { DEFAULT_WEEKLY, intervalListSchema, SHOW_AS_VALUES, timeZoneSchema, weeklyRulesSchema } from "@/lib/availability";
 import { normalizeE164 } from "@/server/sms/phone";
 import { changedFields, maskPhone, writeAudit, writeAuditDiff } from "@/server/audit";
+import { createTimeOff, deleteTimeOff } from "@/server/time-off";
+import { timeOffFormValues, timeOffSavedState } from "@/server/time-off/form";
 
 /** Returns the user's default schedule id, creating it from the standard template if missing. */
 async function ensureDefaultSchedule(tx: Tx, userId: string, timezone: string): Promise<string> {
@@ -208,4 +210,27 @@ async function auditPreferences(tx: Tx, userId: string, prev: PreferenceColumns 
     diff.after.sms_phone = maskPhone(diff.after.sms_phone);
   }
   await writeAudit(tx, { actorUserId: userId, action: "user_settings.update", entityType: "user_settings", entityId: userId, ...diff, ipHash });
+}
+
+/** Adds a time-off block for the signed-in user. Audited in the same transaction. */
+export async function addTimeOffAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  const input = timeOffFormValues(fd);
+  const ipHash = await requestIpHash();
+  const res = await withUser(user.id, (tx) => createTimeOff(tx, { actorUserId: user.id, userId: user.id, input, ipHash }));
+  if (!res.ok) return fail(res.message, res.errors);
+  revalidatePath("/availability");
+  return timeOffSavedState(res.overlapping, res.block.timezone);
+}
+
+/** Deletes one of the signed-in user's own time-off blocks. Availability returns at once. */
+export async function deleteTimeOffAction(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  const user = await requireUser();
+  const id = str(fd, "timeOffId");
+  if (!isUuid(id)) return fail("Invalid time off.");
+  const ipHash = await requestIpHash();
+  const removed = await withUser(user.id, (tx) => deleteTimeOff(tx, { actorUserId: user.id, id, userId: user.id, ipHash }));
+  if (!removed) return fail("Time off not found.");
+  revalidatePath("/availability");
+  return ok("Time off deleted.");
 }

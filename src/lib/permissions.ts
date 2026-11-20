@@ -29,6 +29,10 @@ export const CAPABILITIES = {
   /** Create teams, link Salesforce queues and Slack channels, change team admins. */
   "teams.manage": ["admin"],
   "audit.read": ["admin", "manager"],
+  /** See everyone's time off on Admin > Time off. */
+  "time_off.read_all": ["admin", "manager"],
+  /** Add and delete time off for any active user. */
+  "time_off.manage_all": ["admin"],
   "errors.read": ["admin"],
   /** OAuth clients, allowed callback URLs, webhooks, and other users' API keys. */
   "integrations.manage": ["admin"],

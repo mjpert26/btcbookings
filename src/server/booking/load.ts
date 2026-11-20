@@ -21,6 +21,7 @@ import {
   type WeeklyRules,
 } from "@/server/scheduling";
 import { parseOptions } from "@/server/booking/validation";
+import { loadTimeOffRanges } from "@/server/time-off";
 import type {
   LiveBusyBlock,
   OwnerRef,
@@ -47,6 +48,9 @@ import type {
  *   block a collective event. Eligibility additionally requires a healthy calendar.
  * - Busy blocks that belong to the app's own bookings (busy_blocks.booking_id set) are
  *   ignored; active booking_hosts rows are authoritative for those.
+ * - Time off (app.time_off) blocks a host on every event type, like an Outlook busy event
+ *   whose status is always in the host's unavailable set. Only user_id, starts_at and
+ *   ends_at are read.
  */
 
 export type Owner =
@@ -491,7 +495,7 @@ export async function loadAvailability(
   const defaultByUser = new Map(defaultScheduleRows.map((r) => [r.owner_user_id, r.id]));
   const scheduleIds = [...new Set([...(et.schedule_id ? [et.schedule_id] : []), ...defaultByUser.values()])];
 
-  const [schedules, busyRows, bookedRows] = await Promise.all([
+  const [schedules, busyRows, bookedRows, timeOff] = await Promise.all([
     loadSchedules(db, scheduleIds, range.from, range.to),
     userIds.length
       ? db<{ user_id: string; start_at: Date; end_at: Date; show_as: string; is_all_day: boolean }[]>`
@@ -509,6 +513,7 @@ export async function loadAvailability(
             and bh.blocked_range && tstzrange(${marginFrom}, ${marginTo})
         `
       : Promise.resolve([]),
+    loadTimeOffRanges(db, userIds, marginFrom, marginTo),
   ]);
 
   let schedule: Schedule;
@@ -548,6 +553,7 @@ export async function loadAvailability(
       unavailableShowAs: p.unavailableShowAs,
       busy,
       booked,
+      timeOff: timeOff.get(p.userId) ?? [],
       bookingsPerDay: perDay,
       dailyCap: p.dailyCap,
       timezone: p.timezone,

@@ -6,6 +6,8 @@ export type ActionState = {
   status: "idle" | "success" | "error";
   message?: string;
   fieldErrors?: Record<string, string>;
+  /** Follow-up items to show with a success message, for example bookings to reschedule. */
+  warnings?: string[];
   /** Changes on every response so repeated identical messages are still announced. */
   ts?: number;
 };

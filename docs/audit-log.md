@@ -24,6 +24,7 @@ Settings changes record only the fields that changed. `writeAuditDiff()` compare
 | Event type reminders | `event_type.update_reminders` | `event_type` | Merchant and agent reminder offsets and channels |
 | Weekly hours | `availability.weekly_update` | `availability_schedule` | Time zone and weekly rules |
 | Date overrides | `availability.override_set`, `availability.override_remove` | `availability_schedule` | The date and its intervals |
+| Time off | `time_off.create`, `time_off.delete` | `time_off` (entity id is the block id) | `user_id`, `starts_at`, `ends_at` (UTC ISO), `all_day`. The note is never stored. Written by `src/server/time-off/index.ts`, for the person's own blocks and for admins acting on anyone's |
 | Booking preferences | `user_settings.update` | `user_settings` | Outlook statuses that block time, daily cap, conflict policy, host email notices, SMS number (masked) |
 | Team settings | `team.settings_update` | `team` | Outlook conflict policy, removal policy, mass-removal threshold |
 | Team member settings | `team.member_update` | `team_member` | Weight, priority tier, daily cap |
@@ -72,7 +73,7 @@ The host booking detail page (`/bookings/{id}`) shows a **History** timeline: ti
 
 ## Audit viewer (BTCSCHED-48)
 
-`/admin/audit` is open to admins and managers (capability `audit.read`). Managers see only the **Audit log** item in the admin navigation and cannot open other admin pages: `src/app/(app)/admin/layout.tsx` requires `audit.read`, and every other admin page sits in the `(admin-only)` route group, whose layout requires a global admin. Nothing on the page changes data.
+`/admin/audit` is open to admins and managers (capability `audit.read`). Managers see only the **Audit log** and **Time off** (read-only) items in the admin navigation and cannot open other admin pages: `src/app/(app)/admin/layout.tsx` requires `audit.read`, and every other admin page sits in the `(admin-only)` route group, whose layout requires a global admin. Nothing on the page changes data.
 
 Filters (query string; invalid values are ignored):
 

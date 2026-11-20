@@ -1,6 +1,6 @@
 # BTC Scheduler
 
-Big Think Capital's scheduling platform, replacing Calendly. Employees sign in with Microsoft 365, their Outlook calendars drive availability, and every booking is written to Outlook. Individual and team booking pages (round-robin and collective), English and Spanish variants, Salesforce Queue-driven team membership, Slack channel sync, and optional per booking page Salesforce Lead updates (Meeting Booked, like the Calendly flow) and Lead creation.
+Big Think Capital's scheduling platform, replacing Calendly. Employees sign in with Microsoft 365, their Outlook calendars drive availability, and every booking is written to Outlook. Individual and team booking pages (round-robin and collective), time off that blocks a person on every page they host, English and Spanish variants, Salesforce Queue-driven team membership, Slack channel sync, and optional per booking page Salesforce Lead updates (Meeting Booked, like the Calendly flow) and Lead creation.
 
 The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 
@@ -11,6 +11,7 @@ The approved design is in [`docs/PLAN.md`](docs/PLAN.md).
 - [Environment variables](#environment-variables)
 - [Microsoft Entra app registration](#microsoft-entra-app-registration)
 - [Slack app](#slack-app)
+- [Availability and time off](#availability-and-time-off)
 - [Queue to booking page to Slack sync](#queue-to-booking-page-to-slack-sync)
 - [Reminders and SMS](#reminders-and-sms)
 - [Public home page](#public-home-page)
@@ -46,7 +47,7 @@ Browser ──> Next.js (Vercel) ──> Postgres (Supabase, schema "app", RLS o
 | Sign-in | Entra ID OIDC, authorization code + PKCE, single tenant. Server-side sessions in `app.sessions`; the browser holds only an opaque httpOnly cookie. |
 | Graph tokens | Encrypted with AES-256-GCM (`TOKEN_ENCRYPTION_KEYS`), bound to the user id. Refreshed under a row lock. Revoked consent marks the connection `broken`, shows a "Reconnect Outlook" banner, and removes the user from round-robin until they reconnect. |
 | Data access | `withUser()` runs queries as the `app_user` role with the user's id in `request.jwt.claims`, so RLS applies. Webhooks, cron and the public booking engine use the owner connection through a small set of server modules. |
-| Availability | Busy blocks cached from Outlook (`app.busy_blocks`), kept current by Graph subscriptions plus delta queries every 15 minutes. A live `getSchedule` check runs just before each booking. |
+| Availability | Busy blocks cached from Outlook (`app.busy_blocks`), kept current by Graph subscriptions plus delta queries every 15 minutes. A live `getSchedule` check runs just before each booking. Time off (`app.time_off`) blocks a person like an Outlook busy event. |
 | Double booking | A Postgres exclusion constraint on each host's booked time range (buffers included), plus an advisory lock and row locks while assigning within the booking transaction. |
 | Background work | `app.jobs` outbox with retries, exponential backoff and per-attempt logs (`app.job_attempts`). A Vercel Cron route drains it every minute using `FOR UPDATE SKIP LOCKED`. |
 | Salesforce | The app never calls Salesforce. It posts HMAC-signed requests to n8n, and n8n uses the existing SF Token Broker. A 2-minute n8n poller sends Queue membership snapshots back to the app. |
@@ -113,6 +114,19 @@ Step-by-step instructions: [`docs/entra-setup.md`](docs/entra-setup.md). In shor
 Manifest: [`slack/manifest.yml`](slack/manifest.yml). Install steps, scopes and workspace settings: [`docs/slack-setup.md`](docs/slack-setup.md). New channel and user group links start in dry-run mode with mode `add only`, which never removes anyone; set the mode to `add and remove` for reps who leave the queue to be taken out. A Slack user group can be linked to one team only.
 
 The manifest now includes `usergroups:read` and `usergroups:write` (for a team's linked Slack user group). An app installed before this change must be updated from the manifest and reinstalled before a user group link is turned live; channel sync keeps working without them. Without `SLACK_BOT_TOKEN`, Slack jobs succeed with a `slack_not_configured` result and change nothing.
+
+## Availability and time off
+
+Each person sets their hours at **Availability** (`/availability`): weekly hours in a time zone, date overrides, booking preferences (which Outlook statuses block time, a daily limit) and time off. Outlook busy time is always subtracted from these hours.
+
+**Time off** blocks a person on every booking page they host: personal pages on any schedule, and team round-robin and collective pages. It works exactly like an Outlook busy event: a round-robin page offers the other hosts, a collective page has no times while a required host is off, and a booking request for a blocked time is refused at booking time like any other conflict.
+
+- A block is either **All day** (a start date and an end date, from 00:00 on the first day to 24:00 on the last day) or a **time window** (start date and time to end date and time, which may cross midnight). Input is read in the person's time zone (their default schedule's zone, else their profile zone) and stored as UTC instants, so all-day blocks cover the whole local day on 23- and 25-hour DST days.
+- An optional note (up to 200 characters) is visible to the person and to admins only. It never appears on public pages or in the audit log.
+- Blocks cannot end in the past, last more than 366 days, or exceed 100 upcoming blocks per person. There is no edit: delete a block and add a new one. Deleting restores availability immediately.
+- Existing bookings inside a new block are not cancelled or moved. After saving, the page lists the confirmed upcoming bookings inside the block (time and invitee name) so they can be rescheduled; the time-off list keeps showing them under each block.
+- Admins add and delete time off for any active user at **Admin > Time off** (`/admin/time-off`, also linked from each row on **Admin > Users**). Managers can view that page read-only, without notes. Agents manage only their own.
+- Every add and delete is audited (`time_off.create`, `time_off.delete`, entity type `time_off`). Requires migration `20261120120000_time_off.sql`.
 
 ## Queue to booking page to Slack sync
 
@@ -251,6 +265,7 @@ src/server/auth         Entra OIDC, sessions, first-login provisioning
 src/server/graph        Graph client, busy cache, subscriptions, delta, event writes
 src/server/scheduling   pure slot engine, round-robin, variant resolution
 src/server/booking      booking transaction, manage links, reassignment
+src/server/time-off     time off: create, delete and list under RLS, overlapping bookings, engine ranges
 src/server/sync         Salesforce Queue snapshot diffing, safety rail, run history and sync status
 src/server/slack        Slack channel and user group sync, agent reminder direct messages
 src/server/sms          Twilio and SendBlue clients, provider selection, SMS reminders, opt-outs

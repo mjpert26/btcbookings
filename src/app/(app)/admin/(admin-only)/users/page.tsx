@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/Card";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/Table";
 import { Input } from "@/components/ui/Field";
-import { Button } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
 import { ActionButton } from "@/components/app/ActionButton";
 import { formatRelative } from "@/lib/format";
 import { decideLinkRequestAction, setRoleAction } from "../../_actions/users";
@@ -133,8 +133,13 @@ export default async function UsersPage({ searchParams }: { searchParams: Promis
                   </TD>
                   <TD>{formatRelative(u.last_login_at)}</TD>
                   <TD>
+                    {u.is_active ? (
+                      <ButtonLink href={`/admin/time-off?user=${u.id}`} size="sm" variant="ghost" className="mb-1">
+                        Time off<span className="sr-only"> for {u.name}</span>
+                      </ButtonLink>
+                    ) : null}
                     {lastAdmin ? (
-                      <span className="text-xs text-muted">Last admin</span>
+                      <span className="block text-xs text-muted">Last admin</span>
                     ) : (
                       <span className="flex flex-wrap gap-1">
                         {(["user", "manager", "admin"] as const)

@@ -11,6 +11,11 @@ import { WeeklyEditor } from "./WeeklyEditor";
 import { OverrideForm } from "./OverrideForm";
 import { SettingsForm } from "./SettingsForm";
 import { RemoveOverride } from "./RemoveOverride";
+import { TimeOffForm } from "@/components/app/TimeOff";
+import { TimeOffList } from "@/components/app/TimeOffList";
+import { bookingsInsideBlocks, listTimeOff } from "@/server/time-off";
+import { formatRange } from "@/lib/format";
+import { addTimeOffAction, deleteTimeOffAction } from "./_actions";
 
 export const metadata: Metadata = { title: "Availability" };
 
@@ -27,6 +32,7 @@ function timeZones(current: string): string[] {
 
 export default async function AvailabilityPage() {
   const user = await requireUser();
+  const now = new Date();
   const data = await withUser(user.id, async (tx) => {
     const [schedule] = await tx<{ id: string; timezone: string; weekly_rules: unknown }[]>`
       select id, timezone, weekly_rules from app.availability_schedules where owner_user_id = ${user.id} and is_default
@@ -42,27 +48,46 @@ export default async function AvailabilityPage() {
     const [settings] = await tx<
       { unavailable_show_as: string[]; daily_booking_cap: number | null; outlook_conflict_policy: string; notify_host_by_email: boolean; sms_phone: string | null }[]
     >`select unavailable_show_as, daily_booking_cap, outlook_conflict_policy, notify_host_by_email, sms_phone from app.user_settings where user_id = ${user.id}`;
-    return { schedule, overrides, settings };
+    const timeOff = await listTimeOff(tx, { userId: user.id, now });
+    const inside = await bookingsInsideBlocks(tx, user.id, timeOff, now);
+    return { schedule, overrides, settings, timeOff, inside };
   });
 
   const tz = data.schedule?.timezone ?? user.timezone;
   const weekly = data.schedule ? normalizeWeekly(data.schedule.weekly_rules) : DEFAULT_WEEKLY;
   const today = DateTime.now().setZone(tz).toISODate() ?? "";
+  const overlaps = Object.fromEntries(
+    data.timeOff.map((b) => [b.id, (data.inside[b.id] ?? []).map((x) => `${formatRange(x.startAt, x.endAt, b.timezone)} · ${x.inviteeName}`)]),
+  );
 
   return (
     <>
-      <PageHeader title="Availability" description="Set the hours people can book you. Outlook busy time is always subtracted from these hours." />
+      <PageHeader title="Availability" description="Set the hours people can book you. Outlook busy time and your time off are always subtracted from these hours." />
       <div className="grid gap-6 xl:grid-cols-3">
-        <Card className="xl:col-span-2" aria-labelledby="weekly-h">
-          <CardHeader
-            id="weekly-h"
-            title="Weekly hours"
-            description={data.schedule ? "Your default schedule, used by every event type unless it picks another schedule." : "You are using the standard template. Saving creates your own schedule."}
-          />
-          <CardBody>
-            <WeeklyEditor initial={weekly} timezone={tz} zones={timeZones(tz)} />
-          </CardBody>
-        </Card>
+        <div className="flex flex-col gap-6 xl:col-span-2">
+          <Card aria-labelledby="weekly-h">
+            <CardHeader
+              id="weekly-h"
+              title="Weekly hours"
+              description={data.schedule ? "Your default schedule, used by every event type unless it picks another schedule." : "You are using the standard template. Saving creates your own schedule."}
+            />
+            <CardBody>
+              <WeeklyEditor initial={weekly} timezone={tz} zones={timeZones(tz)} />
+            </CardBody>
+          </Card>
+
+          <Card aria-labelledby="time-off-h">
+            <CardHeader
+              id="time-off-h"
+              title="Time off"
+              description="Block whole days or a time window. You are unavailable on every booking page you host, including team pages, as if Outlook showed you busy."
+            />
+            <CardBody className="space-y-5">
+              <TimeOffList blocks={data.timeOff} deleteAction={deleteTimeOffAction} overlaps={overlaps} now={now} />
+              <TimeOffForm action={addTimeOffAction} minDate={today} timezone={tz} />
+            </CardBody>
+          </Card>
+        </div>
 
         <div className="flex flex-col gap-6">
           <Card aria-labelledby="overrides-h">

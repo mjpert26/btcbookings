@@ -140,6 +140,11 @@ status `free` are dropped. A host whose call fails or times out falls back to th
 `busy_blocks` cache. Live results are returned to the caller, not written to the cache
 (schedule items carry no event id).
 
+Time off entered in the app (`app.time_off`, see the README section "Availability and time
+off") is not an Outlook event and is not read from or written to Graph. The slot engine merges
+it with the busy blocks for the host, and it always blocks, whatever the host's Outlook
+statuses setting. A person who also wants the time off in Outlook adds it there separately.
+
 ## 6. Creating the app's events
 
 Sources:

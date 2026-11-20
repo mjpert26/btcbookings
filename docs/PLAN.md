@@ -108,6 +108,7 @@ All primary keys are UUIDv4. Every table has `created_at` and `updated_at`. RLS 
 | `availability_schedules` | `id`, `owner_user_id` or `owner_team_id`, `name`, `timezone`, `weekly_rules` (jsonb: per weekday, list of `{start: "09:30", end: "18:30"}`), `is_default` | Default template is America/New_York, 9:30 to 18:30, Monday to Friday. |
 | `availability_overrides` | `schedule_id`, `date`, `intervals` (jsonb, empty means unavailable) | Date-specific overrides. |
 | `user_settings` | `user_id`, `unavailable_show_as` (text[], default `{busy,tentative,oof}`), `default_schedule_id`, `daily_booking_cap` | Per-user setting for which Outlook states block time. |
+| `time_off` | `user_id`, `starts_at`, `ends_at`, `all_day`, `timezone`, `note` (at most 200 characters), `created_by`, `created_at` | Added 2026-11-20. A person's time off, stored as UTC instants; `timezone` is the zone the input was read in. Blocks the person on every page they host. No updates: delete and add again. Users manage their own rows, admins anyone's, managers read all. |
 
 ### 3.3 Teams and sync
 
@@ -153,7 +154,7 @@ Inputs: the resolved event type settings, the schedule with overrides, busy bloc
 
 1. For each date in `[today + min_notice, today + booking_window_days]`, expand weekly rules and date overrides in the **schedule's zone** with Luxon. This produces UTC intervals and handles DST gaps (2:00 to 3:00 does not exist) and overlaps.
 2. Step through each interval at `slot_interval_min`. A slot is `[t, t + duration]`. Its blocked range is `[t - buffer_before, t + duration + buffer_after]`.
-3. A host is free if the blocked range does not intersect busy blocks whose `show_as` is in the host's unavailable set, or any active `booking_hosts.blocked_range`. All-day events are treated as busy for the whole local day only when their `show_as` is in the unavailable set.
+3. A host is free if the blocked range does not intersect busy blocks whose `show_as` is in the host's unavailable set, the host's time off (`app.time_off`, always blocking, added 2026-11-20), or any active `booking_hosts.blocked_range`. All-day events are treated as busy for the whole local day only when their `show_as` is in the unavailable set.
 4. Drop slots earlier than `now + min_notice` and hosts at their per-day cap (counted in the host's local day).
 5. Mode rules: individual means the owner is free. Round-robin means at least one eligible member is free. Collective means every required member is free.
 
@@ -175,7 +176,7 @@ BEGIN;
   SELECT pg_advisory_xact_lock(hashtext('assign:' || team_or_host_id));
   -- 2. Lock candidate member rows (prevents two bookings both choosing or skipping the same person).
   SELECT ... FROM team_members WHERE ... FOR UPDATE;
-  -- 3. Re-check availability against busy_blocks and booking_hosts.
+  -- 3. Re-check availability against busy_blocks, time_off and booking_hosts.
   -- 4. Choose host(s) with the strategy above.
   -- 5. INSERT bookings, booking_hosts (the exclusion constraint is the final guard), booking_answers.
   -- 6. UPDATE team_members SET rr_assignment_count = +1, rr_last_assigned_at = now().

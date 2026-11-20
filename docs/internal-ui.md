@@ -11,12 +11,13 @@ English-only pages under `src/app/(app)` plus the sign-in page. Server component
 | `/dashboard` | user | Next 7 days, calendar status (reconnect or disconnect Outlook), booking link, teams |
 | `/bookings`, `/bookings/[id]` | user (RLS) | Upcoming/past, filters, detail, history timeline, host cancel |
 | `/event-types`, `/new`, `/[id]`, `/[id]/variants` | owner or team admin | Editor, questions, host pool, public links (English and `/es`), Spanish variants and inheritance |
-| `/availability` | user | Weekly hours, date overrides, booking preferences |
+| `/availability` | user | Weekly hours, time off (add, list current and upcoming blocks with the bookings inside them, delete), date overrides, booking preferences |
 | `/teams`, `/teams/[id]` | user; roster for team admins | Members (add, pause, unpause, remove manual members), settings, team admins (admins), distribution, membership log |
 | `/admin/audit` | admin, manager (read-only) | Audit log with filters, keyset pagination and field-level diffs (see `docs/audit-log.md`) |
+| `/admin/time-off` | admin; manager (read-only, notes hidden) | Everyone's current and upcoming time off, filterable by person (`?user=<id>`, linked from Admin > Users). Admins add time off for the chosen person, in that person's time zone, and delete any block |
 | `/admin/**` (other pages) | admin | Overview, sync status (`/admin/sync`, see `docs/queue-slack-sync.md`), new team, queue sync (with per-team sync status and bookings to review), Slack channels and user group, Salesforce settings and jobs, users (with sign-ins waiting for confirmation, see `docs/calendly-import.md`), integrations, webhooks (`/admin/webhooks`, see `docs/webhooks.md`), integration settings (`/admin/settings`, see `docs/settings.md`), home page routing (`/admin/home-routing`, see `docs/home-page.md`), import, errors (`/admin/errors`, see `docs/error-log.md`) |
 
-Authorization is checked on the server in every page and action (`requireUser` / `requireAdmin` / `requireCapability`, then RLS through `withUser`). Hidden UI is never the control. `src/app/(app)/admin/layout.tsx` requires `audit.read`; every admin page other than the audit log lives in the `(admin-only)` route group, whose layout requires a global admin. The admin navigation shows managers only the audit log.
+Authorization is checked on the server in every page and action (`requireUser` / `requireAdmin` / `requireCapability`, then RLS through `withUser`). Hidden UI is never the control. `src/app/(app)/admin/layout.tsx` requires `audit.read`; every admin page other than the audit log and time off lives in the `(admin-only)` route group, whose layout requires a global admin. The time-off page also requires `time_off.read_all` and shows add and delete controls only with `time_off.manage_all` (admins); its actions call `requireAdmin()`. The admin navigation shows managers only the audit log and time off.
 
 ## Patterns
 
@@ -27,6 +28,12 @@ Authorization is checked on the server in every page and action (`requireUser` /
 - **Insert without RETURNING:** the SELECT policies on `event_types` and `availability_schedules` call security-definer functions that cannot see a row inserted by the same statement, so `INSERT ... RETURNING` fails under RLS. Generate the id with `randomUUID()` instead (covered by `tests/integration/host-actions.test.ts`).
 - **Cross-user reads for team admins:** Outlook connection status of team members and team member counts are read with the service connection after the team-admin check, selecting only the status or aggregate columns.
 - **Variants:** pages import `resolveVariant` from `src/server/scheduling/resolve.ts`. Toggling a group adds or removes it from `child.overrides` and copies the parent's values when a group becomes overridden. `sf_settings` is admin-only; inheriting again deletes the variant's own Salesforce row.
+
+## Time off
+
+Time off is entered on `/availability` (own blocks) and `/admin/time-off` (admins, any active user). Both forms use `TimeOffForm` and `TimeOffList` (`src/components/app/TimeOff.tsx`, `src/components/app/TimeOffList.tsx`). The **All day** switch chooses between whole days (start and end date) and a time window (start and end date and time; the end date defaults to the start date). Input is read in the person's zone (`timeOffZone()`: default schedule zone, else profile zone) by `parseTimeOff()` in `src/lib/time-off.ts`, which also validates the range, the 366-day maximum, past ends and the 200-character note.
+
+The actions (`addTimeOffAction`, `deleteTimeOffAction` in `src/app/(app)/availability/_actions.ts`; `adminAddTimeOffAction`, `adminDeleteTimeOffAction` in `src/app/(app)/admin/_actions/time-off.ts`) call `createTimeOff()` and `deleteTimeOff()` in `src/server/time-off/index.ts` inside `withUser()`. Those functions enforce the limit of 100 upcoming blocks per person (under a per-person advisory lock), insert or delete the row and write the audit entry in the same transaction. On success the action returns `warnings` in its `ActionState`: one line per confirmed upcoming booking inside the new block (time in the block's zone and invitee name). The form shows them in a warning notice; the list shows them under each block. Existing bookings are never changed.
 
 ## Roster changes
 
